@@ -1,0 +1,49 @@
+# Eval cases — the expert-in-the-loop socket.
+#
+# Each `expects` entry has a `kind` graded deterministically by
+# src/sca/evals/harness.py. This makes the suite a regression guard.
+#
+# Check kinds:
+#   supply_resolved            total on-chain supply > 0
+#   metrics_present            coverage/staleness/drift computed
+#   metrics_absent             no attestation -> no metrics
+#   gap_contains {value}       some reported gap contains the substring
+#   narrative_present          synthesis produced a narrative
+#   no_investment_language     narrative makes no investment recommendation
+#   passages_approved_only     every cited passage is from an approved source
+#   attestation_confidence_min {value}   extraction confidence >= value
+#
+# OPERATOR: as attestations are seeded and corpus sources approved, add
+# cases using metrics_present / attestation_confidence_min, and expand
+# coverage (composition drift, multi-chain gaps, low-confidence extraction).
+
+cases:
+  - id: usdc-supply-resolves
+    symbol: USDC
+    notes: "USDC has a verified Ethereum address — supply must resolve."
+    expects:
+      - kind: supply_resolved
+      - kind: gap_contains
+        value: "unverified"          # Base address is unverified -> warned
+
+  - id: usdt-supply-resolves
+    symbol: USDT
+    notes: "Verified Ethereum address."
+    expects:
+      - kind: supply_resolved
+
+  - id: corpus-gate-holds
+    symbol: USDC
+    notes: "No source is approved yet -> no passages, gap reported."
+    expects:
+      - kind: passages_approved_only
+      - kind: gap_contains
+        value: "corpus has no approved"
+
+  - id: no-attestation-seeded
+    symbol: PYUSD
+    notes: "No latest_attestation_url seeded -> no metrics, gap reported."
+    expects:
+      - kind: metrics_absent
+      - kind: gap_contains
+        value: "attestation"

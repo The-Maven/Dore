@@ -1,0 +1,156 @@
+# Curated source registry — the "reasoning frame" layer.
+#
+# CURATION RULE: the agent may PROPOSE a source (append with
+# status: proposed). Only a HUMAN may set status: approved — via `sca curate`
+# or the corpus view in the web UI. The agent must never cite a source that
+# is not status: approved. See corpus/README.md.
+#
+# tier:  primary      - law / regulation itself
+#        standard     - attestation / accounting / prudential standards
+#        methodology  - rating-agency or supervisory methodology
+#        research     - central-bank / policy-body analysis
+#
+# `url` is for a human to view the source. For proposed sources, verify the
+# link points to the authoritative text before approving. To make a source
+# citeable, also stage its text at corpus/staging/<id>.md and approve it.
+
+sources:
+  - id: genius-act
+    title: "GENIUS Act — US payment stablecoin statute (Public Law 119-27)"
+    tier: primary
+    status: proposed
+    url: "https://www.congress.gov/bill/119th-congress/senate-bill/1582/text"
+    summary: >-
+      The US federal stablecoin statute. Sets 1:1 reserve backing, the
+      permitted reserve-asset types, monthly public reserve-composition
+      disclosure, and audit / executive-certification duties for permitted
+      payment stablecoin issuers.
+    notes: "Text staged at corpus/staging/genius-act.md."
+
+  - id: mica-title-iii
+    title: "MiCA — Regulation (EU) 2023/1114, Title III (asset-referenced tokens)"
+    tier: primary
+    status: proposed
+    url: "https://eur-lex.europa.eu/eli/reg/2023/1114/oj"
+    summary: >-
+      The EU crypto regulation, Title III. Governs asset-referenced tokens:
+      reserve composition and legal/operational segregation, the permanent
+      right of redemption, market-price valuation, and a semi-annual
+      independent audit of the reserve of assets.
+    notes: "Articles 36 & 39 staged at corpus/staging/mica-title-iii.md."
+
+  - id: aicpa-at-c
+    title: "AICPA AT-C 105 / 205 — attestation engagement standards"
+    tier: standard
+    status: proposed
+    url: "https://www.aicpa-cima.com/resources/landing/standards-and-statements"
+    summary: >-
+      The AICPA standards that define what a stablecoin reserve
+      "attestation" is — an examination of a management assertion — and how
+      that differs from a full financial-statement audit. The basis of most
+      US issuers' monthly reports.
+
+  - id: isae-3000
+    title: "ISAE 3000 (Revised) — international assurance standard"
+    tier: standard
+    status: proposed
+    url: "https://www.iaasb.org/publications/international-standard-assurance-engagements-isae-3000-revised"
+    summary: >-
+      The IAASB's international assurance standard used for non-US
+      stablecoin reserve attestations (e.g. Tether's BDO reports). Sets the
+      assurance, evidence and reporting requirements for an examination.
+
+  - id: sp-stablecoin-stability
+    title: "S&P Global — Stablecoin Stability Assessment methodology"
+    tier: methodology
+    status: proposed
+    url: "https://www.spglobal.com/ratings/en/research-insights/topics/digital-assets"
+    summary: >-
+      S&P Global's framework for scoring a stablecoin's ability to hold its
+      peg — weighing reserve asset quality, custody and segregation,
+      governance and track record. A rating-agency lens on reserve risk.
+
+  - id: bis-stablecoins
+    title: "BIS — research on stablecoins and reserve backing"
+    tier: research
+    status: proposed
+    url: "https://www.bis.org/topic/cryptocurrencies_and_stablecoins.htm"
+    summary: >-
+      Bank for International Settlements analysis of stablecoins — reserve
+      backing, run risk, redemption pressure and their place in the monetary
+      system. The central-bank analytical perspective.
+
+  - id: pwg-stablecoin-report
+    title: "President's Working Group — Report on Stablecoins (2021)"
+    tier: research
+    status: proposed
+    url: "https://home.treasury.gov/news/press-releases/jy0454"
+    summary: >-
+      The foundational US policy document on stablecoins, from the PWG with
+      the OCC and FDIC. Framed the reserve, redemption and oversight
+      concerns that the GENIUS Act later legislated.
+
+  - id: nydfs-stablecoin-guidance
+    title: "NYDFS — Guidance on USD-backed stablecoins (2022)"
+    tier: primary
+    status: proposed
+    url: "https://www.dfs.ny.gov/industry_guidance/industry_letters/il20220608_issuance_stablecoins"
+    summary: >-
+      New York DFS guidance governing NYDFS-regulated issuers (Paxos,
+      Gemini): full backing in low-risk assets, asset segregation, and a
+      monthly attestation by an independent licensed CPA.
+
+  - id: fca-stablecoin
+    title: "UK FCA — regulatory regime for fiat-backed stablecoins"
+    tier: primary
+    status: proposed
+    url: "https://www.fca.org.uk/firms/cryptoassets"
+    summary: >-
+      The UK Financial Conduct Authority's regime for fiat-backed
+      stablecoins — backing-asset composition, custody and the right of
+      redemption — as the FCA's authorisation gateway opens.
+
+  - id: fsb-global-stablecoin
+    title: "FSB — recommendations for global stablecoin arrangements"
+    tier: research
+    status: proposed
+    url: "https://www.fsb.org/2023/07/high-level-recommendations-for-the-regulation-supervision-and-oversight-of-global-stablecoin-arrangements-final-report/"
+    summary: >-
+      The Financial Stability Board's high-level recommendations for
+      regulating, supervising and overseeing global stablecoin
+      arrangements — the international baseline national regimes build on.
+
+  - id: bcbs-crypto
+    title: "Basel Committee — prudential standard for crypto-asset exposures"
+    tier: standard
+    status: proposed
+    url: "https://www.bis.org/bcbs/publ/d545.htm"
+    summary: >-
+      The Basel Committee's prudential treatment of banks' crypto-asset
+      exposures — how a bank that holds or backs stablecoins must treat them
+      for capital. Relevant where issuers are bank-affiliated.
+
+  - id: ofac-virtual-currency
+    title: "OFAC — Sanctions Compliance Guidance for the Virtual Currency Industry"
+    tier: primary
+    status: proposed
+    url: "https://home.treasury.gov/system/files/126/virtual_currency_guidance_brochure.pdf"
+    summary: >-
+      OFAC's compliance guidance for the virtual-currency industry: the
+      expectation that issuers and service providers screen against the SDN
+      list, block sanctioned digital-currency addresses, and run a
+      risk-based sanctions-compliance programme.
+    notes: "Sanctions-surface corpus — verify the link before approving."
+
+  - id: ofac-faqs-digital-currency
+    title: "OFAC FAQs — digital-currency addresses on the SDN List"
+    tier: primary
+    status: proposed
+    url: "https://ofac.treasury.gov/faqs"
+    summary: >-
+      OFAC's FAQs on how digital-currency addresses are added to the SDN
+      List and the screening and blocking obligations that follow — the
+      basis for exact-match address screening.
+    notes: "Sanctions-surface corpus."
+
+# Add more ONLY via: agent proposes (status: proposed) -> human approves.

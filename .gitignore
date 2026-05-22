@@ -1,0 +1,18 @@
+# secrets — never commit
+.env
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# runtime artifacts (caches, fetched PDFs, ingested corpus) — regenerated
+data/
+*.pdf
+
+# tooling
+node_modules/
+.DS_Store

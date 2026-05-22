@@ -1,0 +1,38 @@
+# Hermes Agent configuration — Doré, by Rayleigh Stark.
+#
+# This directory IS the Hermes home. On Railway it is mounted as a volume at
+# the agent's home path (default ~/.hermes). See README.md and GUARDRAILS.md.
+
+model:
+  # Doré reuses its existing DeepSeek endpoint (OpenAI-compatible).
+  provider: custom
+  base_url: https://api.deepseek.com
+  default: deepseek-chat
+  context_length: 64000
+  # The API key resolves from OPENAI_API_KEY in this directory's .env file.
+
+mcp_servers:
+  # Doré's own tools — the agent's ONLY window onto the system, and a
+  # deliberate security boundary. Every tool is read-only. See GUARDRAILS.md.
+  # `dore-mcp` is the console script installed with the `sca` package.
+  dore:
+    command: dore-mcp
+    args: []
+    # The Doré tools are read-only, so they are safe to run concurrently.
+    supports_parallel_tool_calls: true
+
+# ── guardrails — see GUARDRAILS.md ────────────────────────────────────
+# Doré's agent is a constrained compliance analyst, not a general-purpose
+# agent. Its external capability is the `dore` MCP server and nothing else.
+# Hermes' powerful native toolsets (arbitrary code execution, shell, raw
+# filesystem, unrestricted web) should be disabled for this deployment so the
+# agent cannot act outside the vetted Doré tools.
+#
+# Confirm the exact keys against `hermes config check` on first deploy; the
+# block below states the intent:
+#
+# tools:
+#   disabled: [execute_code, terminal, files]   # verify key names on deploy
+#
+# limits:
+#   max_tool_calls_per_turn: 24    # cap the agent loop — no runaway sessions

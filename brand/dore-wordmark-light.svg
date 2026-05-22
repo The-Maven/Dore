@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300" role="img" aria-label="Doré, by Rayleigh Stark">
+  <title>Doré — by Rayleigh Stark</title>
+  <desc>Wordmark for Doré, a stablecoin reserve-verification product by Rayleigh Stark. Light-background variant.</desc>
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,600&amp;family=Inter+Tight:wght@500&amp;display=swap');
+      .dore-hero   { font-family: 'Bodoni Moda', 'Times New Roman', serif; font-weight: 600; font-size: 150px; }
+      .dore-credit { font-family: 'Inter Tight', system-ui, sans-serif; font-weight: 500; font-size: 32px; letter-spacing: 5px; }
+    </style>
+  </defs>
+
+  <text class="dore-hero" x="400" y="158" text-anchor="middle" fill="#14151A">Dor<tspan fill="#BC8A33">é</tspan></text>
+
+  <g stroke="#BC8A33" stroke-width="1.5" stroke-linecap="square">
+    <line x1="355" y1="196" x2="445" y2="196"/>
+    <line x1="355" y1="190.5" x2="355" y2="201.5"/>
+    <line x1="445" y1="190.5" x2="445" y2="201.5"/>
+  </g>
+
+  <text class="dore-credit" x="400" y="250" text-anchor="middle" fill="#6F6B62">BY RAYLEIGH STARK</text>
+</svg>

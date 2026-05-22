@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Doré — wordmark</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,500;6..96,600&family=Inter+Tight:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0A0B0E; --paper: #EFEAE0; --gold: #D4A24A;
+    --gold-deep: #BC8A33; --muted: #928E84; --muted-light: #6F6B62;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--ink); color: var(--paper);
+    font-family: 'Inter Tight', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 980px; margin: 0 auto; padding: 72px 40px 96px; }
+  .eyebrow {
+    font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
+    color: var(--muted); font-weight: 500;
+  }
+  h1.t { font-size: 15px; font-weight: 500; color: var(--paper); margin: 6px 0 40px; }
+
+  /* the wordmark, rendered as type */
+  .mark { display: inline-flex; flex-direction: column; align-items: center; }
+  .mark .hero {
+    font-family: 'Bodoni Moda', serif; font-weight: 600;
+    line-height: 1; letter-spacing: 0.005em;
+  }
+  .mark .rule { display: flex; align-items: center; justify-content: center; }
+  .mark .rule span {
+    display: block; height: 1.5px; background: var(--gold);
+  }
+  .mark .rule i { width: 1.5px; background: var(--gold); display: block; }
+  .mark .credit {
+    font-family: 'Inter Tight', sans-serif; font-weight: 500;
+    text-transform: uppercase; color: var(--muted);
+  }
+
+  /* dark panel */
+  .panel {
+    border: 1px solid #1d1f24; border-radius: 2px;
+    display: flex; align-items: center; justify-content: center;
+    padding: 80px 40px;
+  }
+  .panel.dark { background: #0c0d11; }
+  .panel.light { background: var(--paper); }
+  .panel.light .hero { color: var(--ink); }
+  .panel.light .hero .acc { color: var(--gold-deep); }
+  .panel.light .rule span, .panel.light .rule i { background: var(--gold-deep); }
+  .panel.light .credit { color: var(--muted-light); }
+  .panel.dark .hero { color: var(--paper); }
+  .panel.dark .hero .acc { color: var(--gold); }
+
+  /* large lockup */
+  .lg .hero { font-size: 132px; }
+  .lg .rule { gap: 0; margin: 22px 0 18px; }
+  .lg .rule span { width: 86px; }
+  .lg .rule i { height: 12px; }
+  .lg .credit { font-size: 28px; letter-spacing: 5px; }
+
+  /* small lockup */
+  .sm .hero { font-size: 44px; }
+  .sm .rule { margin: 8px 0 7px; }
+  .sm .rule span { width: 30px; }
+  .sm .rule i { height: 5px; }
+  .sm .credit { font-size: 10px; letter-spacing: 2px; }
+
+  .row { display: flex; gap: 20px; margin-top: 20px; }
+  .row .panel { flex: 1; }
+  .note {
+    margin-top: 44px; font-size: 13px; line-height: 1.7;
+    color: #b8b3a8; max-width: 620px;
+  }
+  .note b { color: var(--paper); font-weight: 500; }
+  .label {
+    font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="eyebrow">Rayleigh Stark</div>
+  <h1 class="t">Doré — product wordmark</h1>
+
+  <div class="label">Primary · dark</div>
+  <div class="panel dark">
+    <div class="mark lg">
+      <div class="hero">Dor<span class="acc">é</span></div>
+      <div class="rule"><i></i><span></span><i></i></div>
+      <div class="credit">By Rayleigh Stark</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div>
+      <div class="label" style="margin-top:20px">On light</div>
+      <div class="panel light">
+        <div class="mark lg" style="transform:scale(.62)">
+          <div class="hero">Dor<span class="acc">é</span></div>
+          <div class="rule"><i></i><span></span><i></i></div>
+          <div class="credit">By Rayleigh Stark</div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="label" style="margin-top:20px">Small use</div>
+      <div class="panel dark">
+        <div class="mark sm">
+          <div class="hero">Dor<span class="acc">é</span></div>
+          <div class="rule"><i></i><span></span><i></i></div>
+          <div class="credit">By Rayleigh Stark</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note">
+    <b>Doré</b> — a doré bar is the semi-pure gold a mine produces before it
+    is refined and assayed to certified purity: raw claimed value that must be
+    verified. The wordmark is set in a precise high-contrast serif; the
+    accented <b>é</b> carries the one note of gold — gilded, <i>doré</i> — and
+    the fine ruled tick reads as an assay gauge, not an icon. <b>By Rayleigh
+    Stark</b> sits quiet and tracked beneath: the parent endorsement, never
+    the hero. No coins, no circuitry — institutional, instrument-grade.
+  </p>
+</div>
+</body>
+</html>

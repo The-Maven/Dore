@@ -1,0 +1,2 @@
+# Hermes-managed persistent memory (MEMORY.md, USER.md) is written here at
+# runtime. Kept in the layout so the mounted volume has a home for it.

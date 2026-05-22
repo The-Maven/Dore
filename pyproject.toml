@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sca"
+version = "0.1.0"
+description = "Stablecoin Compliance Agent — attestation analysis on hermes-agent"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+pdf = ["pdfplumber>=0.11"]
+llm = ["anthropic>=0.40"]
+supabase = ["supabase>=2.4"]
+agent = ["mcp>=1.2"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+sca = "sca.cli:main"
+dore-mcp = "sca.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

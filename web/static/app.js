@@ -1,0 +1,3625 @@
+/* ════════════════════════════════════════════════════════════════════
+   Doré — by Rayleigh Stark. Stablecoin reserve-verification terminal SPA.
+   Vanilla JS, no build. Hash routing. Talks to the FastAPI server.
+   The opening view is a live operations feed driven by REAL polling of
+   /api/supply/{symbol} — every log line narrates actual agent work.
+   ════════════════════════════════════════════════════════════════════ */
+
+'use strict';
+
+// ── tiny DOM + format helpers ────────────────────────────────────────
+const $ = (sel, root = document) => root.querySelector(sel);
+const app = $('#app');
+
+function el(tag, attrs = {}, ...kids) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null) continue;
+    if (k === 'class') node.className = v;
+    else if (k === 'html') node.innerHTML = v;
+    else if (k.startsWith('on') && typeof v === 'function')
+      node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    node.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  }
+  return node;
+}
+
+const icon = (id, cls = '') => {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  if (cls) svg.setAttribute('class', cls);
+  svg.setAttribute('viewBox', '0 0 24 24');
+  const use = document.createElementNS(ns, 'use');
+  use.setAttribute('href', '#' + id);
+  svg.append(use);
+  return svg;
+};
+
+// ── instrument brand marks ───────────────────────────────────────────
+// Tokens with a recognisable mark get a hand-drawn inline SVG symbol
+// (sprite in index.html). The rest get a tasteful bordered monogram.
+const TOKEN_SYMBOLS = new Set(['USDC', 'EURC', 'USDT', 'PYUSD', 'USDP', 'GUSD']);
+// monogram fallbacks — initials shown in a bordered box mark
+const TOKEN_MONOGRAM = { USDG: 'UG', TUSD: 'TU', FDUSD: 'FD' };
+
+function tokenMark(symbol, cls = '') {
+  const ns = 'http://www.w3.org/2000/svg';
+  const sym = String(symbol || '').toUpperCase();
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', ('tmark ' + cls).trim());
+  // brand colour carried as a data attribute — CSS lights it up only
+  // when the instrument is the selected/active one.
+  if (sym) svg.setAttribute('data-token', sym);
+  if (TOKEN_SYMBOLS.has(sym)) {
+    const use = document.createElementNS(ns, 'use');
+    use.setAttribute('href', '#t-' + sym);
+    svg.append(use);
+    return svg;
+  }
+  // monogram fallback — bordered box + initials
+  const text = TOKEN_MONOGRAM[sym] || sym.slice(0, 2);
+  const box = document.createElementNS(ns, 'rect');
+  box.setAttribute('x', '2.5'); box.setAttribute('y', '2.5');
+  box.setAttribute('width', '19'); box.setAttribute('height', '19');
+  box.setAttribute('rx', '2.5');
+  box.setAttribute('fill', 'none'); box.setAttribute('stroke', 'currentColor');
+  box.setAttribute('stroke-width', '1.6');
+  const t = document.createElementNS(ns, 'text');
+  t.setAttribute('x', '12'); t.setAttribute('y', '13');
+  t.setAttribute('text-anchor', 'middle');
+  t.setAttribute('dominant-baseline', 'central');
+  t.setAttribute('fill', 'currentColor');
+  t.setAttribute('font-size', text.length > 2 ? '7' : '9');
+  t.setAttribute('font-weight', '700');
+  t.setAttribute('font-family', "'IBM Plex Mono', monospace");
+  t.setAttribute('letter-spacing', '-.5');
+  t.textContent = text;
+  svg.append(box, t);
+  return svg;
+}
+
+// ── chain marks ──────────────────────────────────────────────────────
+// Each known chain gets a hand-drawn inline SVG symbol (sprite in
+// index.html). Unknown chains fall back to a bordered monogram, mirroring
+// the tokenMark() treatment.
+const CHAIN_SYMBOLS = new Set(
+  ['ethereum', 'arbitrum', 'base', 'optimism', 'polygon', 'solana']);
+
+function chainMark(chain, cls = '') {
+  const ns = 'http://www.w3.org/2000/svg';
+  const key = String(chain || '').toLowerCase().trim();
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', ('cmark ' + cls).trim());
+  if (key) svg.setAttribute('data-chain', key);
+  if (CHAIN_SYMBOLS.has(key)) {
+    const use = document.createElementNS(ns, 'use');
+    use.setAttribute('href', '#c-' + key);
+    svg.append(use);
+    return svg;
+  }
+  // monogram fallback — bordered box + first two letters
+  const text = key.slice(0, 2).toUpperCase() || '??';
+  const box = document.createElementNS(ns, 'rect');
+  box.setAttribute('x', '2.5'); box.setAttribute('y', '2.5');
+  box.setAttribute('width', '19'); box.setAttribute('height', '19');
+  box.setAttribute('rx', '2.5');
+  box.setAttribute('fill', 'none'); box.setAttribute('stroke', 'currentColor');
+  box.setAttribute('stroke-width', '1.6');
+  const t = document.createElementNS(ns, 'text');
+  t.setAttribute('x', '12'); t.setAttribute('y', '13');
+  t.setAttribute('text-anchor', 'middle');
+  t.setAttribute('dominant-baseline', 'central');
+  t.setAttribute('fill', 'currentColor');
+  t.setAttribute('font-size', '9');
+  t.setAttribute('font-weight', '700');
+  t.setAttribute('font-family', "'IBM Plex Mono', monospace");
+  t.setAttribute('letter-spacing', '-.5');
+  t.textContent = text;
+  svg.append(box, t);
+  return svg;
+}
+
+// block-explorer base URLs — append the token contract address
+const CHAIN_EXPLORERS = {
+  ethereum: 'https://etherscan.io/token/',
+  arbitrum: 'https://arbiscan.io/token/',
+  base:     'https://basescan.org/token/',
+  optimism: 'https://optimistic.etherscan.io/token/',
+  polygon:  'https://polygonscan.com/token/',
+  solana:   'https://solscan.io/token/',
+};
+function explorerUrl(chain, contract) {
+  const base = CHAIN_EXPLORERS[String(chain || '').toLowerCase().trim()];
+  return base && contract ? base + contract : null;
+}
+
+const esc = (s) => String(s).replace(/[&<>"]/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function fmtNum(n, dp = 0) {
+  if (n == null || Number.isNaN(n)) return '—';
+  return Number(n).toLocaleString('en-US',
+    { minimumFractionDigits: dp, maximumFractionDigits: dp });
+}
+function fmtUSD(n) {
+  if (n == null) return '—';
+  const a = Math.abs(n);
+  if (a >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
+  if (a >= 1e6) return '$' + (n / 1e6).toFixed(2) + 'M';
+  if (a >= 1e3) return '$' + (n / 1e3).toFixed(1) + 'K';
+  return '$' + fmtNum(n, 2);
+}
+// compact magnitude — no $ prefix, for dense log columns (e.g. 73.15B)
+function fmtMag(n) {
+  if (n == null || Number.isNaN(n)) return '—';
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (a >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (a >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(Math.round(n));
+}
+// signed percentage delta — '+0.4%' / '-0.2%' / 'flat'
+function fmtDelta(r) {
+  if (r == null || Number.isNaN(r) || !isFinite(r)) return 'flat';
+  const p = r * 100;
+  if (Math.abs(p) < 0.005) return 'flat';
+  return (p > 0 ? '+' : '') + p.toFixed(2) + '%';
+}
+function deltaClass(r) {
+  if (r == null || Math.abs(r) < 0.00005) return '';
+  return r > 0 ? 'd-up' : 'd-dn';
+}
+function fmtPct(r) {
+  if (r == null || Number.isNaN(r)) return 'n/a';
+  return (r * 100).toFixed(2) + '%';
+}
+function covClass(r) {
+  if (r == null) return 'v-muted';
+  if (r >= 1.0) return 'v-green';
+  if (r >= 0.98) return 'v-amber';
+  return 'v-rose';
+}
+const pad2 = (n) => String(n).padStart(2, '0');
+function clockStr(d = new Date()) {
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+// a visible cue when a run is attempted with an empty SYMBOL field — a
+// brief shake + a placeholder prompt, so the button never feels dead.
+function flagEmptyInput(input) {
+  if (!input) return;
+  input.focus();
+  input.classList.remove('input-nudge');
+  // force reflow so the animation re-triggers on a repeated empty click
+  void input.offsetWidth;
+  input.classList.add('input-nudge');
+  const orig = input.getAttribute('placeholder') || 'SYMBOL';
+  input.setAttribute('placeholder', 'ENTER A SYMBOL');
+  setTimeout(() => {
+    input.classList.remove('input-nudge');
+    input.setAttribute('placeholder', orig);
+  }, 1400);
+}
+
+async function api(path, opts) {
+  opts = opts || {};
+  // attach the Supabase access token when signed in — anonymous calls
+  // simply omit it and the server treats them as anonymous (never rejected).
+  const token = AUTH.token();
+  if (token) {
+    opts = Object.assign({}, opts, {
+      headers: Object.assign({}, opts.headers,
+        { Authorization: 'Bearer ' + token }),
+    });
+  }
+  const res = await fetch('/api' + path, opts);
+  let body;
+  try { body = await res.json(); } catch { body = {}; }
+  if (!res.ok) {
+    const err = new Error(body.detail || body.error || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  OPTIONAL AUTHENTICATION
+//  Auth is optional and gates *persistence* (saved history, curation
+//  votes, a profile) — never functional use. The whole terminal works
+//  anonymously; an account just lets work be saved. supabase-js owns
+//  session persistence + token refresh; the server validates the JWT.
+// ════════════════════════════════════════════════════════════════════
+const AUTH = {
+  client: null,        // supabase-js client, or null when unconfigured
+  session: null,       // current Supabase session, or null (anonymous)
+  user: null,          // { id, email } or null
+  profile: null,       // profiles row, or null
+  _mode: 'in',         // sign-in | sign-up panel mode
+
+  token() { return this.session ? this.session.access_token : null; },
+  signedIn() { return !!this.user; },
+
+  // ── bootstrap: pull public config, init supabase-js, restore session ──
+  async init() {
+    let cfg;
+    try { cfg = await api('/config'); } catch { cfg = {}; }
+    if (!cfg.supabase_url || !cfg.supabase_anon_key
+        || typeof window.supabase === 'undefined') {
+      // Supabase not configured / CDN unavailable — stay anonymous-only.
+      this._renderControl();
+      return;
+    }
+    this.client = window.supabase.createClient(
+      cfg.supabase_url, cfg.supabase_anon_key);
+    const { data } = await this.client.auth.getSession();
+    this.session = data ? data.session : null;
+    // react to refresh / sign-in / sign-out across tabs
+    this.client.auth.onAuthStateChange((_evt, session) => {
+      this.session = session;
+      if (!session) { this.user = null; this.profile = null; }
+      this._renderControl();
+    });
+    if (this.session) { await this._loadMe(); }
+    this._renderControl();
+    this._wirePanel();
+  },
+
+  async _loadMe() {
+    try {
+      const me = await api('/me');
+      this.user = me.user;
+      this.profile = me.profile;
+    } catch { this.user = null; this.profile = null; }
+  },
+
+  // ── topbar control: SIGN IN  ⇄  the signed-in identity + SIGN OUT ──
+  _renderControl() {
+    const ctl = $('#auth-ctl');
+    const dot = $('#auth-dot');
+    const label = $('#auth-label');
+    if (!ctl) return;
+    if (!this.client) {
+      // no auth backend — keep the control quiet and inert
+      ctl.style.display = 'none';
+      return;
+    }
+    ctl.style.display = '';
+    if (this.signedIn()) {
+      dot.classList.add('in');
+      const who = (this.user.email || 'account').split('@')[0];
+      label.textContent = who.toUpperCase() + ' · SIGN OUT';
+      ctl.title = 'Signed in as ' + this.user.email + ' — click to sign out';
+      ctl.onclick = () => this.signOut();
+    } else {
+      dot.classList.remove('in');
+      label.textContent = 'SIGN IN';
+      ctl.title = 'Sign in to save your work — the terminal works without it';
+      ctl.onclick = () => this.openPanel('in');
+    }
+  },
+
+  // ── the sign-in / sign-up panel ──────────────────────────────────
+  openPanel(mode, note) {
+    if (!this.client) return;  // nothing to sign into
+    this._mode = mode || 'in';
+    const ov = $('#auth-overlay');
+    ov.hidden = false;
+    this._syncPanelMode();
+    const msg = $('#auth-msg');
+    if (note) { msg.hidden = false; msg.className = 'auth-msg'; msg.textContent = note; }
+    else { msg.hidden = true; }
+    setTimeout(() => { const e = $('#auth-email'); if (e) e.focus(); }, 30);
+  },
+  closePanel() { $('#auth-overlay').hidden = true; },
+
+  _syncPanelMode() {
+    const up = this._mode === 'up';
+    $('#auth-tab-in').classList.toggle('active', !up);
+    $('#auth-tab-up').classList.toggle('active', up);
+    $('#auth-title').textContent = up ? 'CREATE ACCOUNT' : 'SIGN IN';
+    $('#auth-submit').textContent = up ? 'CREATE ACCOUNT' : 'SIGN IN';
+    $('#auth-pass').setAttribute('autocomplete',
+      up ? 'new-password' : 'current-password');
+    $('#auth-foot').textContent = up
+      ? 'Already have an account? Use the SIGN IN tab.'
+      : 'No account yet? CREATE ACCOUNT — it is free and instant.';
+  },
+
+  _wirePanel() {
+    $('#auth-close').onclick = () => this.closePanel();
+    $('#auth-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'auth-overlay') this.closePanel();
+    });
+    $('#auth-tab-in').onclick = () => { this._mode = 'in'; this._syncPanelMode(); };
+    $('#auth-tab-up').onclick = () => { this._mode = 'up'; this._syncPanelMode(); };
+    $('#auth-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      this._submit();
+    });
+    const g = $('#oauth-google');
+    const a = $('#oauth-apple');
+    if (g) g.onclick = () => this._oauth('google', 'Google');
+    if (a) a.onclick = () => this._oauth('apple', 'Apple');
+  },
+
+  // ── OAuth sign-in — Google / Apple via supabase-js ─────────────────
+  // supabase-js owns the provider redirect; on return the existing
+  // getSession() / onAuthStateChange handlers pick the session up. If a
+  // provider is not yet enabled in Supabase the call returns an error —
+  // surfaced as a calm inline message, never a crash.
+  async _oauth(provider, label) {
+    const msg = $('#auth-msg');
+    const show = (cls, text) => {
+      msg.hidden = false; msg.className = 'auth-msg ' + cls; msg.textContent = text;
+    };
+    const gBtn = $('#oauth-google');
+    const aBtn = $('#oauth-apple');
+    if (gBtn) gBtn.disabled = true;
+    if (aBtn) aBtn.disabled = true;
+    try {
+      const { error } = await this.client.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo: window.location.origin },
+      });
+      if (error) throw new Error(error.message);
+      // success — supabase-js is navigating away to the provider; nothing
+      // more to do here, the redirect takes over.
+    } catch (err) {
+      const raw = String((err && err.message) || err || '');
+      const notEnabled = /provider is not enabled|not enabled|unsupported provider/i
+        .test(raw);
+      show('err', notEnabled
+        ? label + ' sign-in isn’t configured yet — use email and password below.'
+        : label + ' sign-in could not start: ' + raw);
+      if (gBtn) gBtn.disabled = false;
+      if (aBtn) aBtn.disabled = false;
+    }
+  },
+
+  async _submit() {
+    const email = $('#auth-email').value.trim();
+    const pass = $('#auth-pass').value;
+    const msg = $('#auth-msg');
+    const btn = $('#auth-submit');
+    const show = (cls, text) => {
+      msg.hidden = false; msg.className = 'auth-msg ' + cls; msg.textContent = text;
+    };
+    if (!email || pass.length < 6) {
+      show('err', 'Enter an email and a password of at least 6 characters.');
+      return;
+    }
+    btn.disabled = true;
+    const wasUp = this._mode === 'up';
+    try {
+      const fn = wasUp ? 'signUp' : 'signInWithPassword';
+      const { data, error } = await this.client.auth[fn]({ email, password: pass });
+      if (error) throw new Error(error.message);
+      if (wasUp && (!data.session)) {
+        // email-confirmation flow — no session returned
+        show('ok', 'Account created. Check your inbox to confirm, then sign in.');
+        this._mode = 'in'; this._syncPanelMode();
+        btn.disabled = false;
+        return;
+      }
+      this.session = data.session;
+      await this._loadMe();
+      this._renderControl();
+      this.closePanel();
+      logLine('OK', 'AUTH', [
+        seg(wasUp ? 'account created' : 'signed in', 'lg-val'),
+        seg(this.user ? this.user.email : email),
+        seg('persistence unlocked', 'd-up'),
+      ]);
+      route();  // re-render so history / signed-in affordances appear
+    } catch (err) {
+      show('err', String(err.message || err));
+    } finally {
+      btn.disabled = false;
+    }
+  },
+
+  async signOut() {
+    try { await this.client.auth.signOut(); } catch { /* ignore */ }
+    this.session = null; this.user = null; this.profile = null;
+    this._renderControl();
+    logLine('WORK', 'AUTH', [seg('signed out', 'lg-val'),
+      seg('back to anonymous · the terminal stays fully usable')]);
+    route();
+  },
+};
+
+// "Sign in to save" — a small inviting prompt shown when an anonymous
+// caller reaches a save-type action. An invitation, never an error.
+function savePrompt(what) {
+  const btn = el('button', { class: 'btn' }, 'SIGN IN');
+  btn.addEventListener('click', () => AUTH.openPanel('in',
+    'Sign in to ' + what + '. The terminal stays fully usable either way.'));
+  return el('div', { class: 'save-prompt' },
+    el('span', { class: 'sp-ic' }, icon('i-human')),
+    el('div', { class: 'sp-txt' },
+      el('b', {}, 'Sign in to save. '),
+      'You can ' + what + ' once you have an account — anonymous runs ',
+      'work fully but are not kept.'),
+    btn);
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  SHARED STATE
+// ════════════════════════════════════════════════════════════════════
+const STATE = {
+  tokens: [],            // registry
+  supply: {},            // symbol -> last SupplyResult ('error' on failure)
+  feed: [],              // {time, level, agent, surface, msg}
+  feedSeq: 0,
+  activeSymbol: '',      // selected instrument
+  monitorRunning: false,
+};
+const FEED_MAX = 320;
+
+// ── hover-tooltip copy — concise, plain-language, terminal-styled ────
+// One source of truth for the non-obvious terms surfaced across views.
+const tip = {
+  attested:
+    'Attested coverage — reserves divided by the tokens outstanding stated '
+    + 'in the attestation. The issuer’s backing ratio AS OF the attestation '
+    + 'date; fixed, unaffected by later supply moves.',
+  live:
+    'Live coverage — attested reserves divided by CURRENT on-chain supply. '
+    + 'Drifts away from the attested ratio as supply mints/burns after the '
+    + 'attestation date.',
+  bridged:
+    'Bridged share — bridged supply ÷ (native + bridged). Wrapped/bridged '
+    + 'copies are collateralised by locked native supply; counted separately '
+    + 'so the headline isn’t double-counted.',
+  staleness:
+    'Staleness — days elapsed since the attestation date. Older attestations '
+    + 'are weaker evidence of present-day backing.',
+  drift:
+    'Supply drift — real measured change in on-chain supply between the last '
+    + 'two polled reads. Large drift widens attested-vs-live coverage.',
+  verified:
+    'Verified — the deployment’s contract source is published & matches '
+    + 'on-chain bytecode, so the read is trustworthy.',
+  unverified:
+    'Unverified — contract source not published / not matched. Supply is read '
+    + 'but treated with lower confidence.',
+  verifiedRatio:
+    'Verified deployments ÷ total deployments. All-verified is green; any '
+    + 'unverified contract drops it to amber.',
+  kindNative:
+    'Native — genuine first-party issuance on this chain. Sums into the '
+    + 'headline supply figure.',
+  kindBridged:
+    'Bridged — a wrapped copy minted by a bridge against locked native '
+    + 'supply. Shown, but excluded from the headline to avoid double-counting.',
+  confidence:
+    'Extraction confidence — how reliably the LLM parsed reserve figures out '
+    + 'of the attestation PDF. Low scores flag manual review.',
+  status: {
+    ok: 'LIVE — on-chain supply read succeeded with no warnings.',
+    watch: 'WATCH — read succeeded but the agent raised one or more warnings.',
+    alert: 'ALERT — the on-chain supply read failed for this instrument.',
+    idle: 'PENDING — no read taken yet this session.',
+  },
+  // guardrail-check names — keyed by a normalised form of the check name.
+  // Covers both the real check ids and human-readable variants.
+  checks: {
+    'supply_resolved':
+      'Did the on-chain supply read resolve cleanly across every '
+      + 'deployment? Fails if any chain read errored.',
+    'reserves_positive':
+      'Are the attested reserves a positive figure? Fails if the '
+      + 'extracted reserve total is zero or missing.',
+    'tokens_positive':
+      'Are tokens outstanding a positive figure? Fails if the attested '
+      + 'circulating supply is zero or missing.',
+    'breakdown_sums_to_total':
+      'Do the per-chain supply figures add up to the reported total? '
+      + 'Fails on an arithmetic mismatch.',
+    'reserve coverage':
+      'Are attested reserves ≥ tokens outstanding? Fails if the issuer '
+      + 'reports less backing than circulating supply.',
+    'attestation freshness':
+      'Is the attestation recent enough? Fails when it is too stale to '
+      + 'evidence present-day backing.',
+    'staleness':
+      'Is the attestation recent enough? Fails when it is too stale to '
+      + 'evidence present-day backing.',
+    'supply drift':
+      'Has on-chain supply moved materially since the attestation? Large '
+      + 'drift makes the attested ratio unreliable.',
+    'drift':
+      'Has on-chain supply moved materially since the attestation? Large '
+      + 'drift makes the attested ratio unreliable.',
+    'extraction confidence':
+      'Did the LLM extract reserve figures from the PDF with enough '
+      + 'confidence? Low confidence demands manual review.',
+    'confidence':
+      'Did the LLM extract reserve figures from the PDF with enough '
+      + 'confidence? Low confidence demands manual review.',
+    'coverage':
+      'Do attested reserves still cover on-chain supply? Fails if '
+      + 'post-attestation minting outran reserves.',
+    'verified':
+      'Are all on-chain deployments source-verified? Fails when supply is '
+      + 'read from an unverified contract.',
+    'bridged':
+      'Is the bridged share within tolerance? Flags heavy reliance on '
+      + 'bridged copies relative to native issuance.',
+    'sanctions':
+      'Did any screened deployment address match the OFAC SDN list? '
+      + 'Fails on any match — a sanctioned address must not be touched.',
+    'sdn freshness':
+      'Is the OFAC SDN list recent enough? Fails when the list is too '
+      + 'stale to reflect recently sanctioned addresses.',
+    'sdn list loaded':
+      'Did the OFAC SDN sanctioned-address list load successfully? '
+      + 'Fails if the list could not be reached or parsed.',
+    'addresses screened':
+      'Were the token deployment addresses screened against the SDN '
+      + 'list? Fails if no address could be screened.',
+    'liquid coverage':
+      'Do liquid (fast-access) reserves alone cover on-chain supply? '
+      + 'Fails when fast redemption capacity is below circulating supply.',
+    'liquidity':
+      'Is enough of the reserve held in liquid, redemption-ready assets? '
+      + 'Flags reserves concentrated in slow-to-realise holdings.',
+    'redemption capacity':
+      'Could the issuer meet redemptions from liquid reserves? Fails when '
+      + 'fast-access reserves fall short of circulating supply.',
+    'net redemption flow':
+      'Is the recent net redemption flow within tolerance? Flags a large '
+      + 'burn of supply since the attestation date.',
+  },
+  // why a metric reads n/a — concise, explains it is a perceived gap, not a
+  // failure, and reminds the viewer the on-chain supply read is unaffected.
+  na: {
+    coverage:
+      'n/a — coverage needs a current reserve attestation, and the system '
+      + 'could not resolve one (see GAPS below for why). NOT an on-chain '
+      + 'failure: native supply is a direct chain read and is shown above.',
+    reserves:
+      'n/a — no current attestation document could be resolved for this '
+      + 'issuer, so attested reserves are unknown. The on-chain supply figure '
+      + 'is unaffected — it is read straight from the chain.',
+    tokens:
+      'n/a — tokens outstanding is taken from an attestation, and none could '
+      + 'be resolved. On-chain supply (above) is independent and still live.',
+    confidence:
+      'n/a — extraction confidence scores how cleanly the LLM parsed an '
+      + 'attestation PDF. With no attestation resolved there is nothing to '
+      + 'score. Not an error — just nothing to extract from.',
+    staleness:
+      'n/a — staleness measures the age of the attestation. With no '
+      + 'attestation resolved there is no date to measure against.',
+    drift:
+      'n/a — supply drift compares current supply to supply at the '
+      + 'attestation date. With no attestation resolved there is no baseline.',
+  },
+  // the honest, accurate reason an attestation could not be resolved — shared
+  // by every attestation-derived n/a. An issuer-transparency limit.
+  noAttestation:
+    'WHY — the system could not reach a current attestation. Common causes: '
+    + 'the issuer publishes its attestation on a JavaScript-rendered page with '
+    + 'no machine-reachable source (e.g. Paxos, TrueUSD); no transparency '
+    + 'source is configured for the issuer (FDUSD); or a shared issuer page '
+    + 'carried no token-specific report (EURC). This is an issuer-transparency '
+    + 'limit — the tool honestly reports what it can reach. On-chain supply is '
+    + 'a direct chain read and is unaffected.',
+  // per-category plain-language "why" for a GAPS & OPEN ITEMS row. Each notes
+  // whether it is an issuer-transparency limit or an action the operator can
+  // take. Keyed by the gap's `category` field.
+  gapWhy: {
+    data: {
+      kind: 'issuer-transparency limit',
+      text: 'The system could not resolve a current attestation document — '
+        + 'the issuer publishes it on a JavaScript-rendered page with no '
+        + 'machine-reachable source, has no transparency source configured, or '
+        + 'the shared issuer page held no token-specific report. The on-chain '
+        + 'supply read is unaffected; only attestation-derived figures are.',
+    },
+    corpus: {
+      kind: 'awaiting your action',
+      text: 'No approved sources in the corpus yet. The corpus is deliberately '
+        + 'human-gated: the agent states facts but will not cite regulation '
+        + 'until a human approves sources via `sca curate`. A designed gate, '
+        + 'not a failure.',
+    },
+    coverage: {
+      kind: 'awaiting your action',
+      text: 'A contract address has not been human-verified yet. Its figure is '
+        + 'still used but flagged. Verify it via `sca curate` to clear this.',
+    },
+    guardrail: {
+      kind: 'honest disclosure',
+      text: 'A deterministic guardrail surfaced something worth noting — e.g. '
+        + 'an attestation that is real but dated, because a fresher one is not '
+        + 'machine-reachable. The staleness is reported honestly, not hidden.',
+    },
+    citation: {
+      kind: 'awaiting your action',
+      text: 'A judgement could not be tied to an approved citation. The agent '
+        + 'will not cite a source a human has not approved — approve one via '
+        + '`sca curate` to let the claim carry a citation.',
+    },
+  },
+  // ── F5 sanctions / F6 redemptions surface terms ────────────────────
+  sdnStaleness:
+    'SDN staleness — days elapsed since the OFAC Specially Designated '
+    + 'Nationals list was last published. An older list may miss recently '
+    + 'sanctioned addresses, so a stale list weakens the screen.',
+  sdnCount:
+    'SDN address count — total digital-currency addresses on the OFAC SDN '
+    + 'list this screen was run against. The size of the sanctioned-address '
+    + 'universe checked.',
+  screened:
+    'Screened addresses — the token deployment contract addresses checked '
+    + 'against every sanctioned address on the OFAC SDN list.',
+  liquidReserves:
+    'Liquid reserves — the portion of reserves held in assets that can fund '
+    + 'redemptions immediately (cash, overnight repo, T-bills). Excludes '
+    + 'slower-to-realise holdings.',
+  liquidCoverage:
+    'Liquid coverage — liquid reserves ÷ current on-chain supply. How much '
+    + 'of circulating supply could be redeemed using only fast-access assets, '
+    + 'without selling slower holdings.',
+  netRedemptionFlow:
+    'Net redemption flow — the change in on-chain supply since the '
+    + 'attestation date. Negative = net redemptions (supply burned); '
+    + 'positive = net issuance (supply minted).',
+  tier:
+    'Liquidity tier — how fast a reserve line can fund redemptions. '
+    + 'liquid = immediate (cash, T-bills); moderate = days (longer repo, '
+    + 'corporate paper); illiquid = slow to realise.',
+  // operations-log column legend — one concise line per field.
+  log: {
+    time:    'Time — local clock time the event was logged.',
+    level:   'Level — OK (clean), WATCH (warnings raised), ERR (read failed), '
+      + 'WORK (agent task in progress), INFO (operator note).',
+    event:   'Event — which operation produced the line (SUPPLY read, ANALYZE '
+      + 'job, REGISTRY load, etc.).',
+    token:   'Token — the stablecoin instrument this line is about.',
+    supply:  'Supply — current native on-chain supply, compact magnitude '
+      + '(B = billion, M = million).',
+    chains:  'Chains — number of chain deployments the supply was summed across.',
+    delta:   'Δ change — measured percentage change in supply since the previous '
+      + 'real read. "flat" means no material move.',
+    bridged: 'Bridged — supply held as wrapped/bridged copies, excluded from the '
+      + 'native headline. 0 means none.',
+    verified:'Verified — source-verified deployments out of total. 6/6 is fully '
+      + 'verified; anything lower is read with lower confidence.',
+    warnings:'Warnings — count of agent warnings raised on this read. Blank when '
+      + 'there are none.',
+    detail:  'Detail — free-text status for non-SUPPLY events (job stage, error '
+      + 'message, counts).',
+  },
+};
+// best-effort match a guardrail check name to a tooltip
+function checkTip(name) {
+  const key = String(name || '').toLowerCase().trim();
+  if (tip.checks[key]) return tip.checks[key];
+  for (const k of Object.keys(tip.checks)) {
+    if (key.includes(k) || k.includes(key)) return tip.checks[k];
+  }
+  return 'Deterministic guardrail check — a pass/fail rule run against the '
+    + 'extracted facts before any LLM synthesis.';
+}
+
+// ── plain-language presentation layer ────────────────────────────────
+// The underlying data carries engineer identifiers (technical guardrail
+// check ids, inline [tool:X] provenance markers). The package keeps them
+// — a citation-verification guardrail depends on them. These maps live
+// at the DISPLAY layer only: they translate those identifiers into plain
+// language a compliance officer or financial analyst reads. The raw
+// values are never mutated, only re-labelled at render time.
+
+// every guardrail check id enumerated from src/sca/validation.py →
+// a clear, audience-appropriate label.
+const CHECK_LABELS = {
+  // attestation guardrails
+  reserves_positive: 'Reserves are positive',
+  tokens_positive: 'Tokens outstanding are positive',
+  breakdown_sums_to_total: 'Reserve breakdown reconciles to total',
+  attestation_date_valid: 'Attestation date valid',
+  extraction_confidence: 'Attestation read with confidence',
+  // metrics guardrail
+  coverage_plausible: 'Coverage ratio plausible',
+  // supply guardrail
+  supply_resolved: 'Supply confirmed',
+  // sanctions guardrails
+  sdn_list_loaded: 'Sanctions list loaded',
+  sdn_list_fresh: 'Sanctions list current',
+  no_sanctioned_addresses: 'No sanctioned addresses',
+  // redemption guardrails
+  liquid_coverage_plausible: 'Liquid coverage plausible',
+  reserve_classification_complete: 'Reserve breakdown classified',
+  // citation-verification guardrails
+  citations_tool_valid: 'Sources verified',
+  citations_source_valid: 'Regulatory citations verified',
+  figures_traceable: 'Figures traced to data',
+};
+
+// humanise any check name not in the map — underscores to spaces,
+// sentence-cased — so an unmapped id never reaches the audience raw.
+function checkLabel(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return 'Guardrail check';
+  if (CHECK_LABELS[raw]) return CHECK_LABELS[raw];
+  const key = raw.toLowerCase();
+  if (CHECK_LABELS[key]) return CHECK_LABELS[key];
+  const words = raw.replace(/[_-]+/g, ' ').trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+// inline [tool:X] provenance markers → plain-language provenance label.
+const TOOL_PROVENANCE = {
+  onchain_supply: 'on-chain data',
+  attestation_extract: 'the attestation',
+  attestation_fetch: 'the attestation',
+  metrics: 'calculated',
+  sanctions: 'OFAC SDN list',
+  redemption: 'reserve analysis',
+};
+function toolProvenance(id) {
+  const key = String(id || '').toLowerCase().trim();
+  return TOOL_PROVENANCE[key]
+    || key.replace(/[_-]+/g, ' ').trim()
+    || 'source data';
+}
+
+// a corpus citation slug ([mica-title-iii §Article 36]) → clean source
+// label. Compliance audiences want regulatory citations — kept, just
+// rendered legibly: the registry slug becomes a recognisable name and
+// the section is joined with an en dash.
+const CORPUS_SOURCE_NAMES = {
+  'mica-title-iii': 'MiCA',
+  'mica-title-iv': 'MiCA',
+  mica: 'MiCA',
+  'gerie-act': 'GENIUS Act',
+  genius: 'GENIUS Act',
+  'genius-act': 'GENIUS Act',
+};
+function corpusSourceName(slug) {
+  const key = String(slug || '').toLowerCase().trim();
+  if (CORPUS_SOURCE_NAMES[key]) return CORPUS_SOURCE_NAMES[key];
+  // strip a trailing "-title-iii" style qualifier, then title-case
+  const base = key.replace(/-title-[ivx]+$/i, '');
+  if (CORPUS_SOURCE_NAMES[base]) return CORPUS_SOURCE_NAMES[base];
+  return base.replace(/[_-]+/g, ' ').replace(/\b\w/g,
+    (c) => c.toUpperCase());
+}
+
+// tidy a check-detail string: drop technical key=value phrasing for plain
+// text. Light touch — leaves prose details untouched.
+function cleanDetail(detail) {
+  let s = String(detail || '');
+  if (!s) return s;
+  // total_supply=73,410,450,793  →  Total supply: 73,410,450,793
+  s = s.replace(/\b([a-z][a-z0-9_]*)\s*=\s*/gi, (_, key) => {
+    const words = key.replace(/[_-]+/g, ' ').trim();
+    return words.charAt(0).toUpperCase() + words.slice(1) + ': ';
+  });
+  // drop a leading "tool" word should it ever appear in a detail string
+  s = s.replace(/\btool outputs\b/gi, 'the source data')
+       .replace(/\btool citations?\b/gi, 'source references');
+  return s;
+}
+
+// strip a leading "technical_check_name:" prefix from a gap message and
+// replace it with the plain check label.
+function cleanGapMessage(message) {
+  const s = String(message || '');
+  const m = s.match(/^\s*([a-z][a-z0-9_]*)\s*:\s*([\s\S]*)$/i);
+  if (m && (CHECK_LABELS[m[1]] || /_/.test(m[1]))) {
+    return checkLabel(m[1]) + ' — ' + cleanDetail(m[2]);
+  }
+  return cleanDetail(s);
+}
+
+// resolve the plain-language "why" for a gap, keyed by its category. Returns
+// {kind, text} — kind distinguishes an issuer-transparency limit from an
+// action the operator can take, so the gap reads as honest transparency.
+function gapWhy(category) {
+  const key = String(category || 'data').toLowerCase().trim();
+  return tip.gapWhy[key] || {
+    kind: 'open item',
+    text: 'The agent reached what it could and is reporting this honestly as '
+      + 'an open item rather than omitting it.',
+  };
+}
+
+// ── the operations feed — dense but legible, column-structured ───────
+// Every row shares the same labelled column grid (see .log-line CSS and
+// the LOG-HEADER row): time · level · event · then data fields. A SUPPLY
+// row fills the named columns (token·supply·chains·Δ·bridged·verified·
+// warnings); other events fill a single wide DETAIL column instead.
+let _feedId = 0;
+function logLine(level, tag, data, detail) {
+  STATE.feed.push({
+    _id: ++_feedId, time: clockStr(), level, tag, data, detail: detail || null,
+  });
+  if (STATE.feed.length > FEED_MAX) STATE.feed.shift();
+  STATE.feedSeq++;
+  renderFeedTail();
+  const ln = $('#ts-lines');
+  if (ln) ln.textContent = STATE.feedSeq;
+}
+// a data segment — text + optional colour class. Used for the free-text
+// DETAIL column on non-SUPPLY events.
+const seg = (t, c = '') => ({ t: String(t), c });
+
+// a fully column-structured SUPPLY line — values land in fixed,
+// header-labelled columns so nothing ever runs together. `snap` carries
+// the full event payload (per-chain rows, warnings, read timestamp, the
+// previous native read) so the click-to-expand detail panel can show the
+// real data behind the row without re-fetching or fabricating.
+function supplyLine(level, sym, native, chains, delta, bridged, verified, warn, snap) {
+  STATE.feed.push({
+    _id: ++_feedId, time: clockStr(), level, tag: 'SUPPLY', kind: 'supply',
+    sym, native, chains, delta, bridged, verified, warn,
+    snap: snap || null,
+  });
+  if (STATE.feed.length > FEED_MAX) STATE.feed.shift();
+  STATE.feedSeq++;
+  renderFeedTail();
+  const ln = $('#ts-lines');
+  if (ln) ln.textContent = STATE.feedSeq;
+}
+
+// one fixed cell in a log row — class names the column for CSS alignment
+function cell(col, text, extra = '', title = '') {
+  return el('span',
+    { class: ('lg-c lg-' + col + (extra ? ' ' + extra : '')).trim(),
+      title: title || null },
+    text);
+}
+
+// the labelled column header that sits above the feed
+function feedHeaderRow() {
+  const t = tip.log;
+  return el('div', { class: 'log-line log-head' },
+    cell('time', 'TIME', '', t.time),
+    cell('lvl', 'LVL', '', t.level),
+    cell('tag', 'EVENT', '', t.event),
+    cell('sym', 'TOKEN', '', t.token),
+    cell('val', 'SUPPLY', '', t.supply),
+    cell('chains', 'CHAINS', '', t.chains),
+    cell('delta', 'Δ CHANGE', '', t.delta),
+    cell('brdg', 'BRIDGED', '', t.bridged),
+    cell('vfy', 'VERIFIED', '', t.verified),
+    cell('warn', 'WARNINGS', '', t.warnings),
+  );
+}
+
+function feedRowNode(l) {
+  const t = tip.log;
+  const row = el('div', {
+    class: 'log-line log-click' + (l._open ? ' log-open' : ''),
+    'data-feed-id': l._id,
+    title: 'click to ' + (l._open ? 'collapse' : 'expand') + ' — event detail',
+    onclick: (e) => {
+      // never hijack a click on a link inside the row (e.g. an addr-link)
+      if (e.target.closest && e.target.closest('a')) return;
+      toggleFeedDetail(l);
+    },
+  },
+    cell('time', l.time, '', t.time),
+    cell('lvl', l.level, 'lvl-' + l.level, tip.log.level),
+    cell('tag', l.tag || '', '', t.event),
+  );
+  if (l.kind === 'supply') {
+    const d = l.delta;
+    const dTxt = (d == null || Math.abs(d * 100) < 0.005)
+      ? 'flat'
+      : (d > 0 ? '+' : '') + (d * 100).toFixed(2) + '%';
+    row.append(
+      cell('sym', l.sym, 'lg-sym', t.token),
+      cell('val', fmtMag(l.native), 'lg-val', t.supply),
+      cell('chains', l.chains + ' chains', '', t.chains),
+      cell('delta', 'Δ ' + dTxt, deltaClass(d), t.delta),
+      cell('brdg', l.bridged > 0 ? fmtMag(l.bridged) : '0',
+        l.bridged > 0 ? 'd-warn' : 'v-muted', t.bridged),
+      cell('vfy', l.verified + '/' + l.chains,
+        l.verified === l.chains ? 'd-up' : 'd-warn', t.verified),
+      cell('warn', l.warn ? l.warn + ' warning' + (l.warn > 1 ? 's' : '') : '',
+        l.warn ? 'd-warn' : '', t.warnings),
+    );
+  } else {
+    // non-SUPPLY event — render the free-text segments in one wide column
+    const detail = el('span', { class: 'lg-c lg-detail', title: t.detail });
+    const data = l.data;
+    if (typeof data === 'string') {
+      detail.append(document.createTextNode(data));
+    } else if (Array.isArray(data)) {
+      data.forEach((dseg, i) => {
+        if (dseg == null) return;
+        if (i) detail.append(document.createTextNode('  ·  '));
+        detail.append(el('span', { class: (dseg.c || '').trim() || null }, dseg.t));
+      });
+    }
+    row.append(detail);
+  }
+  return row;
+}
+
+// ── click-to-expand detail panel ─────────────────────────────────────
+// An inline, terminal-grade panel rendered directly beneath a feed row.
+// Every figure is read from the row's OWN captured event data — nothing
+// is re-fetched or fabricated. Tailored per event type.
+
+// a labelled key/value line inside a detail panel
+function dKV(k, v, cls = '') {
+  return el('div', { class: 'ld-kv' },
+    el('span', { class: 'ld-k' }, k),
+    el('span', { class: 'ld-v ' + cls }, v));
+}
+// a section caption inside a detail panel
+function dCap(text) { return el('div', { class: 'ld-cap' }, text); }
+// the one-line plain-language explainer strip
+function dNote(text) { return el('div', { class: 'ld-note' }, text); }
+
+function feedDetailPanel(l) {
+  const panel = el('div', { class: 'log-detail-panel' });
+  const box = el('div', { class: 'ld-box' });
+  panel.append(box);
+
+  if (l.kind === 'supply') {
+    buildSupplyDetail(l, box);
+  } else {
+    buildEventDetail(l, box);
+  }
+  return panel;
+}
+
+// SUPPLY rows — the richest case: per-chain breakdown, read timestamp,
+// measured Δ vs the previous read, bridged figure, warnings, plus a
+// one-line plain explanation and a jump to the full F2 analysis.
+function buildSupplyDetail(l, box) {
+  const s = l.snap || {};
+  const chains = s.per_chain || [];
+
+  box.append(dNote('A SUPPLY read sums the token’s on-chain circulating '
+    + 'supply directly from each chain’s contract — a deterministic chain '
+    + 'read, taken fresh every poll. The headline counts native issuance only.'));
+
+  // context strip
+  const ctx = el('div', { class: 'ld-strip' });
+  ctx.append(dKV('TOKEN', l.sym, 'v-gold'));
+  ctx.append(dKV('NATIVE SUPPLY', fmtNum(l.native, 0)));
+  ctx.append(dKV('GROSS (incl. bridged)',
+    fmtNum((l.native || 0) + (l.bridged || 0), 0)));
+  ctx.append(dKV('BRIDGED', l.bridged > 0 ? fmtNum(l.bridged, 0) : 'none',
+    l.bridged > 0 ? 'v-amber' : 'v-muted'));
+  // measured delta vs the previous real read
+  if (s.prev_native != null) {
+    const abs = (l.native || 0) - s.prev_native;
+    const dCls = abs > 0 ? 'd-up' : abs < 0 ? 'd-dn' : 'v-muted';
+    ctx.append(dKV('Δ VS PREVIOUS READ',
+      (abs >= 0 ? '+' : '') + fmtNum(abs, 0) + '  (' + fmtDelta(l.delta) + ')',
+      dCls));
+  } else {
+    ctx.append(dKV('Δ VS PREVIOUS READ', 'first read this session — no baseline',
+      'v-muted'));
+  }
+  ctx.append(dKV('VERIFIED DEPLOYMENTS', l.verified + ' / ' + l.chains,
+    l.verified === l.chains ? 'd-up' : 'd-warn'));
+  ctx.append(dKV('READ TIMESTAMP', s.read_at || l.time, 'v-muted'));
+  box.append(ctx);
+
+  // per-chain breakdown
+  if (chains.length) {
+    box.append(dCap('PER-CHAIN BREAKDOWN · ' + chains.length + ' deployment(s)'));
+    const rows = chains.map((c) => {
+      const isBridged = c.kind === 'bridged';
+      const verified = c.verified !== false;
+      const expUrl = explorerUrl(c.chain, c.contract);
+      const addrCell = expUrl
+        ? el('a', { class: 'addr addr-link', href: expUrl,
+            target: '_blank', rel: 'noopener noreferrer',
+            title: 'open contract on ' + c.chain + ' explorer' },
+            el('span', {}, c.contract), el('span', { class: 'addr-ext' }, '↗'))
+        : el('span', { class: 'addr' }, c.contract);
+      return el('tr', {},
+        el('td', {}, el('span', { class: 'chain-id' },
+          chainMark(c.chain, 'cmark-tbl'), c.chain)),
+        el('td', {}, addrCell),
+        el('td', {}, el('span', {
+          class: 'kind kind-' + (isBridged ? 'bridged' : 'native') },
+          isBridged ? 'bridged' : 'native')),
+        el('td', {}, el('span', {
+          class: 'vmark ' + (verified ? 'vmark-ok' : 'vmark-no'),
+          title: verified ? tip.verified : tip.unverified },
+          icon(verified ? 'i-ok' : 'i-warn'),
+          verified ? 'verified' : 'unverified')),
+        el('td', { class: 'num ' + (isBridged ? 'v-amber' : 'v-paper') },
+          fmtNum(c.supply, 0)));
+    });
+    box.append(el('table', { class: 'dtable ld-table' },
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'CHAIN'), el('th', {}, 'CONTRACT'),
+        el('th', {}, 'KIND'), el('th', {}, 'VERIFIED'),
+        el('th', { class: 'num' }, 'SUPPLY'))),
+      el('tbody', {}, ...rows)));
+  } else {
+    box.append(dNote('No per-chain breakdown was captured for this read.'));
+  }
+
+  // warnings
+  const warns = s.warnings || [];
+  if (warns.length) {
+    box.append(dCap('WARNINGS · ' + warns.length));
+    warns.forEach((w) => box.append(
+      el('div', { class: 'ld-warn' }, icon('i-warn'), el('span', {}, w))));
+  } else {
+    box.append(dCap('WARNINGS'));
+    box.append(el('div', { class: 'ld-clean' },
+      icon('i-ok'), el('span', {}, 'No warnings — read resolved cleanly.')));
+  }
+
+  // cross-surface linkage — jump to the full F2 analysis for this token
+  box.append(el('div', { class: 'ld-actions' },
+    el('a', { class: 'ld-link', href: '#analyze/' + l.sym,
+      title: 'open the full reserve analysis for ' + l.sym + ' in F2 Analyze' },
+      el('span', { class: 'glyph' }, '→'),
+      el('span', {}, 'open full analysis · F2 ' + l.sym))));
+}
+
+// non-SUPPLY events — ANALYZE stage rows, BOOT / REGISTRY / OK / ERR / MON.
+// Show the full untruncated message + a plain explanation of the event.
+function buildEventDetail(l, box) {
+  // full, untruncated event text reassembled from the row's data segments
+  const fullText = (() => {
+    if (typeof l.data === 'string') return l.data;
+    if (Array.isArray(l.data)) {
+      return l.data.filter(Boolean).map((d) => d.t).join('  ·  ');
+    }
+    return '';
+  })();
+
+  // an ANALYZE pipeline stage row — "stage N/M …"
+  let stageMatch = null;
+  if (Array.isArray(l.data)) {
+    for (const d of l.data) {
+      const mm = d && /^stage\s+(\d+)\/(\d+)/.exec(String(d.t).trim());
+      if (mm) { stageMatch = mm; break; }
+    }
+  }
+
+  const explainer = eventExplainer(l, stageMatch);
+  if (explainer) box.append(dNote(explainer));
+
+  if (stageMatch) {
+    box.append(el('div', { class: 'ld-strip' },
+      dKV('PIPELINE', 'ANALYZE · reserve reconciliation', 'v-gold'),
+      dKV('STAGE', stageMatch[1] + ' of ' + stageMatch[2]),
+      dKV('PROGRESS',
+        Math.round((Number(stageMatch[1]) / Number(stageMatch[2])) * 100) + '%')));
+  }
+
+  box.append(dCap('FULL EVENT'));
+  box.append(el('div', { class: 'ld-fulltext' },
+    el('span', { class: 'ld-stamp' }, l.time + '  ' + l.level + '  ' + (l.tag || '')),
+    el('div', {}, fullText || '(no further detail)')));
+
+  // surface any explicitly attached detail payload verbatim
+  if (l.detail) {
+    box.append(dCap('CONTEXT'));
+    box.append(el('div', { class: 'ld-fulltext' }, String(l.detail)));
+  }
+}
+
+// a plain-language explanation tailored to the event type. Honest: if the
+// event carries little, it says so rather than inventing context.
+function eventExplainer(l, stageMatch) {
+  const tag = String(l.tag || '').toUpperCase();
+  if (stageMatch) {
+    const stages = {
+      '1': 'reading live on-chain supply from every chain deployment.',
+      '2': 'resolving and extracting the latest reserve attestation.',
+      '3': 'running deterministic guardrail checks against the facts.',
+      '4': 'retrieving approved corpus passages for the reasoning frame.',
+      '5': 'synthesising the cited analysis narrative.',
+    };
+    const n = stageMatch[1];
+    return 'ANALYZE pipeline — stage ' + n + '/' + stageMatch[2] + ': '
+      + (stages[n] || 'a step of the reserve-reconciliation pipeline is running.')
+      + ' Each stage runs server-side; the feed narrates progress as it advances.';
+  }
+  if (tag === 'MON') {
+    return 'The monitor loop is armed — it re-reads on-chain supply for every '
+      + 'instrument on a fixed cadence. Values are held at their last real '
+      + 'read between polls, never simulated.';
+  }
+  if (tag === 'BOOT' || tag === 'REGISTRY') {
+    return 'A startup event — the terminal loaded its instrument registry and '
+      + 'brought the live monitor online.';
+  }
+  if (tag === 'ANALYZE') {
+    if (l.level === 'OK') return 'An ANALYZE job finished — the figures shown '
+      + 'are the headline coverage results; open F2 Analyze for the full report.';
+    if (l.level === 'ERR') return 'An ANALYZE job failed — the full error text '
+      + 'is shown below; the on-chain supply reads are unaffected.';
+    return 'An ANALYZE job event — a reserve-reconciliation run for this token.';
+  }
+  if (l.level === 'ERR') {
+    return 'An error event — the full message is shown below untruncated so the '
+      + 'cause is legible.';
+  }
+  if (l.level === 'OK') {
+    return 'A completed operation — the full result line is shown below.';
+  }
+  return 'Event detail — the full, untruncated log line for this event.';
+}
+
+// prepend the newest line(s) when the feed is mounted — reverse-chronological:
+// the newest line sits at the top, the feed grows downward into older entries.
+// A row may be followed by an inline .log-detail-panel sibling when expanded;
+// the rolling-buffer trim drops a row together with its detail panel.
+let _feedRendered = 0;
+function renderFeedTail() {
+  const feed = $('#op-feed');
+  if (!feed) { _feedRendered = STATE.feed.length; return; }
+  if (_feedRendered > STATE.feed.length) _feedRendered = 0; // feed trimmed
+  // viewing the top means following the live edge — pin back to it after insert
+  const atTop = feed.scrollTop <= 24;
+  // insert each new line at the top, oldest-of-the-new first so order holds
+  for (let i = _feedRendered; i < STATE.feed.length; i++) {
+    feed.insertBefore(feedRowNode(STATE.feed[i]), feed.firstChild);
+  }
+  // drop overflow rows from the bottom (oldest) to match the rolling buffer —
+  // a trimmed row takes its detail panel (if any) with it.
+  while (feed.querySelectorAll('.log-line').length > STATE.feed.length) {
+    let last = feed.lastChild;
+    while (last && last.classList && last.classList.contains('log-detail-panel')) {
+      const prev = last.previousSibling;
+      feed.removeChild(last);
+      last = prev;
+    }
+    if (last) feed.removeChild(last);
+  }
+  _feedRendered = STATE.feed.length;
+  if (atTop) feed.scrollTop = 0;
+}
+
+// expand / collapse the inline detail panel beneath a feed row. Keeps the
+// row in place — the panel is a sibling inserted directly after the row.
+function toggleFeedDetail(l) {
+  const feed = $('#op-feed');
+  if (!feed) return;
+  const row = feed.querySelector('.log-line[data-feed-id="' + l._id + '"]');
+  if (!row) return;
+  if (l._open) {
+    l._open = false;
+    row.classList.remove('log-open');
+    row.setAttribute('title', 'click to expand — event detail');
+    const panel = row.nextSibling;
+    if (panel && panel.classList && panel.classList.contains('log-detail-panel')) {
+      feed.removeChild(panel);
+    }
+    return;
+  }
+  l._open = true;
+  row.classList.add('log-open');
+  row.setAttribute('title', 'click to collapse — event detail');
+  const panel = feedDetailPanel(l);
+  feed.insertBefore(panel, row.nextSibling);
+}
+
+// ── the live monitor loop ────────────────────────────────────────────
+// One cadence keeps the monitor alive — and it only ever moves on REAL
+// data:
+//   • pollTick  — re-reads /api/supply/{sym} (server TTL-cached ~60s, so
+//     this is cheap), cycling one instrument per call. Emits a dense
+//     SUPPLY line with the real native figure + delta vs the last read.
+// Between real reads every displayed value is HELD at its last real
+// value — never walked, jittered, or estimated. Every figure on screen
+// traces to a real /api/supply or /api/analyze response.
+let _monitorTimer = null;
+let _monitorIdx = 0;
+STATE.anchor = {};  // symbol -> last real native value from a server read
+STATE.realDelta = {};  // symbol -> real change between the last two reads
+STATE.readAt = {};  // symbol -> clock time of the last real read
+
+function nativeOf(s) {
+  return s && s !== 'error' ? Number(s.native_supply || s.total_supply || 0) : null;
+}
+
+async function pollTick() {
+  if (!STATE.tokens.length) return;
+  const tok = STATE.tokens[_monitorIdx % STATE.tokens.length];
+  _monitorIdx++;
+  const sym = tok.symbol;
+  try {
+    const s = await api('/supply/' + sym);
+    const prevAnchor = STATE.anchor[sym];
+    STATE.supply[sym] = s;
+    const native = nativeOf(s);
+    const bridged = Number(s.bridged_supply || 0);
+    const chains = (s.per_chain || []).length;
+    const verified = (s.per_chain || []).filter((c) => c.verified !== false).length;
+    const warn = (s.warnings || []).length;
+    // delta vs last real read — a real measured change, not a simulation
+    const delta = prevAnchor ? (native - prevAnchor) / prevAnchor : null;
+    STATE.anchor[sym] = native;
+    STATE.realDelta[sym] = delta;
+    STATE.readAt[sym] = clockStr();
+    const level = warn ? 'WATCH' : 'OK';
+    // snapshot the full read so the click-to-expand detail panel shows the
+    // real per-chain breakdown / warnings / timestamps for THIS line, even
+    // after later polls overwrite STATE.supply[sym].
+    supplyLine(level, sym, native, chains, delta, bridged, verified, warn, {
+      per_chain: (s.per_chain || []).map((c) => ({ ...c })),
+      warnings: (s.warnings || []).slice(),
+      read_at: s.read_at || null,
+      total_supply: Number(s.total_supply || 0),
+      native, bridged,
+      prev_native: prevAnchor != null ? prevAnchor : null,
+    });
+    refreshGrid();
+    refreshInstruments();
+    refreshTicker();
+  } catch (e) {
+    STATE.supply[sym] = 'error';
+    logLine('ERR', 'SUPPLY', [
+      seg(sym.padEnd(5), 'lg-sym'),
+      seg('RPC-FAIL', 'd-warn'),
+      seg(String(e.message).slice(0, 48)),
+    ]);
+    refreshGrid();
+    refreshInstruments();
+    refreshTicker();
+  }
+}
+
+function startMonitor() {
+  if (STATE.monitorRunning) return;
+  STATE.monitorRunning = true;
+  logLine('WORK', 'MON', [
+    seg('loop armed', 'lg-val'),
+    seg(STATE.tokens.length + ' instr'),
+    seg('poll 3.4s'),
+    seg('values held between reads'),
+  ]);
+  pollTick();
+  _monitorTimer = setInterval(pollTick, 3400);
+}
+
+// ── live monitor grid (token table) ──────────────────────────────────
+function tokenStatus(s) {
+  if (s === 'error') return { tag: 'alert', label: 'ALERT' };
+  if (!s) return { tag: 'idle', label: 'PENDING' };
+  if ((s.warnings || []).length) return { tag: 'watch', label: 'WATCH' };
+  return { tag: 'ok', label: 'LIVE' };
+}
+
+function refreshGrid() {
+  const tbody = $('#grid-rows');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  STATE.tokens.forEach((t) => {
+    const s = STATE.supply[t.symbol];
+    const st = tokenStatus(s);
+    // displayed value is the real on-chain read — held static between polls
+    const native = nativeOf(s);
+    // real measured change between the last two real reads (null until 2 reads)
+    const delta = STATE.realDelta[t.symbol] != null ? STATE.realDelta[t.symbol] : null;
+    const readAt = STATE.readAt[t.symbol] || null;
+    const bridged = s && s !== 'error' ? Number(s.bridged_supply || 0) : null;
+    const gross = native != null ? native + (bridged || 0) : null;
+    const bShare = gross ? bridged / gross : null;
+    const chains = s && s !== 'error' ? (s.per_chain || []).length : null;
+    const verified = t.verified_count === t.chain_count;
+    tbody.append(el('tr', {
+      class: 'click',
+      onclick: () => { location.hash = '#analyze/' + t.symbol; },
+    },
+      el('td', { class: 'td-mark' }, tokenMark(t.symbol, 'tmark-grid')),
+      el('td', { class: 'sym' }, t.symbol),
+      el('td', { class: 'dim' }, t.issuer),
+      el('td', { class: 'num ' + (native == null ? 'v-muted' : 'v-paper'),
+        title: readAt ? 'on-chain read as of ' + readAt : null },
+        native == null ? '—' : fmtUSD(native)),
+      el('td', { class: 'num ' + (deltaClass(delta) || 'v-muted'),
+        title: tip.drift },
+        delta == null ? '—' : fmtDelta(delta)),
+      el('td', { class: 'num v-muted' }, chains == null ? '—' : chains),
+      el('td', { class: 'num ' + (bShare ? 'v-amber' : 'v-muted'),
+        title: tip.bridged },
+        bShare == null ? '—' : fmtPct(bShare)),
+      el('td', { class: 'num ' + (verified ? 'v-green' : 'v-amber'),
+        title: tip.verifiedRatio },
+        `${t.verified_count}/${t.chain_count}`),
+      el('td', {}, el('span', { class: 'stag ' + st.tag, title: tip.status[st.tag] },
+        st.label)),
+      el('td', {}, el('div', { style: 'display:flex;gap:8px' },
+        el('a', { class: 'cite', href: '#sanctions/' + t.symbol,
+          title: 'OFAC sanctions screen for ' + t.symbol,
+          onclick: (e) => { e.stopPropagation(); } },
+          el('span', { class: 'glyph' }, 'F5'), el('span', {}, 'screen')),
+        el('a', { class: 'cite', href: '#redemptions/' + t.symbol,
+          title: 'redemption-capacity assessment for ' + t.symbol,
+          onclick: (e) => { e.stopPropagation(); } },
+          el('span', { class: 'glyph' }, 'F6'), el('span', {}, 'redeem')))),
+    ));
+  });
+}
+
+// ── live ticker tape ─────────────────────────────────────────────────
+// Persistent marquee under the status bar. Numbers come straight from the
+// same STATE.supply / STATE.realDelta the monitor poll populates — one
+// source of truth, no invented or random-walked values. The horizontal
+// scroll is cosmetic CSS; the figures update only on a real poll and are
+// held static between reads.
+function tickItem(t) {
+  const s = STATE.supply[t.symbol];
+  const native = nativeOf(s);
+  const isErr = s === 'error';
+  const pending = native == null;
+  // real measured change between the last two real reads — never simulated
+  const delta = STATE.realDelta[t.symbol] != null
+    ? STATE.realDelta[t.symbol] : null;
+  const dCls = pending ? 'd-flat' : (deltaClass(delta) || 'd-flat');
+  // directional mark on the REAL delta — ▲ genuine rise, ▼ genuine fall.
+  // The flat state gets a designed hollow diamond, not a dead dash.
+  const arrow = dCls === 'd-up' ? '▲' : dCls === 'd-dn' ? '▼' : '◇';
+  // absolute supply move, for the dense secondary figure
+  const absMove = (delta != null && native != null)
+    ? native * delta : null;
+  const item = el('span', {
+    class: 'tick-item' + (isErr ? ' tick-err' : '')
+      + (pending ? ' tick-pending' : ''),
+  },
+    // brand-coloured token mark — always present, carries colour even
+    // when supply is flat. Reuses the tokenMark() sprite + data-token.
+    tokenMark(t.symbol, 'tmark-tick'),
+    // the symbol carries its brand colour too — data-token drives the
+    // per-token hue in CSS, so every item is vivid by brand identity.
+    el('span', { class: 'tick-sym', 'data-token': t.symbol }, t.symbol),
+    el('span', { class: 'tick-val' }, pending ? '— —' : fmtUSD(native)),
+  );
+  if (isErr) {
+    item.append(el('span', { class: 'tick-delta d-flat' },
+      el('span', { class: 'tick-arrow' }, '×'),
+      el('span', { class: 'tick-pct' }, 'RPC')));
+  } else if (pending) {
+    item.append(el('span', { class: 'tick-delta d-flat' },
+      el('span', { class: 'tick-arrow' }, '◇'),
+      el('span', { class: 'tick-pct' }, 'AWAIT')));
+  } else {
+    // a flat reading shows a calm, deliberate "FLAT" label; a real move
+    // shows the signed percentage.
+    const dTxt = dCls === 'd-flat' ? 'FLAT' : fmtDelta(delta);
+    const dWrap = el('span', { class: 'tick-delta ' + dCls },
+      el('span', { class: 'tick-arrow' }, arrow),
+      el('span', { class: 'tick-pct' }, dTxt));
+    // show the honest absolute Δ alongside the % when there is real motion
+    if (dCls !== 'd-flat' && absMove != null) {
+      dWrap.append(el('span', { class: 'tick-abs' },
+        (absMove >= 0 ? '+' : '−') + fmtMag(Math.abs(absMove))));
+    }
+    item.append(dWrap);
+  }
+  return item;
+}
+
+function refreshTicker() {
+  const track = $('#ticker-track');
+  if (!track) return;
+  if (!STATE.tokens.length) {
+    track.innerHTML = '<span class="tick-empty">awaiting on-chain reads…</span>';
+    return;
+  }
+  track.innerHTML = '';
+  // two identical passes — the CSS marquee translates -50% for a seamless loop
+  for (let pass = 0; pass < 2; pass++) {
+    STATE.tokens.forEach((t) => track.append(tickItem(t)));
+  }
+}
+
+function refreshInstruments() {
+  const box = $('#side-instr');
+  if (!box) return;
+  box.innerHTML = '';
+  STATE.tokens.forEach((t) => {
+    const s = STATE.supply[t.symbol];
+    const st = tokenStatus(s);
+    // real on-chain read — held static between polls
+    const native = nativeOf(s);
+    box.append(el('div', {
+      class: 'instr-row' + (t.symbol === STATE.activeSymbol ? ' active' : ''),
+      onclick: () => { location.hash = '#analyze/' + t.symbol; },
+    },
+      el('div', { class: 'instr-id' },
+        tokenMark(t.symbol, 'tmark-side'),
+        el('div', {},
+          el('div', { class: 'instr-sym' }, t.symbol),
+          el('div', { class: 'instr-sub' }, t.issuer))),
+      el('div', {},
+        el('div', { class: 'instr-val ' + (native == null ? 'v-muted' : '') },
+          native == null ? '— —' : fmtUSD(native)),
+        el('div', { class: 'instr-stat v-' + ({ ok: 'green', watch: 'amber', alert: 'rose', idle: 'muted' }[st.tag]) },
+          st.label)),
+    ));
+  });
+  const c = $('#instr-count');
+  if (c) c.textContent = STATE.tokens.length;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  STATUS BAR
+// ════════════════════════════════════════════════════════════════════
+function tickClock() {
+  const c = $('#ts-clock');
+  if (c) c.textContent = clockStr();
+}
+async function pollHealth() {
+  const dot = $('#ts-dot'), conn = $('#ts-conn'), llm = $('#ts-llm'), tk = $('#ts-tokens');
+  try {
+    const h = await api('/health');
+    dot.className = 'dot live';
+    conn.textContent = 'ONLINE';
+    llm.textContent = h.llm_configured ? 'READY' : 'NO-KEY';
+    llm.style.color = h.llm_configured ? 'var(--green)' : 'var(--amber)';
+    tk.textContent = h.tokens;
+  } catch {
+    dot.className = 'dot bad';
+    conn.textContent = 'NO LINK';
+    conn.style.color = 'var(--rose)';
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  VIEW SHELL HELPERS
+// ════════════════════════════════════════════════════════════════════
+function viewHead(tag, title, sub, ...actions) {
+  return el('div', { class: 'view-head' },
+    el('span', { class: 'view-tag' }, tag),
+    el('span', { class: 'view-title' }, title),
+    sub ? el('span', { class: 'view-sub' }, sub) : null,
+    actions.length ? el('div', { class: 'view-actions' }, ...actions) : null,
+  );
+}
+function panel(num, title, iconId, body, bodyPad) {
+  return el('section', { class: 'panel fade-in' },
+    el('div', { class: 'panel-head' },
+      num ? el('span', { class: 'panel-num' }, num) : null,
+      el('span', { class: 'panel-title' }, title),
+      iconId ? icon(iconId, 'panel-ic') : null),
+    el('div', { class: 'panel-body' + (bodyPad ? ' pb-pad' : '') }, body),
+  );
+}
+function errorBox(title, msg, trace) {
+  return el('div', { class: 'error-box fade-in' },
+    el('div', { class: 'eb-head' }, title),
+    el('div', { class: 'eb-msg' }, msg || 'Unknown error'),
+    trace ? el('pre', {}, trace) : null);
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  MONITOR VIEW — the opening live stream
+// ════════════════════════════════════════════════════════════════════
+function viewMonitor() {
+  app.innerHTML = '';
+  _feedRendered = 0;
+  app.append(viewHead('F1', 'MONITOR',
+    'live operations feed · continuous on-chain surveillance'));
+
+  const body = el('div', { class: 'monitor' });
+
+  // feed zone — bar · labelled column header · scrolling feed
+  const feed = el('div', { class: 'feed', id: 'op-feed' });
+  body.append(el('div', { class: 'feed-zone' },
+    el('div', { class: 'feed-bar' },
+      el('span', { class: 'blink' }, '● LIVE'),
+      el('span', {}, 'OPERATIONS LOG'),
+      el('span', { class: 'feed-cols',
+        title: 'Self-updating feed — every line is a real event. SUPPLY = '
+          + 'real on-chain re-reads every 3.4s. Values are held at their '
+          + 'last real read between polls — never simulated. Hover any '
+          + 'column label below for what it means.' },
+        'live · auto-streaming · hover a column for help')),
+    feedHeaderRow(),
+    feed));
+
+  // grid zone
+  const gridTable = el('table', { class: 'dtable' },
+    el('thead', {}, el('tr', {},
+      el('th', { class: 'th-mark' }, ''),
+      el('th', {}, 'TOKEN'), el('th', {}, 'ISSUER'),
+      el('th', { class: 'num' }, 'SUPPLY · NATIVE'),
+      el('th', { class: 'num', title: tip.drift }, 'Δ DRIFT'),
+      el('th', { class: 'num' }, 'CHAINS'),
+      el('th', { class: 'num', title: tip.bridged }, 'BRIDGED %'),
+      el('th', { class: 'num', title: tip.verifiedRatio }, 'VERIFIED'),
+      el('th', {}, 'STATUS'),
+      el('th', { title: 'Jump to this token’s F5 sanctions screen or F6 '
+        + 'redemption assessment.' }, 'COMPLIANCE'))),
+    el('tbody', { id: 'grid-rows' }));
+  body.append(el('div', { class: 'grid-zone' },
+    el('div', { class: 'grid-bar' },
+      el('span', {}, 'INSTRUMENT MONITOR'),
+      el('span', { class: 'feed-cols', style: 'margin-left:auto' },
+        'live values · click a row → run analysis')),
+    gridTable));
+
+  app.append(body);
+
+  // backfill the feed buffer + grid — newest-first, newest at the top.
+  // a row left expanded keeps its inline detail panel directly beneath it.
+  for (let i = STATE.feed.length - 1; i >= 0; i--) {
+    const l = STATE.feed[i];
+    feed.append(feedRowNode(l));
+    if (l._open) feed.append(feedDetailPanel(l));
+  }
+  _feedRendered = STATE.feed.length;
+  feed.scrollTop = 0;
+  refreshGrid();
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  ANALYZE VIEW
+// ════════════════════════════════════════════════════════════════════
+let pollTimer = null;
+
+// ── result freshness ─────────────────────────────────────────────────
+// A compute is "fresh" for ten minutes. Inside that window a revisit is
+// served instantly from the cache (no motions); past it the result is
+// still shown instantly but flagged with a prominent REFRESH affordance.
+const FRESH_MS = 10 * 60 * 1000;
+
+// human "computed 3m ago" from a UTC ISO timestamp (or null when unknown)
+function freshnessAge(computedAt) {
+  if (!computedAt) return null;
+  const t = Date.parse(String(computedAt).replace(' ', 'T'));
+  if (Number.isNaN(t)) return null;
+  return Date.now() - t;
+}
+function fmtAgo(ms) {
+  if (ms == null) return 'just now';
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 45) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.round(h / 24) + 'd ago';
+}
+
+// the quiet "computed Nm ago" line shown on every rendered result. Once
+// the result is older than ten minutes it grows a prominent REFRESH
+// element; clicking it re-runs with refresh:true (a real recompute, so
+// the staged motions legitimately play).
+function freshnessStrip(computedAt, onRefresh) {
+  const ms = freshnessAge(computedAt);
+  const stale = ms != null && ms > FRESH_MS;
+  const strip = el('div', {
+    class: 'fresh-strip fade-in' + (stale ? ' stale' : ''),
+  });
+  strip.append(el('span', { class: 'fresh-dot' }));
+  strip.append(el('span', { class: 'fresh-txt' },
+    'computed ' + fmtAgo(ms)));
+  if (stale) {
+    strip.append(el('span', { class: 'fresh-flag' },
+      'result is over 10 minutes old'));
+    const btn = el('button', {
+      class: 'btn fresh-refresh',
+      title: 'Re-run a full recompute — live RPCs + LLM. The staged '
+        + 'progress plays because this is a genuine recompute.',
+      onclick: onRefresh,
+    }, icon('i-supply'), 'REFRESH');
+    strip.append(btn);
+  }
+  return strip;
+}
+
+function viewAnalyze(symbolFromHash) {
+  app.innerHTML = '';
+  _feedRendered = STATE.feed.length;
+
+  const input = el('input', {
+    class: 'tinput', type: 'text', placeholder: 'SYMBOL',
+    autocomplete: 'off', spellcheck: 'false',
+    value: symbolFromHash || STATE.activeSymbol || '',
+  });
+  const runBtn = el('button', { class: 'btn' }, icon('i-agent'), 'RUN');
+  const refreshBtn = el('button', {
+    class: 'btn ghost',
+    title: 'Force a full recompute — bypasses the analysis cache, re-reads '
+      + 'live RPCs and re-runs the LLM. Slow. Plain RUN reuses the cached '
+      + 'result instantly at zero cost.',
+  }, icon('i-supply'), 'FORCE REFRESH');
+  app.append(viewHead('F2', 'ANALYZE',
+    'reserve attestation reconciled against live on-chain supply',
+    input, runBtn, refreshBtn));
+
+  const mount = el('div', { class: 'view-body', id: 'an-mount' });
+  app.append(mount);
+
+  const run = () => {
+    const sym = input.value.trim().toUpperCase();
+    if (!sym) { flagEmptyInput(input); return; }
+    // Always trigger a run. Setting the hash only fires `hashchange` when
+    // the value actually changes, so when it is already the target we run
+    // the render path directly instead of relying on the event.
+    const target = '#analyze/' + sym;
+    if (location.hash === target) startAnalysis(sym, mount);
+    else location.hash = target;
+  };
+  runBtn.addEventListener('click', run);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+  refreshBtn.addEventListener('click', () => {
+    const sym = (input.value.trim().toUpperCase()) || symbolFromHash;
+    if (!sym) { flagEmptyInput(input); return; }
+    if (location.hash !== '#analyze/' + sym) location.hash = '#analyze/' + sym;
+    startAnalysis(sym, mount, true);
+  });
+
+  if (symbolFromHash) {
+    startAnalysis(symbolFromHash, mount);
+  } else {
+    mount.append(el('div', { class: 'empty' },
+      icon('i-agent'),
+      el('b', {}, 'Select an instrument'),
+      el('div', {}, 'Pick a token from the sidebar, or type a symbol and RUN. ' +
+        'The agent reads live supply, extracts the latest attestation, runs ' +
+        'guardrails, and synthesises a cited analysis.')));
+    // signed in → show the saved analysis history; anonymous → an
+    // invitation to sign in so future runs are kept.
+    renderHistory(mount);
+  }
+}
+
+// ── analysis history — the saved-runs ledger, signed-in users only ──
+async function renderHistory(mount) {
+  if (AUTH.client && !AUTH.signedIn()) {
+    mount.append(savePrompt('keep a history of every analysis you run'));
+    return;
+  }
+  if (!AUTH.signedIn()) return;  // no auth backend — nothing to show
+  let data;
+  try { data = await api('/history'); }
+  catch { return; }  // history is a bonus surface — never break the view
+  const list = el('div', { class: 'hist-list' });
+  if (!data.analyses.length) {
+    list.append(el('div', { class: 'hist-empty' },
+      'No saved analyses yet — run one and it will persist to your account.'));
+  } else {
+    data.analyses.forEach((a) => {
+      const when = a.created_at
+        ? new Date(a.created_at).toLocaleString() : '';
+      const row = el('div', { class: 'hist-row' },
+        el('span', { class: 'h-sym' }, a.symbol || '—'),
+        el('span', { class: 'h-surface' }, a.surface || 'attestation'),
+        el('span', { class: 'h-status ' + (a.status || '') }, a.status || ''),
+        el('span', { class: 'h-time' }, when));
+      if (a.symbol) {
+        row.addEventListener('click',
+          () => { location.hash = '#analyze/' + a.symbol; });
+      }
+      list.append(row);
+    });
+  }
+  mount.append(panel(null,
+    'YOUR ANALYSIS HISTORY · ' + (data.count || 0), 'i-doc', list));
+}
+
+// place the instrument's brand mark in the ANALYZE view header
+function setAnalyzeHeaderMark(symbol) {
+  const head = $('.view-head');
+  if (!head) return;
+  const existing = $('.view-mark', head);
+  if (existing) existing.remove();
+  if (!symbol) return;
+  const tag = $('.view-tag', head);
+  head.insertBefore(tokenMark(symbol, 'view-mark'), tag.nextSibling);
+}
+
+async function startAnalysis(symbol, mount, refresh = false) {
+  if (pollTimer) clearInterval(pollTimer);
+  STATE.activeSymbol = symbol;
+  setAnalyzeHeaderMark(symbol);
+  refreshInstruments();
+  mount.innerHTML = '';
+
+  logLine('WORK', 'ANALYZE', [
+    seg(symbol.padEnd(5), 'lg-sym'),
+    seg('job queued', 'lg-val'),
+    seg(refresh ? 'mode=refresh' : 'mode=cached',
+      refresh ? 'd-warn' : 'd-up'),
+  ]);
+
+  let job;
+  try {
+    job = await api('/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, refresh }),
+    });
+  } catch (e) {
+    logLine('ERR', 'ANALYZE', [
+      seg(symbol.padEnd(5), 'lg-sym'), seg('START-FAIL', 'd-warn'),
+      seg(String(e.message).slice(0, 48)),
+    ]);
+    mount.append(errorBox('Could not start analysis · ' + symbol, e.message));
+    return;
+  }
+
+  // Cached hit — the result was already computed and is still fresh. Render
+  // it instantly, no job to poll and no staged motions.
+  if (job.status === 'done') {
+    const m = job.result.metrics;
+    const gaps = (job.result.gaps || []).length;
+    logLine('OK', 'ANALYZE', [
+      seg(symbol.padEnd(5), 'lg-sym'),
+      seg('cached', 'd-up'),
+      seg('att' + (m ? fmtPct(m.attested_coverage) : 'n/a'),
+        m ? covClass(m.attested_coverage) : ''),
+      seg('lv' + (m ? fmtPct(m.live_coverage) : 'n/a'),
+        m ? covClass(m.live_coverage) : ''),
+      seg('gap' + gaps, gaps ? 'd-warn' : 'd-up'),
+    ]);
+    mount.innerHTML = '';
+    renderAnalysis(job.result, null, mount, job.computed_at,
+      () => startAnalysis(symbol, mount, true));
+    return;
+  }
+
+  const stages = job.stages || [];
+  const t0 = Date.now();
+  const clockSpan = el('span', { class: 'rs-tk' }, '0s');
+  const stageNodes = stages.map((label, i) =>
+    el('div', { class: 'rstage', 'data-i': i },
+      el('div', { class: 'rs-mark' }),
+      el('div', {}, label),
+      el('span', { class: 'rs-tk' }, 'S' + pad2(i + 1))));
+
+  const progress = panel(null, 'JOB ' + job.job_id.toUpperCase() + ' · ' + symbol, 'i-agent',
+    el('div', {},
+      el('div', { class: 'run-stages' }, ...stageNodes),
+      el('div', { class: 'scanbar' })));
+  // clock into the panel head
+  $('.panel-head', progress).insertBefore(
+    el('span', { class: 'rs-tk', style: 'margin-left:auto' }, ''), $('.panel-ic', progress));
+  const clockHost = $('.panel-head .rs-tk', progress);
+  mount.append(progress);
+
+  let stage = 0;
+  const advance = () => {
+    stageNodes.forEach((n, i) => {
+      n.className = 'rstage' + (i < stage ? ' done' : i === stage ? ' active' : '');
+    });
+  };
+  advance();
+  let lastLogged = -1;
+  const stageTimer = setInterval(() => {
+    if (stage < stages.length - 1) { stage++; advance(); }
+  }, 5200);
+  const clockTimer = setInterval(() => {
+    const s = Math.round((Date.now() - t0) / 1000) + 's';
+    clockHost.textContent = s;
+    if (stage !== lastLogged) {
+      lastLogged = stage;
+      logLine('WORK', 'ANALYZE', [
+        seg(symbol.padEnd(5), 'lg-sym'),
+        seg('stage ' + (stage + 1) + '/' + stages.length, 'lg-val'),
+        seg(s.padStart(4)),
+        seg(stages[stage]),
+      ]);
+    }
+  }, 250);
+
+  const finish = () => {
+    clearInterval(stageTimer); clearInterval(clockTimer);
+    clearInterval(pollTimer); pollTimer = null;
+  };
+
+  pollTimer = setInterval(async () => {
+    if (STATE.activeSymbol !== symbol) { finish(); return; }
+    let st;
+    try { st = await api('/analyze/' + job.job_id); }
+    catch (e) {
+      finish(); mount.innerHTML = '';
+      logLine('ERR', 'ANALYZE', [
+        seg(symbol.padEnd(5), 'lg-sym'), seg('POLL-FAIL', 'd-warn'),
+        seg(String(e.message).slice(0, 48)),
+      ]);
+      mount.append(errorBox('Polling failed · ' + symbol, e.message));
+      return;
+    }
+    if (st.status === 'running') return;
+    finish();
+    stage = stages.length; advance();
+    mount.innerHTML = '';
+    if (st.status === 'error') {
+      logLine('ERR', 'ANALYZE', [
+        seg(symbol.padEnd(5), 'lg-sym'), seg('FAILED', 'd-warn'),
+        seg(String(st.error).slice(0, 56)),
+      ]);
+      mount.append(errorBox('Analysis failed · ' + symbol, st.error, st.trace));
+    } else {
+      const m = st.result.metrics;
+      const gaps = (st.result.gaps || []).length;
+      logLine('OK', 'ANALYZE', [
+        seg(symbol.padEnd(5), 'lg-sym'),
+        seg('done ' + st.elapsed + 's', 'lg-val'),
+        seg('att' + (m ? fmtPct(m.attested_coverage) : 'n/a'),
+          m ? covClass(m.attested_coverage) : ''),
+        seg('lv' + (m ? fmtPct(m.live_coverage) : 'n/a'),
+          m ? covClass(m.live_coverage) : ''),
+        seg('gap' + gaps, gaps ? 'd-warn' : 'd-up'),
+      ]);
+      renderAnalysis(st.result, st.elapsed, mount,
+        new Date().toISOString(),
+        () => startAnalysis(symbol, mount, true));
+      // persistence is gated on an account: signed-in runs are saved to
+      // history, anonymous runs are transient. Reflect that, invitingly.
+      if (AUTH.client && !AUTH.signedIn()) {
+        mount.append(savePrompt(
+          'save this analysis to your history and revisit it later'));
+      } else if (AUTH.signedIn()) {
+        logLine('OK', 'ANALYZE', [seg(symbol.padEnd(5), 'lg-sym'),
+          seg('saved to history', 'd-up')]);
+      }
+    }
+  }, 1400);
+}
+
+// ── render a completed Analysis ──────────────────────────────────────
+function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
+  const m = a.metrics;
+  const att = a.attestation;
+  const supply = a.supply || {};
+
+  // freshness — a quiet "computed Nm ago" line; once stale (>10min) it
+  // surfaces a prominent REFRESH that triggers a real recompute.
+  if (computedAt !== undefined && onRefresh) {
+    mount.append(freshnessStrip(computedAt, onRefresh));
+  }
+
+  // bridged_share is a @property — not in dataclasses.asdict(). Compute it.
+  const nativeS = Number(supply.native_supply || 0);
+  const bridgedS = Number(supply.bridged_supply || 0);
+  const gross = nativeS + bridgedS;
+  const bridgedShare = gross ? bridgedS / gross : null;
+
+  // summary strip
+  mount.append(el('div', { class: 'strip fade-in' },
+    stripCell(a.symbol, 'TOKEN', 'v-gold'),
+    stripCell(att ? att.as_of_date : '—', 'ATTESTED AS OF'),
+    stripCell(fmtUSD(supply.total_supply), 'HEADLINE · NATIVE'),
+    stripCell(elapsed != null ? elapsed + 's' : '—', 'RUN TIME'),
+  ));
+
+  // ── 01 SNAPSHOT ──
+  // when coverage is n/a, the cell tooltip carries the WHY instead of the
+  // metric definition, and a subtle inline note explains the perceived gap.
+  const naCov = !m;
+  const cov = el('div', { class: 'cov-row' },
+    el('div', { class: 'cov-cell', title: naCov ? tip.na.coverage : tip.attested },
+      el('div', { class: 'cov-kick' }, 'ATTESTED COVERAGE — HONEST BACKING'),
+      el('div', { class: 'cov-big ' + covClass(m && m.attested_coverage) },
+        m ? fmtPct(m.attested_coverage) : 'n/a'),
+      el('div', { class: 'cov-desc' }, naCov
+        ? naFieldNote('No current attestation could be resolved — see GAPS '
+            + 'below. On-chain native supply is unaffected.')
+        : 'Reserves ÷ attested tokens outstanding. The issuer’s stated backing ' +
+          'ratio at the attestation date — unaffected by later supply moves.')),
+    el('div', { class: 'cov-cell', title: naCov ? tip.na.coverage : tip.live },
+      el('div', { class: 'cov-kick' }, 'LIVE COVERAGE — DRIFT-AFFECTED'),
+      el('div', { class: 'cov-big ' + covClass(m && m.live_coverage) },
+        m ? fmtPct(m.live_coverage) : 'n/a'),
+      el('div', { class: 'cov-desc' }, naCov
+        ? naFieldNote('No current attestation could be resolved — see GAPS '
+            + 'below. On-chain native supply is unaffected.')
+        : 'Attested reserves ÷ current on-chain supply. Diverges from the attested ' +
+          'ratio as supply changes after the attestation date.')),
+  );
+
+  const mgrid = el('div', { class: 'mgrid' },
+    mcell('ON-CHAIN SUPPLY · NATIVE', fmtNum(supply.total_supply, 0), 'v-paper',
+      `${(supply.per_chain || []).length} deployment(s) · excludes bridged`, 'i-supply'),
+    mcell('ATTESTED RESERVES', att ? fmtUSD(att.total_reserves) : 'n/a', 'v-gold',
+      att ? 'from the latest attestation'
+          : naFieldNote('no attestation resolved — hover'),
+      'i-doc', att ? null : tip.na.reserves),
+    mcell('TOKENS OUTSTANDING', att ? fmtNum(att.tokens_outstanding, 0) : 'n/a',
+      'v-paper',
+      att ? 'per the attestation' : naFieldNote('no attestation resolved — hover'),
+      'i-metric', att ? null : tip.na.tokens),
+    mcell('EXTRACTION CONFIDENCE', att ? fmtPct(att.confidence) : 'n/a',
+      att && att.confidence >= 0.6 ? 'v-green' : 'v-amber',
+      att ? 'LLM structured-extraction score'
+          : naFieldNote('nothing to extract — hover'),
+      'i-cite', att ? tip.confidence : tip.na.confidence),
+    mcell('STALENESS', m && att ? m.staleness_days + ' days' : 'n/a',
+      m && att && m.staleness_days > 35 ? 'v-amber' : 'v-paper',
+      m && att ? 'age of the attestation'
+               : naFieldNote('no attestation date — hover'),
+      'i-gate', m && att ? tip.staleness : tip.na.staleness),
+    mcell('SUPPLY DRIFT', m && m.supply_drift != null ? fmtPct(m.supply_drift) : 'n/a',
+      'v-paper',
+      m && m.supply_drift != null ? 'supply move since attestation'
+                                  : naFieldNote('no attestation baseline — hover'),
+      'i-metric', m && m.supply_drift != null ? tip.drift : tip.na.drift),
+  );
+
+  const snapBody = el('div', {}, cov, mgrid);
+
+  // when no attestation could be resolved, the n/a fields above all trace to
+  // the same cause — surface it once, plainly, as honest transparency.
+  if (!att) {
+    snapBody.append(el('div', { class: 'prov-note na-prov' },
+      icon('i-info'),
+      el('div', {},
+        el('b', {}, 'Why these fields read n/a · issuer-transparency limit. '),
+        'No current reserve attestation could be machine-resolved for this ' +
+        'issuer — the document may sit behind a JavaScript-rendered page with ' +
+        'no reachable source, the issuer may have no transparency source ' +
+        'configured, or a shared issuer page may carry no token-specific ' +
+        'report. The tool reports what it can honestly reach. ',
+        el('b', {}, 'The on-chain supply figures are unaffected'),
+        ' — they are direct chain reads, independent of any attestation.')));
+  }
+
+  // supply provenance
+  snapBody.append(el('div', { class: 'sub-head' }, 'SUPPLY PROVENANCE — NATIVE VS BRIDGED'));
+  snapBody.append(el('div', { class: 'mgrid', style: 'border-top:none' },
+    mcell('NATIVE SUPPLY', fmtUSD(nativeS), 'v-green',
+      'genuine issuance — forms the headline', 'i-supply'),
+    mcell('BRIDGED SUPPLY', fmtUSD(bridgedS),
+      bridgedS > 0 ? 'v-amber' : 'v-muted',
+      'wrapped / bridged copies — shown, excluded', 'i-chain'),
+    mcell('BRIDGED SHARE', fmtPct(bridgedShare),
+      bridgedShare ? 'v-amber' : 'v-muted',
+      'bridged ÷ (native + bridged)', 'i-metric', tip.bridged),
+  ));
+  snapBody.append(el('div', { class: 'prov-note' },
+    icon('i-info'),
+    el('div', {},
+      el('b', {}, 'Headline supply is native-only. '),
+      'Bridged copies are collateralised by locked native supply — summing both ' +
+      'would double-count, so bridged is surfaced as its own metric but excluded ' +
+      'from the headline figure.')));
+  if (supply.read_at) {
+    snapBody.append(el('div', { class: 'prov-stamp' },
+      el('span', { class: 'glyph' }, '§'),
+      'on-chain reads taken at ' + supply.read_at));
+  }
+
+  // per-chain table
+  if ((supply.per_chain || []).length) {
+    snapBody.append(el('div', { class: 'sub-head' }, 'PER-CHAIN SUPPLY BREAKDOWN'));
+    const rows = supply.per_chain.map((c) => {
+      const isBridged = c.kind === 'bridged';
+      const verified = c.verified !== false;
+      const expUrl = explorerUrl(c.chain, c.contract);
+      const addrCell = expUrl
+        ? el('a', {
+            class: 'addr addr-link',
+            href: expUrl, target: '_blank', rel: 'noopener noreferrer',
+            title: 'open contract on ' + c.chain + ' explorer' },
+            el('span', {}, c.contract),
+            el('span', { class: 'addr-ext' }, '↗'))
+        : el('span', { class: 'addr' }, c.contract);
+      return el('tr', {},
+        el('td', {}, el('span', { class: 'chain-id' },
+          chainMark(c.chain, 'cmark-tbl'), c.chain)),
+        el('td', {}, addrCell),
+        el('td', {}, el('span', {
+          class: 'kind has-tip kind-' + (isBridged ? 'bridged' : 'native'),
+          title: isBridged ? tip.kindBridged : tip.kindNative },
+          isBridged ? 'bridged' : 'native')),
+        el('td', {}, el('span', {
+          class: 'vmark has-tip ' + (verified ? 'vmark-ok' : 'vmark-no'),
+          title: verified ? tip.verified : tip.unverified },
+          icon(verified ? 'i-ok' : 'i-warn'),
+          verified ? 'verified' : 'unverified')),
+        el('td', { class: 'num dim' }, c.decimals),
+        el('td', { class: 'num ' + (isBridged ? 'v-amber' : 'v-paper') }, fmtNum(c.supply, 0)),
+      );
+    });
+    snapBody.append(el('table', { class: 'dtable' },
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'CHAIN'), el('th', {}, 'CONTRACT'),
+        el('th', { title: tip.kindNative + '  /  ' + tip.kindBridged }, 'KIND'),
+        el('th', { title: tip.verified }, 'VERIFIED'),
+        el('th', { class: 'num' }, 'DECIMALS'), el('th', { class: 'num' }, 'SUPPLY'))),
+      el('tbody', {}, ...rows)));
+  }
+  if ((supply.warnings || []).length) {
+    snapBody.append(el('div', { class: 'sub-head' }, 'SUPPLY WARNINGS'));
+    supply.warnings.forEach((w) => snapBody.append(
+      el('div', { class: 'gap gap-warn' }, icon('i-warn'), el('div', { class: 'gap-msg' }, w))));
+  }
+  mount.append(panel('01', 'SNAPSHOT', 'i-facts', snapBody));
+
+  // ── 02 GUARDRAIL CHECKS ──
+  const checks = a.checks || [];
+  mount.append(panel('02', `GUARDRAIL CHECKS · ${checks.length}`, 'i-gate',
+    checks.length
+      ? el('div', {}, ...checks.map(renderCheck))
+      : el('div', { class: 'empty' }, icon('i-gate'), el('b', {}, 'No checks ran.'))));
+
+  // ── 03 REASONING FRAME ──
+  const passages = a.passages || [];
+  mount.append(panel('03', `REASONING FRAME · APPROVED CORPUS · ${passages.length}`, 'i-frame',
+    passages.length
+      ? el('div', {}, ...passages.map(renderPassage))
+      : el('div', { class: 'empty' }, icon('i-frame'),
+          el('b', {}, 'No approved corpus passages retrieved'),
+          el('div', {}, 'Judgements remain unsupported until a human approves sources.'))));
+
+  // ── 04 ANALYSIS NARRATIVE ──
+  mount.append(panel('04', 'ANALYSIS', 'i-agent',
+    a.narrative
+      ? el('div', { class: 'narrative', html: markdown(a.narrative) })
+      : el('div', { class: 'empty' }, icon('i-agent'), el('b', {}, 'No narrative synthesised.'))));
+
+  // ── 05 CONFIDENCE & GAPS ──
+  const gaps = a.gaps || [];
+  const confBody = el('div', {});
+  if (att) {
+    confBody.append(el('div', { class: 'pb-pad', style: 'padding-bottom:4px' },
+      el('div', { class: 'cov-kick' }, 'ATTESTATION EXTRACTION CONFIDENCE'),
+      el('div', { style: 'display:flex;align-items:center;gap:12px;margin-top:6px' },
+        el('div', { class: 'mcell-val ' + (att.confidence >= 0.6 ? 'v-green' : 'v-amber'),
+          style: 'margin:0' }, fmtPct(att.confidence)),
+        el('div', { class: 'cbar', style: 'flex:1' },
+          el('div', { class: 'cfill', style: `width:${Math.min(100, att.confidence * 100)}%` }))),
+      att.source_url
+        ? el('div', { class: 'cite-row' },
+            citeChip('source attestation', att.source_url, att.source_pages))
+        : null));
+  }
+  confBody.append(el('div', { class: 'sub-head' }, `GAPS & OPEN ITEMS · ${gaps.length}`));
+  if (gaps.length) {
+    gaps.forEach((g) => confBody.append(renderGap(g)));
+  } else {
+    confBody.append(el('div', { class: 'check' },
+      icon('i-ok'),
+      el('div', { class: 'check-name v-green' },
+        'No gaps reported — facts, frame and synthesis all resolved.'),
+      el('span', { class: 'sev pass' }, 'clear')));
+  }
+  mount.append(panel('05', 'CONFIDENCE & GAPS', 'i-human', confBody));
+
+  // re-run affordance + cross-surface linkage — jump straight to this
+  // token's sanctions screen and redemption assessment.
+  mount.append(el('div', { style: 'padding:0 14px 24px;display:flex;gap:8px;flex-wrap:wrap' },
+    el('button', { class: 'btn ghost',
+      onclick: () => startAnalysis(a.symbol, mount) },
+      icon('i-agent'), 'RE-RUN ' + a.symbol),
+    el('button', { class: 'btn ghost',
+      title: 'Screen ' + a.symbol + ' deployment addresses against the OFAC SDN list',
+      onclick: () => { location.hash = '#sanctions/' + a.symbol; } },
+      icon('i-sanction'), 'SANCTIONS ' + a.symbol),
+    el('button', { class: 'btn ghost',
+      title: 'Assess ' + a.symbol + ' redemption capacity and reserve liquidity',
+      onclick: () => { location.hash = '#redemptions/' + a.symbol; } },
+      icon('i-redeem'), 'REDEMPTIONS ' + a.symbol)));
+}
+
+function stripCell(value, cap, cls = 'v-paper') {
+  return el('div', { class: 'strip-cell' },
+    el('div', { class: 'strip-val ' + cls }, value),
+    el('div', { class: 'strip-cap' }, cap));
+}
+function mcell(label, value, cls, note, iconId, hint) {
+  return el('div', { class: 'mcell' + (hint ? ' has-tip' : ''), title: hint || null },
+    el('div', { class: 'mcell-label' }, icon(iconId), el('span', {}, label)),
+    el('div', { class: 'mcell-val ' + cls }, value),
+    note != null ? el('div', { class: 'mcell-note' }, note) : null);
+}
+// a quiet inline note for an n/a / perceived-gap field — gold-dotted so it
+// reads as "explained, hover for why" rather than as an error.
+function naFieldNote(text) {
+  return el('span', { class: 'na-note' }, text);
+}
+
+function renderCheck(c) {
+  const sev = c.severity || 'info';
+  const iconId = c.passed ? 'i-ok' : (sev === 'critical' ? 'i-error' : sev === 'warn' ? 'i-warn' : 'i-info');
+  const failCls = c.passed ? '' : ' fail-' + sev;
+  // raw check id stays available on hover for traceability; the audience
+  // reads the plain label.
+  const titleText = checkTip(c.name) + '  ·  check: ' + String(c.name || '');
+  return el('div', { class: 'check' + failCls },
+    icon(iconId),
+    el('div', {},
+      el('div', { class: 'check-name has-tip', title: titleText },
+        checkLabel(c.name)),
+      c.detail ? el('div', { class: 'check-detail' }, cleanDetail(c.detail)) : null),
+    el('span', { class: 'sev ' + (c.passed ? 'pass' : 'sev-' + sev) }, c.passed ? 'pass' : sev));
+}
+
+function renderGap(g) {
+  if (typeof g === 'string') g = { severity: 'warn', category: 'data', message: g };
+  const sev = g.severity || 'warn';
+  const iconId = sev === 'critical' ? 'i-error' : sev === 'info' ? 'i-info' : 'i-warn';
+  const cat = g.category || 'data';
+  const why = gapWhy(cat);
+  // kind-tag colour cue — an action you can take is amber-actionable; an
+  // issuer limit is muted (nothing to fix on our side).
+  const kindCls = why.kind === 'awaiting your action' ? 'gap-kind-action'
+    : 'gap-kind-limit';
+  return el('div', { class: 'gap gap-' + sev },
+    icon(iconId),
+    el('div', {},
+      el('div', { class: 'gap-msg' }, cleanGapMessage(g.message || '')),
+      // plain-language "why" — a subtle inline sub-line so a viewer can see
+      // this is honest transparency, not an error.
+      el('div', { class: 'gap-why' },
+        el('span', { class: 'gap-why-kind ' + kindCls }, why.kind),
+        el('span', { class: 'gap-why-text' }, why.text)),
+      el('div', { class: 'gap-tags' },
+        el('span', { class: 'gap-cat has-tip', title: why.text }, cat),
+        el('span', { class: 'gap-sev sev-' + sev }, sev))));
+}
+
+function renderPassage(p) {
+  return el('div', { class: 'passage' },
+    el('div', { class: 'passage-head' },
+      icon('i-frame'),
+      el('span', { class: 'passage-heading' }, p.heading || p.section || p.source_id),
+      el('span', { class: 'passage-section' },
+        [p.source_id, p.section].filter(Boolean).join(' · ')),
+      p.score != null ? el('span', { class: 'score' }, 'score ' + Number(p.score).toFixed(3)) : null),
+    el('div', { class: 'passage-text' }, p.text || ''),
+    el('div', { class: 'cite-row' }, citeChip(p.citation, p.url, p.page != null ? [p.page] : null)));
+}
+
+function citeChip(citation, url, pages) {
+  if (!citation) return null;
+  const pageLabel = (pages && pages.length) ? ' · p.' + pages.join(', ') : '';
+  const inner = [el('span', { class: 'glyph' }, '§'),
+    el('span', {}, citation + pageLabel)];
+  if (url) return el('a', { class: 'cite', href: url, target: '_blank', rel: 'noopener' }, ...inner);
+  return el('span', { class: 'cite', title: 'Citation reference (not resolvable to a URL)' }, ...inner);
+}
+
+// ── narrative emoji scrub ────────────────────────────────────────────
+// LLM-generated narratives use raw emoji as status markers. Raw emoji are
+// strictly off-brand — none may ever render. Status emoji are mapped to
+// the exact brand SVG sprites used by the guardrail-check rows (renderCheck:
+// i-ok / i-error / i-warn / i-info); every other emoji is stripped.
+//
+// Each status emoji is first swapped for an ASCII sentinel token BEFORE
+// markdown escaping, then the token is replaced with inline SVG markup
+// AFTER the HTML string is assembled — so the SVG survives esc() untouched
+// and renders correctly inside paragraphs and table cells.
+// Placeholders are plain ASCII sentinels that never appear in real prose
+// and pass through esc() unchanged. An optional trailing variation
+// selector (U+FE0F) is consumed with the emoji so no stray glyph survives.
+const EMOJI_ICON = [
+  // pass — green
+  { re: /[✅✔✓☑\u{1F7E2}\u{1F7E9}]️?/gu,
+    ph: '@@MDIC-OK@@', id: 'i-ok' },
+  // fail / cross — rose
+  { re: /[❌✗✘\u{1F534}\u{1F7E5}]️?/gu,
+    ph: '@@MDIC-ERR@@', id: 'i-error' },
+  // warning — amber
+  { re: /[⚠\u{1F7E1}\u{1F7E0}]️?/gu,
+    ph: '@@MDIC-WARN@@', id: 'i-warn' },
+  // info — gold
+  { re: /[ℹ\u{1F535}]️?/gu,
+    ph: '@@MDIC-INFO@@', id: 'i-info' },
+];
+// broad catch-all for any OTHER emoji (pictographs, symbols, flags, ZWJ
+// sequences, skin tones, variation selectors) — stripped entirely so an
+// unmapped emoji can never reach the screen.
+const EMOJI_STRIP = new RegExp(
+  '[\\u200D\\uFE0F\\u20E3'
+  + '\\u{1F000}-\\u{1FAFF}\\u{1F1E6}-\\u{1F1FF}'
+  + '\\u{2600}-\\u{27BF}\\u{2B00}-\\u{2BFF}'
+  + '\\u{2300}-\\u{23FF}\\u{1F3FB}-\\u{1F3FF}'
+  + '\\u2705\\u274C\\u26A0]', 'gu');
+
+// map status emoji to their placeholder tokens — run on the RAW source,
+// before escaping. Leaves a placeholder the inline() escape ignores.
+function tagEmoji(src) {
+  let s = String(src);
+  for (const m of EMOJI_ICON) s = s.replace(m.re, m.ph);
+  return s;
+}
+// after the HTML is assembled: placeholders → brand SVG; then strip any
+// remaining (unmapped) emoji and tidy the leftover double spacing.
+function resolveEmoji(html) {
+  let h = html;
+  for (const m of EMOJI_ICON) {
+    h = h.split(m.ph).join(
+      '<svg class="md-ic" viewBox="0 0 24 24" aria-hidden="true">'
+      + '<use href="#' + m.id + '"></use></svg>');
+  }
+  h = h.replace(EMOJI_STRIP, '');
+  // tidy whitespace left by a stripped emoji — collapse runs, drop a space
+  // left dangling before punctuation or a closing block tag.
+  h = h.replace(/ {2,}/g, ' ')
+       .replace(/ +([.,;:!?])/g, '$1')
+       .replace(/ +(<\/(?:p|li|td|th|h[1-3])>)/g, '$1');
+  return h;
+}
+
+// ── minimal markdown renderer for the narrative ──────────────────────
+function markdown(src) {
+  if (!src) return '';
+  const lines = tagEmoji(String(src)).split('\n');
+  let html = '', list = null;
+  const inline = (t) => esc(t)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    // inline [tool:X] provenance markers → a subtle muted provenance chip.
+    // The raw marker stays in the underlying data; this is display only.
+    .replace(/\[tool:([a-z_]+)\]/gi, (_, id) =>
+      '<span class="prov-chip" title="Provenance — where this figure '
+      + 'comes from">' + esc(toolProvenance(id)) + '</span>')
+    // corpus citations [slug §Section] → a clean regulatory source label.
+    .replace(/\[([a-z0-9][a-z0-9-]+)\s*§\s*([^\]]+)\]/gi, (_, slug, section) =>
+      '<span class="src-cite" title="Regulatory source">'
+      + esc(corpusSourceName(slug)) + ' &mdash; ' + esc(section.trim())
+      + '</span>');
+  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+  const isTableRow = (s) => /^\s*\|.*\|\s*$/.test(s);
+  const isDivider = (s) => /^\s*\|?[\s:|-]+\|?\s*$/.test(s) && s.includes('-');
+  const cells = (s) => s.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+  const nextContent = (j) => { while (j < lines.length && !lines[j].trim()) j++; return j; };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\s+$/, '');
+    const divIdx = nextContent(i + 1);
+    if (isTableRow(line) && divIdx < lines.length && isDivider(lines[divIdx])) {
+      closeList();
+      const head = cells(line);
+      let body = '';
+      let j = nextContent(divIdx + 1);
+      while (j < lines.length && isTableRow(lines[j])) {
+        body += '<tr>' + cells(lines[j]).map((c) => `<td>${inline(c)}</td>`).join('') + '</tr>';
+        j = nextContent(j + 1);
+      }
+      i = j - 1;
+      html += '<table class="md-table"><thead><tr>' +
+        head.map((c) => `<th>${inline(c)}</th>`).join('') +
+        '</tr></thead><tbody>' + body + '</tbody></table>';
+      continue;
+    }
+    if (!line.trim()) { closeList(); continue; }
+    let m;
+    if ((m = line.match(/^(#{1,3})\s+(.*)/))) {
+      closeList();
+      html += `<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`;
+    } else if ((m = line.match(/^\s*[-*]\s+(.*)/))) {
+      if (list !== 'ul') { closeList(); list = 'ul'; html += '<ul>'; }
+      html += `<li>${inline(m[1])}</li>`;
+    } else if ((m = line.match(/^\s*\d+\.\s+(.*)/))) {
+      if (list !== 'ol') { closeList(); list = 'ol'; html += '<ol>'; }
+      html += `<li>${inline(m[1])}</li>`;
+    } else {
+      closeList();
+      html += `<p>${inline(line)}</p>`;
+    }
+  }
+  closeList();
+  // resolve status-emoji placeholders → brand SVG icons and strip any
+  // other (unmapped) emoji so no raw emoji can ever reach the screen.
+  return resolveEmoji(html);
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  COMPLIANCE SURFACES — F5 SANCTIONS · F6 REDEMPTIONS
+//  Both mirror the ANALYZE async-job pattern: POST starts a job, GET
+//  polls. Slow Python (SDN-list load / attestation fetch + LLM) runs in
+//  a server background thread while the UI shows staged progress.
+// ════════════════════════════════════════════════════════════════════
+let surfacePollTimer = null;
+
+// place the instrument's brand mark in any surface view header
+function setSurfaceHeaderMark(symbol) {
+  const head = $('.view-head');
+  if (!head) return;
+  const existing = $('.view-mark', head);
+  if (existing) existing.remove();
+  if (!symbol) return;
+  const tag = $('.view-tag', head);
+  head.insertBefore(tokenMark(symbol, 'view-mark'), tag.nextSibling);
+}
+
+// a compact per-chain supply table — shared by both surfaces. A leaner
+// echo of the ANALYZE per-chain breakdown so each surface still shows
+// the deployments its facts were read from.
+function supplyChainTable(supply) {
+  if (!(supply.per_chain || []).length) return null;
+  const rows = supply.per_chain.map((c) => {
+    const isBridged = c.kind === 'bridged';
+    const verified = c.verified !== false;
+    const expUrl = explorerUrl(c.chain, c.contract);
+    const addrCell = expUrl
+      ? el('a', { class: 'addr addr-link', href: expUrl,
+          target: '_blank', rel: 'noopener noreferrer',
+          title: 'open contract on ' + c.chain + ' explorer' },
+          el('span', {}, c.contract), el('span', { class: 'addr-ext' }, '↗'))
+      : el('span', { class: 'addr' }, c.contract);
+    return el('tr', {},
+      el('td', {}, el('span', { class: 'chain-id' },
+        chainMark(c.chain, 'cmark-tbl'), c.chain)),
+      el('td', {}, addrCell),
+      el('td', {}, el('span', {
+        class: 'kind has-tip kind-' + (isBridged ? 'bridged' : 'native'),
+        title: isBridged ? tip.kindBridged : tip.kindNative },
+        isBridged ? 'bridged' : 'native')),
+      el('td', {}, el('span', {
+        class: 'vmark has-tip ' + (verified ? 'vmark-ok' : 'vmark-no'),
+        title: verified ? tip.verified : tip.unverified },
+        icon(verified ? 'i-ok' : 'i-warn'),
+        verified ? 'verified' : 'unverified')),
+      el('td', { class: 'num ' + (isBridged ? 'v-amber' : 'v-paper') },
+        fmtNum(c.supply, 0)));
+  });
+  return el('table', { class: 'dtable' },
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'CHAIN'), el('th', {}, 'CONTRACT'),
+      el('th', { title: tip.kindNative + '  /  ' + tip.kindBridged }, 'KIND'),
+      el('th', { title: tip.verified }, 'VERIFIED'),
+      el('th', { class: 'num' }, 'SUPPLY'))),
+    el('tbody', {}, ...rows));
+}
+
+// the GUARDRAIL CHECKS panel — reused renderCheck(), shared by surfaces
+function checksPanel(num, checks) {
+  checks = checks || [];
+  return panel(num, `GUARDRAIL CHECKS · ${checks.length}`, 'i-gate',
+    checks.length
+      ? el('div', {}, ...checks.map(renderCheck))
+      : el('div', { class: 'empty' }, icon('i-gate'),
+          el('b', {}, 'No checks ran.')));
+}
+
+// the REASONING FRAME panel — reused renderPassage(), shared by surfaces
+function passagesPanel(num, passages) {
+  passages = passages || [];
+  return panel(num, `REASONING FRAME · APPROVED CORPUS · ${passages.length}`,
+    'i-frame',
+    passages.length
+      ? el('div', {}, ...passages.map(renderPassage))
+      : el('div', { class: 'empty' }, icon('i-frame'),
+          el('b', {}, 'No approved corpus passages retrieved'),
+          el('div', {}, 'Judgements remain unsupported until a human '
+            + 'approves sources.')));
+}
+
+// the GAPS & OPEN ITEMS panel — reused renderGap(), shared by surfaces
+function gapsPanel(num, gaps) {
+  gaps = gaps || [];
+  const body = el('div', {});
+  body.append(el('div', { class: 'sub-head' },
+    `GAPS & OPEN ITEMS · ${gaps.length}`));
+  if (gaps.length) {
+    gaps.forEach((g) => body.append(renderGap(g)));
+  } else {
+    body.append(el('div', { class: 'check' },
+      icon('i-ok'),
+      el('div', { class: 'check-name v-green' },
+        'No gaps reported — facts, frame and synthesis all resolved.'),
+      el('span', { class: 'sev pass' }, 'clear')));
+  }
+  return panel(num, 'CONFIDENCE & GAPS', 'i-human', body);
+}
+
+// a tier badge — liquid green · moderate amber · illiquid rose
+function tierBadge(t) {
+  const key = String(t || '').toLowerCase().trim();
+  const cls = key === 'liquid' ? 'tier-liquid'
+    : key === 'moderate' ? 'tier-moderate'
+    : key === 'illiquid' ? 'tier-illiquid' : 'tier-moderate';
+  return el('span', { class: 'tier has-tip ' + cls, title: tip.tier },
+    key || 'untiered');
+}
+
+// ── the shared surface view shell + async job runner ─────────────────
+// kind: 'sanctions' | 'redemptions'. cfg holds the per-surface labels,
+// API path, log tag, and the completed-result renderer.
+const SURFACES = {
+  sanctions: {
+    tag: 'F5', title: 'SANCTIONS',
+    sub: 'OFAC SDN screening of token deployment addresses',
+    api: '/sanctions', logTag: 'SANCTIONS', icon: 'i-sanction',
+    runLabel: 'SCREEN', render: renderSanctions,
+    emptyHead: 'Select an instrument',
+    emptyBody: 'Pick a token from the sidebar, or type a symbol and SCREEN. '
+      + 'The agent reads live deployments, loads the OFAC SDN list, screens '
+      + 'every address, runs guardrails, and synthesises a cited screen.',
+  },
+  redemptions: {
+    tag: 'F6', title: 'REDEMPTIONS',
+    sub: 'redemption capacity · reserve liquidity tiered against on-chain supply',
+    api: '/redemption', logTag: 'REDEEM', icon: 'i-redeem',
+    runLabel: 'ASSESS', render: renderRedemption,
+    emptyHead: 'Select an instrument',
+    emptyBody: 'Pick a token from the sidebar, or type a symbol and ASSESS. '
+      + 'The agent reads live supply, extracts the attestation, classifies '
+      + 'reserves into liquidity tiers, runs guardrails, and synthesises a '
+      + 'cited redemption assessment.',
+  },
+};
+
+function viewSurface(kind, symbolFromHash) {
+  const cfg = SURFACES[kind];
+  app.innerHTML = '';
+  _feedRendered = STATE.feed.length;
+
+  const input = el('input', {
+    class: 'tinput', type: 'text', placeholder: 'SYMBOL',
+    autocomplete: 'off', spellcheck: 'false',
+    value: symbolFromHash || STATE.activeSymbol || '',
+  });
+  const runBtn = el('button', { class: 'btn' }, icon(cfg.icon), cfg.runLabel);
+  app.append(viewHead(cfg.tag, cfg.title, cfg.sub, input, runBtn));
+
+  const mount = el('div', { class: 'view-body', id: 'sf-mount' });
+  app.append(mount);
+
+  const run = () => {
+    const sym = input.value.trim().toUpperCase();
+    if (!sym) { flagEmptyInput(input); return; }
+    // Always trigger a run — when the hash already equals the target no
+    // `hashchange` fires, so invoke the job path directly in that case.
+    const target = '#' + kind + '/' + sym;
+    if (location.hash === target) startSurfaceJob(kind, sym, mount);
+    else location.hash = target;
+  };
+  runBtn.addEventListener('click', run);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+
+  // Resolve the token to run. An explicit hash symbol wins; otherwise fall
+  // back to whatever instrument is currently in context (last analysed /
+  // screened). Either way the surface runs straight away — no dead-end.
+  const symbol = symbolFromHash || STATE.activeSymbol || '';
+  if (symbol) {
+    startSurfaceJob(kind, symbol, mount);
+  } else {
+    // genuinely no token in context — render an in-view instrument picker
+    // instead of a terse error. Picking a row runs the surface in place.
+    mount.append(surfacePicker(kind, mount, input));
+  }
+}
+
+// ── in-view instrument picker — the F5/F6 no-token landing state ─────
+// A clean, terminal-styled prompt followed by the tracked stablecoins as
+// clickable rows (same token marks/styling as the sidebar). Clicking one
+// runs the surface for that token in place — never bounces out of the view.
+function surfacePicker(kind, mount, input) {
+  const cfg = SURFACES[kind];
+  const pickVerb = kind === 'sanctions' ? 'screen' : 'assess';
+  const body = el('div', {});
+
+  // intro line — intentional landing copy, not an error message
+  body.append(el('div', { class: 'picker-intro' },
+    icon(cfg.icon),
+    el('div', {},
+      el('div', { class: 'picker-head' },
+        'Select an instrument to ' + pickVerb),
+      el('div', { class: 'picker-sub' }, cfg.emptyBody))));
+
+  const grid = el('div', { class: 'picker-grid' });
+  const pick = (sym) => {
+    // run in place — update the header SYMBOL input + hash, then start
+    if (input) input.value = sym;
+    if (location.hash !== '#' + kind + '/' + sym) {
+      location.hash = '#' + kind + '/' + sym;
+    } else {
+      startSurfaceJob(kind, sym, mount);
+    }
+  };
+
+  if (STATE.tokens.length) {
+    STATE.tokens.forEach((t) => {
+      const s = STATE.supply[t.symbol];
+      const st = tokenStatus(s);
+      grid.append(el('div', {
+        class: 'picker-card click',
+        title: cfg.runLabel + ' ' + t.symbol,
+        onclick: () => pick(t.symbol),
+      },
+        el('div', { class: 'picker-card-id' },
+          tokenMark(t.symbol, 'tmark-side'),
+          el('div', { style: 'min-width:0' },
+            el('div', { class: 'instr-sym' }, t.symbol),
+            el('div', { class: 'instr-sub' }, t.issuer))),
+        el('div', { class: 'picker-card-go' },
+          el('span', {
+            class: 'picker-stat v-' + ({ ok: 'green', watch: 'amber',
+              alert: 'rose', idle: 'muted' }[st.tag]) },
+            st.label),
+          el('span', { class: 'picker-run' },
+            cfg.runLabel, el('span', { class: 'picker-arrow' }, '→')))));
+    });
+  } else {
+    grid.append(el('div', { class: 'empty' },
+      icon(cfg.icon),
+      el('b', {}, 'Loading instrument registry…')));
+  }
+  body.append(grid);
+
+  return panel(null, 'SELECT INSTRUMENT · ' + cfg.title, cfg.icon, body, true);
+}
+
+async function startSurfaceJob(kind, symbol, mount, refresh = false) {
+  const cfg = SURFACES[kind];
+  if (surfacePollTimer) clearInterval(surfacePollTimer);
+  STATE.activeSymbol = symbol;
+  setSurfaceHeaderMark(symbol);
+  refreshInstruments();
+  mount.innerHTML = '';
+
+  logLine('WORK', cfg.logTag, [
+    seg(symbol.padEnd(5), 'lg-sym'),
+    seg('job queued', 'lg-val'),
+    seg(refresh ? 'mode=refresh' : 'mode=cached',
+      refresh ? 'd-warn' : 'd-up'),
+  ]);
+
+  let job;
+  try {
+    job = await api(cfg.api, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, refresh }),
+    });
+  } catch (e) {
+    logLine('ERR', cfg.logTag, [
+      seg(symbol.padEnd(5), 'lg-sym'), seg('START-FAIL', 'd-warn'),
+      seg(String(e.message).slice(0, 48)),
+    ]);
+    mount.append(errorBox('Could not start ' + cfg.title.toLowerCase()
+      + ' · ' + symbol, e.message));
+    return;
+  }
+
+  // Cached hit — already computed and still fresh. Render instantly, no
+  // job to poll and no staged motions.
+  if (job.status === 'done') {
+    logLine('OK', cfg.logTag, [
+      seg(symbol.padEnd(5), 'lg-sym'), seg('cached', 'd-up'),
+    ]);
+    mount.innerHTML = '';
+    cfg.render(job.result, null, mount, job.computed_at,
+      () => startSurfaceJob(kind, symbol, mount, true));
+    return;
+  }
+
+  const stages = job.stages || [];
+  const t0 = Date.now();
+  const stageNodes = stages.map((label, i) =>
+    el('div', { class: 'rstage', 'data-i': i },
+      el('div', { class: 'rs-mark' }),
+      el('div', {}, label),
+      el('span', { class: 'rs-tk' }, 'S' + pad2(i + 1))));
+
+  const progress = panel(null,
+    'JOB ' + job.job_id.toUpperCase() + ' · ' + symbol, cfg.icon,
+    el('div', {},
+      el('div', { class: 'run-stages' }, ...stageNodes),
+      el('div', { class: 'scanbar' })));
+  $('.panel-head', progress).insertBefore(
+    el('span', { class: 'rs-tk', style: 'margin-left:auto' }, ''),
+    $('.panel-ic', progress));
+  const clockHost = $('.panel-head .rs-tk', progress);
+  mount.append(progress);
+
+  let stage = 0;
+  const advance = () => {
+    stageNodes.forEach((n, i) => {
+      n.className = 'rstage'
+        + (i < stage ? ' done' : i === stage ? ' active' : '');
+    });
+  };
+  advance();
+  let lastLogged = -1;
+  const stageTimer = setInterval(() => {
+    if (stage < stages.length - 1) { stage++; advance(); }
+  }, 5200);
+  const clockTimer = setInterval(() => {
+    const s = Math.round((Date.now() - t0) / 1000) + 's';
+    clockHost.textContent = s;
+    if (stage !== lastLogged) {
+      lastLogged = stage;
+      logLine('WORK', cfg.logTag, [
+        seg(symbol.padEnd(5), 'lg-sym'),
+        seg('stage ' + (stage + 1) + '/' + stages.length, 'lg-val'),
+        seg(s.padStart(4)),
+        seg(stages[stage]),
+      ]);
+    }
+  }, 250);
+
+  const finish = () => {
+    clearInterval(stageTimer); clearInterval(clockTimer);
+    clearInterval(surfacePollTimer); surfacePollTimer = null;
+  };
+
+  surfacePollTimer = setInterval(async () => {
+    if (STATE.activeSymbol !== symbol) { finish(); return; }
+    let st;
+    try { st = await api(cfg.api + '/' + job.job_id); }
+    catch (e) {
+      finish(); mount.innerHTML = '';
+      logLine('ERR', cfg.logTag, [
+        seg(symbol.padEnd(5), 'lg-sym'), seg('POLL-FAIL', 'd-warn'),
+        seg(String(e.message).slice(0, 48)),
+      ]);
+      mount.append(errorBox('Polling failed · ' + symbol, e.message));
+      return;
+    }
+    if (st.status === 'running') return;
+    finish();
+    stage = stages.length; advance();
+    mount.innerHTML = '';
+    if (st.status === 'error') {
+      logLine('ERR', cfg.logTag, [
+        seg(symbol.padEnd(5), 'lg-sym'), seg('FAILED', 'd-warn'),
+        seg(String(st.error).slice(0, 56)),
+      ]);
+      mount.append(errorBox(cfg.title + ' failed · ' + symbol,
+        st.error, st.trace));
+    } else {
+      cfg.render(st.result, st.elapsed, mount,
+        new Date().toISOString(),
+        () => startSurfaceJob(kind, symbol, mount, true));
+    }
+  }, 1400);
+}
+
+// ── render a completed SanctionsScreen ───────────────────────────────
+function renderSanctions(s, elapsed, mount, computedAt, onRefresh) {
+  const supply = s.supply || {};
+  const hits = s.hits || [];
+  const screened = s.screened || [];
+  const clean = hits.length === 0;
+
+  if (computedAt !== undefined && onRefresh) {
+    mount.append(freshnessStrip(computedAt, onRefresh));
+  }
+
+  logLine(clean ? 'OK' : 'ALERT', 'SANCTIONS', [
+    seg((s.symbol || '').padEnd(5), 'lg-sym'),
+    seg('done ' + (elapsed != null ? elapsed + 's' : ''), 'lg-val'),
+    seg('scr' + screened.length),
+    seg(clean ? 'no SDN hits' : hits.length + ' SDN HIT(S)',
+      clean ? 'd-up' : 'd-dn'),
+  ]);
+
+  // summary strip
+  mount.append(el('div', { class: 'strip fade-in' },
+    stripCell(s.symbol, 'TOKEN', 'v-gold'),
+    stripCell(String(screened.length), 'ADDRESSES SCREENED'),
+    stripCell(clean ? 'CLEAR' : String(hits.length) + ' HIT',
+      'OFAC SDN RESULT', clean ? 'v-green' : 'v-rose'),
+    stripCell(elapsed != null ? elapsed + 's' : '—', 'RUN TIME'),
+  ));
+
+  // ── 01 SDN SCREEN RESULT ──
+  const screenBody = el('div', {});
+  if (clean) {
+    // a clean screen is the norm — render it as a clear green pass
+    screenBody.append(el('div', { class: 'clean-state' },
+      icon('i-ok'),
+      el('div', {},
+        el('div', { class: 'cs-head' }, 'NO OFAC SDN MATCHES'),
+        el('div', { class: 'cs-sub' },
+          'Every screened deployment address was checked against the OFAC '
+          + 'Specially Designated Nationals list and matched none. This is '
+          + 'the expected, healthy state.'))));
+  } else {
+    screenBody.append(el('div', { class: 'sub-head' },
+      `OFAC SDN MATCHES · ${hits.length}`));
+    hits.forEach((h) => screenBody.append(el('div', { class: 'hit-row' },
+      icon('i-error'),
+      el('div', {},
+        el('div', { class: 'hit-name' },
+          (h.sdn_name || 'sanctioned entity')),
+        el('div', { class: 'hit-meta' },
+          el('span', { class: 'addr' }, h.address || ''),
+          '  ·  ' + (h.currency || '?') + '  ·  SDN UID '
+            + (h.sdn_uid || '—'))))));
+  }
+
+  // SDN list provenance — publish date, staleness, address-universe size
+  screenBody.append(el('div', { class: 'sub-head' }, 'OFAC SDN LIST'));
+  screenBody.append(el('div', { class: 'mgrid', style: 'border-top:none' },
+    mcell('SDN PUBLISH DATE', s.sdn_publish_date || 'n/a', 'v-paper',
+      'when the SDN list was last published', 'i-doc'),
+    mcell('SDN STALENESS',
+      s.sdn_staleness_days != null ? s.sdn_staleness_days + ' days' : 'n/a',
+      s.sdn_staleness_days != null && s.sdn_staleness_days > 7
+        ? 'v-amber' : 'v-paper',
+      'age of the loaded SDN list', 'i-gate', tip.sdnStaleness),
+    mcell('SANCTIONED ADDRESSES', fmtNum(s.sdn_address_count, 0), 'v-gold',
+      'crypto addresses on the SDN list', 'i-metric', tip.sdnCount),
+  ));
+
+  // screened addresses
+  if (screened.length) {
+    screenBody.append(el('div', { class: 'sub-head has-tip',
+      title: tip.screened }, 'SCREENED ADDRESSES'));
+    const rows = screened.map((addr) => el('tr', {},
+      el('td', {}, el('span', { class: 'addr' }, addr)),
+      el('td', {}, el('span', {
+        class: 'vmark vmark-ok' }, icon('i-ok'), 'no SDN match'))));
+    screenBody.append(el('table', { class: 'dtable' },
+      el('thead', {}, el('tr', {},
+        el('th', { title: tip.screened }, 'ADDRESS'),
+        el('th', {}, 'SCREEN RESULT'))),
+      el('tbody', {}, ...rows)));
+  }
+
+  // deployment provenance
+  const chainTbl = supplyChainTable(supply);
+  if (chainTbl) {
+    screenBody.append(el('div', { class: 'sub-head' },
+      'TOKEN DEPLOYMENTS SCREENED'));
+    screenBody.append(chainTbl);
+  }
+  if (supply.read_at) {
+    screenBody.append(el('div', { class: 'prov-stamp' },
+      el('span', { class: 'glyph' }, '§'),
+      'on-chain reads taken at ' + supply.read_at));
+  }
+  mount.append(panel('01', 'SDN SCREEN', 'i-sanction', screenBody));
+
+  // ── 02 GUARDRAIL CHECKS · 03 REASONING FRAME · 04 NARRATIVE · 05 GAPS ──
+  mount.append(checksPanel('02', s.checks));
+  mount.append(passagesPanel('03', s.passages));
+  mount.append(panel('04', 'SCREEN NARRATIVE', 'i-agent',
+    s.narrative
+      ? el('div', { class: 'narrative', html: markdown(s.narrative) })
+      : el('div', { class: 'empty' }, icon('i-agent'),
+          el('b', {}, 'No narrative synthesised.'))));
+  mount.append(gapsPanel('05', s.gaps));
+
+  mount.append(el('div', { style: 'padding:0 14px 24px;display:flex;gap:8px;flex-wrap:wrap' },
+    el('button', { class: 'btn ghost',
+      onclick: () => startSurfaceJob('sanctions', s.symbol, mount) },
+      icon('i-sanction'), 'RE-SCREEN ' + s.symbol),
+    el('button', { class: 'btn ghost',
+      onclick: () => { location.hash = '#analyze/' + s.symbol; } },
+      icon('i-agent'), 'ANALYZE ' + s.symbol),
+    el('button', { class: 'btn ghost',
+      onclick: () => { location.hash = '#redemptions/' + s.symbol; } },
+      icon('i-redeem'), 'REDEMPTIONS ' + s.symbol)));
+}
+
+// ── render a completed RedemptionAssessment ──────────────────────────
+function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
+  const supply = r.supply || {};
+  const att = r.attestation;
+  const m = r.metrics;
+  const tiers = r.tiers || [];
+  const flow = r.net_redemption_flow;
+
+  if (computedAt !== undefined && onRefresh) {
+    mount.append(freshnessStrip(computedAt, onRefresh));
+  }
+
+  logLine('OK', 'REDEEM', [
+    seg((r.symbol || '').padEnd(5), 'lg-sym'),
+    seg('done ' + (elapsed != null ? elapsed + 's' : ''), 'lg-val'),
+    seg('liq' + (r.liquid_coverage != null
+      ? fmtPct(r.liquid_coverage) : 'n/a'),
+      r.liquid_coverage != null ? covClass(r.liquid_coverage) : ''),
+    seg('tiers' + tiers.length),
+  ]);
+
+  // summary strip
+  mount.append(el('div', { class: 'strip fade-in' },
+    stripCell(r.symbol, 'TOKEN', 'v-gold'),
+    stripCell(att ? att.as_of_date : '—', 'ATTESTED AS OF'),
+    stripCell(fmtUSD(supply.total_supply), 'ON-CHAIN · NATIVE'),
+    stripCell(elapsed != null ? elapsed + 's' : '—', 'RUN TIME'),
+  ));
+
+  // ── 01 REDEMPTION SNAPSHOT ──
+  const naLiq = r.liquid_coverage == null;
+  const snapBody = el('div', {});
+  snapBody.append(el('div', { class: 'cov-row' },
+    el('div', { class: 'cov-cell has-tip', title: tip.liquidCoverage },
+      el('div', { class: 'cov-kick' }, 'LIQUID COVERAGE — FAST REDEMPTION CAPACITY'),
+      el('div', { class: 'cov-big ' + covClass(r.liquid_coverage) },
+        naLiq ? 'n/a' : fmtPct(r.liquid_coverage)),
+      el('div', { class: 'cov-desc' }, naLiq
+        ? naFieldNote('No current attestation could be resolved — see GAPS '
+            + 'below. On-chain supply is unaffected.')
+        : 'Liquid reserves ÷ current on-chain supply. The share of '
+          + 'circulating supply redeemable using only fast-access assets.')),
+    el('div', { class: 'cov-cell has-tip',
+      title: m ? tip.live : tip.na.coverage },
+      el('div', { class: 'cov-kick' }, 'LIVE COVERAGE — TOTAL RESERVES'),
+      el('div', { class: 'cov-big ' + covClass(m && m.live_coverage) },
+        m ? fmtPct(m.live_coverage) : 'n/a'),
+      el('div', { class: 'cov-desc' }, m
+        ? 'Total attested reserves ÷ current on-chain supply — all tiers, '
+          + 'not just the liquid ones.'
+        : naFieldNote('No current attestation could be resolved — see GAPS '
+            + 'below.'))),
+  ));
+
+  snapBody.append(el('div', { class: 'mgrid' },
+    mcell('ON-CHAIN SUPPLY · NATIVE', fmtNum(supply.total_supply, 0),
+      'v-paper',
+      `${(supply.per_chain || []).length} deployment(s) · excludes bridged`,
+      'i-supply'),
+    mcell('ATTESTED RESERVES', att ? fmtUSD(att.total_reserves) : 'n/a',
+      'v-gold',
+      att ? 'from the latest attestation'
+          : naFieldNote('no attestation resolved — hover'),
+      'i-doc', att ? null : tip.na.reserves),
+    mcell('LIQUID RESERVES', fmtUSD(r.liquid_reserves),
+      r.liquid_reserves > 0 ? 'v-green' : 'v-muted',
+      'reserves redeemable fast', 'i-metric', tip.liquidReserves),
+    mcell('NET REDEMPTION FLOW',
+      flow != null ? fmtUSD(flow) : 'n/a',
+      flow == null ? 'v-paper' : flow < 0 ? 'v-rose' : 'v-green',
+      flow != null ? 'on-chain supply minus attested tokens outstanding'
+                   : naFieldNote('no attestation baseline — hover'),
+      'i-metric', flow != null ? tip.netRedemptionFlow : tip.na.drift),
+    mcell('STALENESS', m && att ? m.staleness_days + ' days' : 'n/a',
+      m && att && m.staleness_days > 35 ? 'v-amber' : 'v-paper',
+      m && att ? 'age of the attestation'
+               : naFieldNote('no attestation date — hover'),
+      'i-gate', m && att ? tip.staleness : tip.na.staleness),
+  ));
+
+  if (!att) {
+    snapBody.append(el('div', { class: 'prov-note na-prov' },
+      icon('i-info'),
+      el('div', {},
+        el('b', {}, 'Why these fields read n/a · issuer-transparency limit. '),
+        'No current reserve attestation could be machine-resolved for this '
+        + 'issuer. Liquidity tiers and coverage are attestation-derived. ',
+        el('b', {}, 'The on-chain supply figures are unaffected'),
+        ' — they are direct chain reads.')));
+  }
+  if (supply.read_at) {
+    snapBody.append(el('div', { class: 'prov-stamp' },
+      el('span', { class: 'glyph' }, '§'),
+      'on-chain reads taken at ' + supply.read_at));
+  }
+  mount.append(panel('01', 'REDEMPTION SNAPSHOT', 'i-facts', snapBody));
+
+  // ── 02 RESERVE LIQUIDITY BREAKDOWN ──
+  const tierBody = el('div', {});
+  if (tiers.length) {
+    const total = tiers.reduce((a, t) => a + Number(t.amount || 0), 0);
+    const rows = tiers.map((t) => {
+      const key = String(t.tier || '').toLowerCase().trim();
+      const share = total ? Number(t.amount || 0) / total : null;
+      return el('tr', { class: 'td-tier-' + (key || 'moderate') },
+        el('td', {}, t.asset_class || '—'),
+        el('td', {}, tierBadge(t.tier)),
+        el('td', { class: 'num v-paper' }, fmtUSD(t.amount)),
+        el('td', { class: 'num dim' }, share == null ? '—' : fmtPct(share)));
+    });
+    tierBody.append(el('table', { class: 'dtable' },
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'ASSET CLASS'),
+        el('th', { title: tip.tier }, 'TIER'),
+        el('th', { class: 'num' }, 'AMOUNT'),
+        el('th', { class: 'num' }, 'SHARE'))),
+      el('tbody', {}, ...rows)));
+    tierBody.append(el('div', { class: 'prov-note' },
+      icon('i-info'),
+      el('div', {},
+        el('b', {}, 'Reserves tiered by redemption speed. '),
+        'liquid funds redemptions immediately; moderate takes days; '
+        + 'illiquid is slow to realise. Liquid coverage counts the liquid '
+        + 'tier only.')));
+  } else {
+    tierBody.append(el('div', { class: 'empty' },
+      icon('i-metric'),
+      el('b', {}, 'No reserve breakdown available'),
+      el('div', {}, 'Liquidity tiers need an attestation with a reserve '
+        + 'breakdown — none could be resolved for this issuer.')));
+  }
+  mount.append(panel('02', `RESERVE LIQUIDITY · ${tiers.length} TIER LINE(S)`,
+    'i-metric', tierBody));
+
+  // deployment provenance
+  const chainTbl = supplyChainTable(supply);
+  if (chainTbl) {
+    mount.append(panel('03', 'PER-CHAIN SUPPLY BREAKDOWN', 'i-supply',
+      chainTbl));
+  }
+
+  // ── GUARDRAIL CHECKS · REASONING FRAME · NARRATIVE · GAPS ──
+  mount.append(checksPanel(chainTbl ? '04' : '03', r.checks));
+  mount.append(passagesPanel(chainTbl ? '05' : '04', r.passages));
+  mount.append(panel(chainTbl ? '06' : '05', 'REDEMPTION NARRATIVE', 'i-agent',
+    r.narrative
+      ? el('div', { class: 'narrative', html: markdown(r.narrative) })
+      : el('div', { class: 'empty' }, icon('i-agent'),
+          el('b', {}, 'No narrative synthesised.'))));
+  mount.append(gapsPanel(chainTbl ? '07' : '06', r.gaps));
+
+  mount.append(el('div', { style: 'padding:0 14px 24px;display:flex;gap:8px;flex-wrap:wrap' },
+    el('button', { class: 'btn ghost',
+      onclick: () => startSurfaceJob('redemptions', r.symbol, mount) },
+      icon('i-redeem'), 'RE-ASSESS ' + r.symbol),
+    el('button', { class: 'btn ghost',
+      onclick: () => { location.hash = '#analyze/' + r.symbol; } },
+      icon('i-agent'), 'ANALYZE ' + r.symbol),
+    el('button', { class: 'btn ghost',
+      onclick: () => { location.hash = '#sanctions/' + r.symbol; } },
+      icon('i-sanction'), 'SANCTIONS ' + r.symbol)));
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  CORPUS VIEW
+// ════════════════════════════════════════════════════════════════════
+async function viewCorpus() {
+  app.innerHTML = '';
+  app.append(viewHead('F3', 'CORPUS',
+    'the reasoning frame · only human-approved sources are citable'));
+  const mount = el('div', { class: 'view-body' });
+  app.append(mount);
+  mount.append(skeletonTable(5));
+
+  let data;
+  try { data = await api('/sources'); }
+  catch (e) {
+    mount.innerHTML = '';
+    mount.append(errorBox('Could not load corpus', e.message));
+    return;
+  }
+  logLine('OK', 'CORPUS', [
+    seg('registry', 'lg-val'),
+    seg('src' + data.count),
+    seg('ok' + data.approved, 'd-up'),
+    seg('gat' + (data.count - data.approved),
+      data.count - data.approved ? 'd-warn' : ''),
+  ]);
+  mount.innerHTML = '';
+
+  mount.append(el('div', { class: 'strip fade-in' },
+    stripCell(data.count, 'REGISTERED SOURCES', 'v-gold'),
+    stripCell(data.approved, 'APPROVED · CITABLE', data.approved ? 'v-green' : 'v-amber'),
+    stripCell(data.count - data.approved, 'PROPOSED · GATED', 'v-amber')));
+
+  const list = el('div', { class: 'corpus-list' });
+  data.sources.forEach((s) => list.append(corpusCard(s)));
+
+  mount.append(panel(null, 'SOURCE REGISTRY & CURATION GATE', 'i-frame', list));
+}
+
+// ── status → display config ──────────────────────────────────────────
+// proposed amber · approved green · rejected/muted rose.
+function sourceStatus(s) {
+  const raw = String(s.status || (s.approved ? 'approved' : 'proposed'))
+    .toLowerCase().trim();
+  if (raw === 'approved') return { key: 'approved', label: 'APPROVED', cls: 'ok' };
+  if (raw === 'rejected') return { key: 'rejected', label: 'REJECTED', cls: 'alert' };
+  return { key: 'proposed', label: 'PROPOSED', cls: 'watch' };
+}
+
+// one source card — title · tier · status · summary · link · vote controls
+function corpusCard(s) {
+  const st = sourceStatus(s);
+  const card = el('div', { class: 'corpus-card src-' + st.key, 'data-id': s.id });
+
+  const statusTag = el('span', { class: 'stag ' + st.cls }, st.label);
+
+  card.append(el('div', { class: 'corpus-top' },
+    el('div', { class: 'corpus-id' },
+      el('span', { class: 'corpus-title' }, s.title || s.id),
+      el('span', { class: 'corpus-tier' }, (s.tier || 'untiered').toUpperCase())),
+    statusTag));
+
+  if (s.summary)
+    card.append(el('div', { class: 'corpus-summary' }, s.summary));
+  if (s.notes)
+    card.append(el('div', { class: 'corpus-notes' },
+      el('span', { class: 'corpus-notes-k' }, 'NOTE'), s.notes));
+
+  const foot = el('div', { class: 'corpus-foot' });
+  foot.append(s.url
+    ? el('a', { class: 'cite corpus-link',
+        href: s.url, target: '_blank', rel: 'noopener noreferrer' },
+        'view source ', el('span', { class: 'glyph' }, '↗'))
+    : el('span', { class: 'dim' }, 'no source url'));
+
+  const approveBtn = el('button', { class: 'btn vote-btn' }, 'APPROVE');
+  const rejectBtn = el('button', { class: 'btn ghost vote-btn' }, 'REJECT');
+  const vote = async (decision, btn) => {
+    // Curation is a save-type action — gated on an account. Anonymous
+    // callers see a friendly invitation instead of firing a doomed 401.
+    if (!AUTH.signedIn()) {
+      AUTH.openPanel('in', 'approve or reject corpus sources');
+      logLine('WORK', 'CORPUS', [seg(s.id, 'lg-sym'),
+        seg('sign-in required to record a curation vote')]);
+      return;
+    }
+    [approveBtn, rejectBtn].forEach((b) => { b.disabled = true; });
+    btn.replaceChildren(el('span', { class: 'spinner' }));
+    try {
+      const res = await api('/sources/' + encodeURIComponent(s.id) + '/vote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      });
+      logLine('OK', 'CORPUS', [
+        seg(s.id, 'lg-sym'),
+        seg(decision, decision === 'approved' ? 'd-up' : 'd-warn'),
+        seg(res.ingested ? 'staged text ingested · citeable'
+          : res.ingest_error ? 'ingest failed: ' + res.ingest_error
+          : 'decision recorded'),
+      ]);
+      // refresh this card's row to its new status
+      const next = res.source || Object.assign({}, s, { status: decision });
+      card.replaceWith(corpusCard(next));
+    } catch (e) {
+      [approveBtn, rejectBtn].forEach((b) => { b.disabled = false; });
+      btn.replaceChildren(document.createTextNode(
+        btn === approveBtn ? 'APPROVE' : 'REJECT'));
+      if (e.status === 401) {
+        // session lapsed mid-action — re-invite rather than alarm
+        AUTH.openPanel('in', 'approve or reject corpus sources');
+        logLine('WORK', 'CORPUS', [seg(s.id, 'lg-sym'),
+          seg('session expired · sign in again to save the vote')]);
+        return;
+      }
+      logLine('ERR', 'CORPUS', [
+        seg(s.id, 'lg-sym'), seg('VOTE-FAIL', 'd-warn'),
+        seg(String(e.message).slice(0, 48)),
+      ]);
+    }
+  };
+  approveBtn.addEventListener('click', () => vote('approved', approveBtn));
+  rejectBtn.addEventListener('click', () => vote('rejected', rejectBtn));
+  foot.append(el('div', { class: 'corpus-votes' }, approveBtn, rejectBtn));
+
+  card.append(foot);
+  return card;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  EVALS VIEW
+// ════════════════════════════════════════════════════════════════════
+function viewEvals() {
+  app.innerHTML = '';
+  const runBtn = el('button', { class: 'btn' }, icon('i-eval'), 'RUN SUITE');
+  app.append(viewHead('F4', 'EVALS',
+    'regression guard · one live analysis per case — slow', runBtn));
+  const mount = el('div', { class: 'view-body' });
+  app.append(mount);
+  mount.append(el('div', { class: 'empty' },
+    icon('i-eval'),
+    el('b', {}, 'Eval suite idle'),
+    el('div', {}, 'Each case runs a full analysis and grades structured ' +
+      'expectations. Press RUN SUITE — this takes a while.')));
+
+  runBtn.addEventListener('click', async () => {
+    runBtn.disabled = true;
+    runBtn.replaceChildren(el('span', { class: 'spinner' }),
+      document.createTextNode(' RUNNING'));
+    mount.innerHTML = '';
+    logLine('WORK', 'EVALS', [seg('suite start', 'lg-val'), seg('grading all cases')]);
+    mount.append(panel(null, 'EVAL SUITE — RUNNING', 'i-eval',
+      el('div', {},
+        el('div', { class: 'pb-pad', style: 'color:var(--muted-2)' },
+          'Grading every case against a live analysis…'),
+        el('div', { class: 'scanbar' }))));
+    let data;
+    try { data = await api('/evals'); }
+    catch (e) {
+      mount.innerHTML = '';
+      logLine('ERR', 'EVALS', [seg('SUITE-FAIL', 'd-warn'),
+        seg(String(e.message).slice(0, 48))]);
+      mount.append(errorBox('Eval run failed', e.message));
+      runBtn.disabled = false;
+      runBtn.replaceChildren(icon('i-eval'), document.createTextNode('RUN SUITE'));
+      return;
+    }
+    mount.innerHTML = '';
+    logLine(data.passed === data.count ? 'OK' : 'ALERT', 'EVALS', [
+      seg(data.passed === data.count ? 'GREEN' : 'FAIL',
+        data.passed === data.count ? 'd-up' : 'd-dn'),
+      seg('pass' + data.passed + '/' + data.count),
+      seg('fail' + (data.count - data.passed),
+        data.count - data.passed ? 'd-warn' : ''),
+    ]);
+    renderEvals(data, mount);
+    runBtn.disabled = false;
+    runBtn.replaceChildren(icon('i-eval'), document.createTextNode('RE-RUN'));
+  });
+}
+
+function renderEvals(data, mount) {
+  const allPass = data.passed === data.count;
+  mount.append(el('div', { class: 'strip fade-in' },
+    stripCell(data.count, 'CASES'),
+    stripCell(data.passed, 'PASSED', data.passed ? 'v-green' : 'v-rose'),
+    stripCell(data.count - data.passed, 'FAILED',
+      data.count - data.passed ? 'v-rose' : 'v-green'),
+    stripCell(allPass ? 'GREEN' : 'FAIL', 'SUITE', allPass ? 'v-green' : 'v-rose')));
+
+  data.cases.forEach((c) => {
+    const body = el('div', {}, ...c.points.map((p) => el('div', { class: 'check' },
+      icon(p.passed ? 'i-ok' : 'i-error'),
+      el('div', {},
+        el('div', { class: 'check-name' }, p.point),
+        p.detail ? el('div', { class: 'check-detail' }, p.detail) : null),
+      el('span', { class: 'sev ' + (p.passed ? 'pass' : 'sev-critical') },
+        p.passed ? 'pass' : 'fail'))));
+    mount.append(panel(null, `${c.case_id} · ${c.symbol}`, c.passed ? 'i-ok' : 'i-error', body));
+  });
+}
+
+// ── shared loaders ───────────────────────────────────────────────────
+function skeletonTable(rows) {
+  const box = el('div', { class: 'pad' });
+  for (let i = 0; i < rows; i++) {
+    box.append(el('div', { class: 'skln', style: `width:${40 + (i * 13) % 50}%` }));
+  }
+  return box;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  F7 · ANALYST — the Doré conversational console
+//  A terminal-native chat with Doré, the analyst built on the Hermes
+//  runtime. The user asks compliance questions in plain language; Doré
+//  answers, citing its work. Transparency is the aesthetic: every
+//  verification Doré runs is rendered as an inline log line inside its
+//  reply, styled like the operations feed — seeing the work is the trust.
+//
+//  The Hermes runtime deploys separately. Until then the bridge returns
+//  `runtime_offline` and the console shows a calm, designed panel — the
+//  whole view stays beautifully rendered.
+// ════════════════════════════════════════════════════════════════════
+const ANALYST = {
+  turns: [],          // { role:'user'|'dore', text, trace, status }
+  pending: null,      // a question queued from the command line
+  busy: false,
+};
+
+// the example questions — a preview of what Doré does. Click to ask.
+const ANALYST_EXAMPLES = [
+  'Is USDC’s attestation current and fully backed?',
+  'Compare USDT and USDC on redemption strength',
+  'What would an examiner ask about PYUSD?',
+];
+
+// Doré often narrates its verifications as lines that begin with an arrow
+// ("→ ran attestation analysis · USDC"). We lift those out of the
+// reply body and render them as the operations-log-style trace, so the
+// answer reads clean and the work reads as a transparent record.
+function splitAnalystReply(reply) {
+  const trace = [];
+  const body = [];
+  for (const ln of String(reply || '').split('\n')) {
+    const m = ln.match(/^\s*(?:[→>‣▸]|->)\s+(.*\S)\s*$/);
+    if (m) trace.push(m[1]);
+    else body.push(ln);
+  }
+  return { trace, body: body.join('\n').trim() };
+}
+
+// classify a trace line so it gets the right glyph — a verification run,
+// a corpus search, or a generic step.
+function analystTraceIcon(line) {
+  const s = line.toLowerCase();
+  if (/corpus|regulation|frame|search/.test(s)) return 'i-frame';
+  if (/sanction|ofac|screen/.test(s)) return 'i-sanction';
+  if (/redempt/.test(s)) return 'i-redeem';
+  if (/supply|on-chain|chain/.test(s)) return 'i-supply';
+  if (/attestation|reserve|analy/.test(s)) return 'i-doc';
+  if (/histor|past/.test(s)) return 'i-metric';
+  return 'i-agent';
+}
+
+// one operations-log-style trace line inside a Doré response
+function analystTraceLine(line) {
+  return el('div', { class: 'an-trace-line' },
+    icon(analystTraceIcon(line), 'an-trace-ic'),
+    el('span', { class: 'an-trace-arrow' }, '→'),
+    el('span', { class: 'an-trace-text' }, line));
+}
+
+// the trace block — the visible record of what Doré did this turn
+function analystTraceBlock(trace) {
+  if (!trace || !trace.length) return null;
+  return el('div', { class: 'an-trace' },
+    el('div', { class: 'an-trace-head' },
+      el('span', { class: 'an-trace-dot' }),
+      el('span', {}, 'VERIFICATIONS RUN · ' + trace.length)),
+    el('div', { class: 'an-trace-body' }, ...trace.map(analystTraceLine)));
+}
+
+// render a single transcript turn into the scroll
+function renderAnalystTurn(turn) {
+  if (turn.role === 'user') {
+    return el('div', { class: 'an-turn an-turn-user fade-in' },
+      el('div', { class: 'an-avatar an-avatar-user' }, 'YOU'),
+      el('div', { class: 'an-bubble an-bubble-user' },
+        el('div', { class: 'an-msg' }, turn.text)));
+  }
+  // Doré's turn
+  const card = el('div', { class: 'an-turn an-turn-dore fade-in' });
+  const avatar = el('div', { class: 'an-avatar an-avatar-dore' },
+    icon('i-analyst', 'an-avatar-ic'));
+  const bubble = el('div', { class: 'an-bubble an-bubble-dore' });
+
+  if (turn.status === 'thinking') {
+    bubble.append(el('div', { class: 'an-thinking' },
+      el('span', { class: 'an-think-dot' }),
+      el('span', { class: 'an-think-dot' }),
+      el('span', { class: 'an-think-dot' }),
+      el('span', { class: 'an-think-label' }, 'Doré is verifying…')));
+    card.append(avatar, bubble);
+    return card;
+  }
+
+  if (turn.status === 'offline') {
+    bubble.append(analystOfflinePanel());
+    card.append(avatar, bubble);
+    return card;
+  }
+
+  if (turn.status === 'error') {
+    bubble.append(el('div', { class: 'an-error' },
+      icon('i-warn', 'an-err-ic'),
+      el('div', {},
+        el('b', {}, 'The analyst could not complete this turn.'),
+        el('div', { class: 'an-err-detail' }, turn.text))));
+    card.append(avatar, bubble);
+    return card;
+  }
+
+  // a normal answer — trace first (the work), then the cited prose
+  const block = analystTraceBlock(turn.trace);
+  if (block) bubble.append(block);
+  const answer = el('div', { class: 'an-answer narrative' });
+  answer.innerHTML = markdown(turn.text || '');
+  bubble.append(answer);
+  card.append(avatar, bubble);
+  return card;
+}
+
+// the designed offline state — calm, not an error. Shown when the Hermes
+// runtime is not yet installed (the expected pre-deployment condition).
+function analystOfflinePanel() {
+  const panel = el('div', { class: 'an-offline' });
+  panel.append(
+    el('div', { class: 'an-offline-mark' }, icon('i-analyst', 'an-off-ic')),
+    el('div', { class: 'an-offline-tag' }, 'ANALYST RUNTIME · STANDING BY'),
+    el('div', { class: 'an-offline-title' },
+      'Doré’s analyst activates on deployment'),
+    el('p', { class: 'an-offline-body' },
+      'The conversational analyst runs on the Hermes runtime, which is '
+      + 'provisioned as its own deployment artefact. It is not yet on this '
+      + 'environment — so the console is in preview. Everything you see '
+      + 'is live; only the analyst’s reasoning loop awaits its runtime.'),
+    el('div', { class: 'an-offline-rule' }),
+    el('div', { class: 'an-offline-sub' },
+      'WHEN LIVE, DORÉ WILL'));
+  const cap = el('div', { class: 'an-offline-caps' });
+  [['i-supply', 'Read live on-chain supply across every deployment'],
+   ['i-doc', 'Run the full attestation analysis against claimed reserves'],
+   ['i-sanction', 'Screen a token against the OFAC sanctions list'],
+   ['i-frame', 'Ground every judgement in the human-approved corpus, and cite it'],
+  ].forEach(([ic, txt]) => {
+    cap.append(el('div', { class: 'an-cap' },
+      icon(ic, 'an-cap-ic'), el('span', {}, txt)));
+  });
+  panel.append(cap);
+  return panel;
+}
+
+// the empty-console state — Doré's identity + clickable example questions
+function analystWelcome() {
+  const wrap = el('div', { class: 'an-welcome fade-in' });
+  wrap.append(
+    el('div', { class: 'an-hero-mark' }, icon('i-analyst', 'an-hero-ic')),
+    el('div', { class: 'an-hero-name' },
+      'Dor', el('span', { class: 'acc' }, 'é')),
+    el('div', { class: 'an-hero-role' }, 'COMPLIANCE ANALYST'),
+    el('p', { class: 'an-hero-blurb' },
+      'A stablecoin issuer claims its tokens are fully backed. That claim '
+      + 'is a doré bar — real value, unverified. Doré is the '
+      + 'assay: it reconciles what issuers attest against what the chain '
+      + 'actually shows, and cites every step. Ask in plain language.'));
+  const ex = el('div', { class: 'an-examples' });
+  ex.append(el('div', { class: 'an-examples-head' }, 'TRY ASKING'));
+  ANALYST_EXAMPLES.forEach((q) => {
+    ex.append(el('button', { class: 'an-example', type: 'button',
+      onclick: () => sendAnalyst(q) },
+      el('span', { class: 'an-ex-q' }, '?'),
+      el('span', {}, q)));
+  });
+  wrap.append(ex);
+  return wrap;
+}
+
+// render the whole transcript into the scroll region
+function renderAnalystScroll() {
+  const scroll = $('#an-scroll');
+  if (!scroll) return;
+  scroll.innerHTML = '';
+  if (!ANALYST.turns.length) {
+    scroll.append(analystWelcome());
+    return;
+  }
+  ANALYST.turns.forEach((t) => scroll.append(renderAnalystTurn(t)));
+  scroll.scrollTop = scroll.scrollHeight;
+}
+
+// send one message to Doré through the /api/agent bridge
+async function sendAnalyst(message) {
+  message = String(message || '').trim();
+  if (!message || ANALYST.busy) return;
+  ANALYST.busy = true;
+  ANALYST.turns.push({ role: 'user', text: message });
+  const thinking = { role: 'dore', status: 'thinking', text: '' };
+  ANALYST.turns.push(thinking);
+  renderAnalystScroll();
+  setAnalystComposerBusy(true);
+  logLine('WORK', 'ANALYST', [seg('query sent', 'lg-val'),
+    seg(message.slice(0, 44))]);
+
+  try {
+    const res = await api('/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    const idx = ANALYST.turns.indexOf(thinking);
+    if (res.status === 'runtime_offline') {
+      ANALYST.turns[idx] = { role: 'dore', status: 'offline', text: '' };
+      logLine('WATCH', 'ANALYST', [seg('runtime offline', 'd-warn'),
+        seg('Hermes activates on deployment')]);
+    } else {
+      const { trace, body } = splitAnalystReply(res.reply);
+      const fullTrace = (res.trace && res.trace.length)
+        ? res.trace.concat(trace) : trace;
+      ANALYST.turns[idx] = { role: 'dore', status: 'ok',
+        text: body || res.reply || '', trace: fullTrace };
+      logLine('OK', 'ANALYST', [seg('reply received', 'lg-val'),
+        seg('verifications ' + fullTrace.length)]);
+    }
+  } catch (e) {
+    const idx = ANALYST.turns.indexOf(thinking);
+    ANALYST.turns[idx] = { role: 'dore', status: 'error',
+      text: String(e.message || 'request failed') };
+    logLine('ERR', 'ANALYST', [seg('QUERY-FAIL', 'd-warn'),
+      seg(String(e.message).slice(0, 44))]);
+  } finally {
+    ANALYST.busy = false;
+    setAnalystComposerBusy(false);
+    renderAnalystScroll();
+  }
+}
+
+function setAnalystComposerBusy(busy) {
+  const inp = $('#an-input');
+  const btn = $('#an-send');
+  if (inp) inp.disabled = busy;
+  if (btn) {
+    btn.disabled = busy;
+    btn.replaceChildren(busy
+      ? el('span', { class: 'spinner' })
+      : icon('i-agent', 'an-send-ic'),
+      document.createTextNode(busy ? ' VERIFYING' : ' ASK'));
+  }
+  if (!busy && inp) inp.focus();
+}
+
+function viewAnalyst() {
+  app.innerHTML = '';
+  app.append(viewHead('F7', 'ANALYST',
+    'Doré — conversational compliance analyst · cites its work'));
+
+  const console = el('div', { class: 'an-console fade-in' });
+
+  // a slim header strip identifying the analyst
+  console.append(el('div', { class: 'an-bar' },
+    el('span', { class: 'an-bar-mark' }, icon('i-analyst', 'an-bar-ic')),
+    el('span', { class: 'an-bar-name' },
+      'DOR', el('span', { class: 'acc' }, 'É')),
+    el('span', { class: 'an-bar-sep' }, '│'),
+    el('span', { class: 'an-bar-desc' },
+      'reasons in plain language · verifies through read-only checks '
+      + '· never invents a figure'),
+    el('span', { class: 'an-bar-runtime' },
+      el('span', { class: 'an-bar-dot' }), 'HERMES RUNTIME')));
+
+  // the transcript scroll
+  console.append(el('div', { class: 'an-scroll', id: 'an-scroll' }));
+
+  // the composer — consistent with the bottom command-line styling
+  const input = el('input', { class: 'an-input', id: 'an-input',
+    type: 'text', autocomplete: 'off', spellcheck: 'false',
+    placeholder: 'Ask Doré a compliance question…' });
+  const send = el('button', { class: 'an-send', id: 'an-send', type: 'button' },
+    icon('i-agent', 'an-send-ic'), document.createTextNode(' ASK'));
+  const submit = () => {
+    const v = input.value.trim();
+    if (!v) return;
+    input.value = '';
+    sendAnalyst(v);
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+  });
+  send.addEventListener('click', submit);
+  console.append(el('div', { class: 'an-composer' },
+    el('span', { class: 'an-prompt' }, 'ASK DORÉ›'),
+    input, send));
+
+  app.append(console);
+  renderAnalystScroll();
+
+  // a question queued from the command line (`ask <question>`) fires now
+  if (ANALYST.pending) {
+    const q = ANALYST.pending;
+    ANALYST.pending = null;
+    sendAnalyst(q);
+  } else {
+    setTimeout(() => { const i = $('#an-input'); if (i) i.focus(); }, 30);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  COMMAND LINE
+// ════════════════════════════════════════════════════════════════════
+function runCommand(raw) {
+  const parts = raw.trim().split(/\s+/);
+  const cmd = (parts[0] || '').toLowerCase();
+  const arg = (parts[1] || '').toUpperCase();
+  if (!cmd) return;
+  if (cmd === 'clear' || cmd === 'cls') {
+    STATE.feed = []; STATE.feedSeq = 0; _feedRendered = 0;
+    const f = $('#op-feed'); if (f) f.innerHTML = '';
+    const ln = $('#ts-lines'); if (ln) ln.textContent = '0';
+    logLine('INFO', 'CONSOLE', [seg('feed cleared', 'lg-val'), seg('by operator')]);
+    return;
+  }
+  if (cmd === 'monitor' || cmd === 'mon') { location.hash = '#monitor'; return; }
+  if (cmd === 'corpus') { location.hash = '#corpus'; return; }
+  if (cmd === 'evals' || cmd === 'eval') { location.hash = '#evals'; return; }
+  if (cmd === 'screen' || cmd === 'sanctions' || cmd === 'sanction') {
+    location.hash = '#sanctions' + (arg ? '/' + arg : '');
+    return;
+  }
+  if (cmd === 'redeem' || cmd === 'redemption' || cmd === 'redemptions') {
+    location.hash = '#redemptions' + (arg ? '/' + arg : '');
+    return;
+  }
+  if (cmd === 'analyst' || cmd === 'ask' || cmd === 'dore' || cmd === 'doré') {
+    location.hash = '#analyst';
+    // a bare `ask <question…>` jumps to the console and sends it directly
+    const rest = raw.trim().replace(/^\S+\s*/, '').trim();
+    if (rest) ANALYST.pending = rest;
+    return;
+  }
+  if (cmd === 'refresh' || cmd === 'force') {
+    if (arg) { location.hash = '#analyze/' + arg; }
+    logLine('WORK', 'CONSOLE', [seg('force refresh', 'd-warn'),
+      seg(arg || 'use ANALYZE view')]);
+    return;
+  }
+  if (cmd === 'analyze' || cmd === 'an' || cmd === 'a') {
+    if (arg) location.hash = '#analyze/' + arg;
+    else location.hash = '#analyze';
+    return;
+  }
+  // bare symbol → analyze it
+  if (STATE.tokens.some((t) => t.symbol === cmd.toUpperCase())) {
+    location.hash = '#analyze/' + cmd.toUpperCase();
+    return;
+  }
+  logLine('WATCH', 'CONSOLE', [seg('unknown cmd', 'd-warn'),
+    seg(raw.trim().slice(0, 48))]);
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  ROUTER
+// ════════════════════════════════════════════════════════════════════
+function route() {
+  const hash = location.hash.replace(/^#/, '') || 'monitor';
+  const [view, arg] = hash.split('/');
+  document.querySelectorAll('.side-row').forEach((l) =>
+    l.classList.toggle('active', l.dataset.route === view));
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (surfacePollTimer) { clearInterval(surfacePollTimer); surfacePollTimer = null; }
+  if (view === 'analyze') {
+    viewAnalyze(arg ? arg.toUpperCase() : '');
+  } else if (view === 'sanctions') {
+    viewSurface('sanctions', arg ? arg.toUpperCase() : '');
+  } else if (view === 'redemptions') {
+    viewSurface('redemptions', arg ? arg.toUpperCase() : '');
+  } else if (view === 'analyst') {
+    STATE.activeSymbol = '';
+    refreshInstruments();
+    viewAnalyst();
+  } else {
+    STATE.activeSymbol = '';
+    refreshInstruments();
+    if (view === 'corpus') viewCorpus();
+    else if (view === 'evals') viewEvals();
+    else viewMonitor();
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  BOOT
+// ════════════════════════════════════════════════════════════════════
+async function boot() {
+  // status bar
+  tickClock();
+  setInterval(tickClock, 1000);
+  pollHealth();
+  setInterval(pollHealth, 20000);
+
+  // optional auth — restore any existing session, init the sign-in control.
+  // Never blocks: the terminal is fully usable anonymously.
+  try { await AUTH.init(); } catch (e) { /* anonymous mode is the fallback */ }
+
+  // command line
+  const ci = $('#cmd-input');
+  ci.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { runCommand(ci.value); ci.value = ''; }
+  });
+  // F-key navigation
+  window.addEventListener('keydown', (e) => {
+    const map = { F1: '#monitor', F2: '#analyze', F3: '#corpus', F4: '#evals',
+      F5: '#sanctions', F6: '#redemptions', F7: '#analyst' };
+    if (map[e.key]) { e.preventDefault(); location.hash = map[e.key]; }
+    if (e.key === '/' && document.activeElement !== ci) { e.preventDefault(); ci.focus(); }
+  });
+
+  // sidebar nav links
+  document.querySelectorAll('.side-row').forEach((l) => {
+    l.addEventListener('click', (e) => {
+      e.preventDefault();
+      location.hash = '#' + l.dataset.route;
+    });
+  });
+
+  window.addEventListener('hashchange', route);
+
+  // first render so something is on screen immediately
+  route();
+
+  // load the registry, then arm the live monitor
+  logLine('WORK', 'BOOT', [seg('session up', 'lg-val'), seg('loading registry')]);
+  try {
+    const data = await api('/tokens');
+    STATE.tokens = data.tokens;
+    refreshInstruments();
+    refreshGrid();
+    refreshTicker();
+    // if the user landed on the F5/F6 no-token picker before the registry
+    // resolved, re-render the view so the picker fills with instruments.
+    const [v, a] = location.hash.replace(/^#/, '').split('/');
+    if (!a && !STATE.activeSymbol &&
+        (v === 'sanctions' || v === 'redemptions')) {
+      route();
+    }
+    logLine('OK', 'REGISTRY', [
+      seg('loaded', 'lg-val'),
+      seg('tok' + data.count, 'd-up'),
+      seg('surveillance armed'),
+    ]);
+    startMonitor();
+  } catch (e) {
+    logLine('ERR', 'REGISTRY', [seg('LOAD-FAIL', 'd-warn'),
+      seg(String(e.message).slice(0, 48))]);
+    const box = $('#side-instr');
+    if (box) box.innerHTML = '<div class="side-empty">registry unavailable</div>';
+  }
+}
+
+window.addEventListener('DOMContentLoaded', boot);

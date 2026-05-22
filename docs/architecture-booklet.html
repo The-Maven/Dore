@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stablecoin Compliance Agent · Architecture</title>
+<meta name="description" content="System architecture for the Stablecoin Compliance Agent — three layers, the trust model, the curation gate, the eval loop." />
+<meta name="robots" content="noindex,nofollow" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500;600&family=Inter+Tight:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#0A0B0E; --ink-2:#111317;
+    --line:rgba(255,255,255,.07); --line-strong:rgba(255,255,255,.16);
+    --paper:#EFEAE0;
+    --muted:rgba(239,234,224,.72); --muted-2:rgba(239,234,224,.54); --muted-3:rgba(239,234,224,.38);
+    --gold:#D4A24A; --green:#7FE0A6; --amber:#F7B955; --rose:#F87171;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--ink);color:var(--paper);
+    font-family:'Inter',sans-serif;-webkit-font-smoothing:antialiased;overflow-wrap:break-word}
+  body{min-height:100vh;overflow-x:hidden}
+  ::selection{background:var(--gold);color:var(--ink)}
+  a{color:inherit}
+  body::before{
+    content:'';position:fixed;inset:0;pointer-events:none;z-index:1;opacity:.45;
+    background-image:
+      linear-gradient(rgba(255,255,255,.022) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.022) 1px,transparent 1px);
+    background-size:56px 56px;
+  }
+
+  /* HEADER */
+  .site-header{position:sticky;top:0;z-index:60;background:rgba(10,11,14,.92);
+    backdrop-filter:saturate(140%) blur(10px);-webkit-backdrop-filter:saturate(140%) blur(10px);
+    border-bottom:1px solid var(--line);}
+  .statusbar{border-bottom:1px solid var(--line);font-family:'IBM Plex Mono',monospace;
+    font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);}
+  .statusbar-inner{display:flex;align-items:center;justify-content:space-between;padding:10px 24px;gap:24px}
+  .status-pill{display:inline-flex;align-items:center;gap:8px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);
+    box-shadow:0 0 8px rgba(127,224,166,.7);display:inline-block}
+  .nav{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;max-width:1180px;margin:0 auto}
+  .brand{font-family:'Inter Tight',sans-serif;font-weight:700;font-size:15px;display:flex;align-items:center;gap:10px;text-decoration:none}
+  .brand-mark{width:24px;height:24px;border:1.5px solid var(--paper);display:inline-flex;
+    align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600}
+  .nav-right{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+  .nav-link{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--muted);text-decoration:none}
+  .nav-link:hover{color:var(--gold)}
+
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px;position:relative;z-index:2}
+
+  /* COVER */
+  .cover{padding:108px 24px 84px;max-width:1180px;margin:0 auto;border-bottom:1px solid var(--line);position:relative;z-index:2}
+  .eyebrow{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--gold);margin-bottom:32px;display:inline-flex;align-items:center;gap:14px}
+  .eyebrow::before{content:'';width:42px;height:1px;background:var(--gold)}
+  .cover-title{font-family:'Inter Tight',sans-serif;font-weight:700;
+    font-size:clamp(44px,6.4vw,92px);line-height:.96;letter-spacing:-.035em;margin:0 0 26px;max-width:16ch}
+  .cover-title .accent{color:var(--gold)}
+  .cover-sub{font-size:19px;line-height:1.55;color:var(--muted);max-width:62ch;margin:0 0 48px}
+  .cover-sub b{color:var(--paper);font-weight:500}
+  .cover-meta{border-top:1px solid var(--line);padding-top:32px;display:grid;
+    grid-template-columns:repeat(4,1fr);gap:28px;font-family:'IBM Plex Mono',monospace;
+    font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);line-height:1.7}
+  .cover-meta b{color:var(--gold);font-weight:500;display:block;margin-bottom:6px}
+  .cover-meta .v{display:block;margin-bottom:5px;color:var(--paper);font-size:13px;
+    letter-spacing:.02em;text-transform:none;font-family:'Inter Tight',sans-serif;font-weight:600}
+
+  /* SECTION */
+  section.block{padding:84px 24px;max-width:1180px;margin:0 auto;border-bottom:1px solid var(--line);
+    position:relative;z-index:2}
+  .head{display:grid;grid-template-columns:auto 1fr;gap:32px;align-items:start;
+    padding-bottom:32px;margin-bottom:40px;border-bottom:1px solid var(--line)}
+  .section-num{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--gold);border:1px solid var(--gold);padding:8px 12px}
+  .section-eyebrow{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+  .section-heading{font-family:'Inter Tight',sans-serif;font-weight:700;
+    font-size:clamp(30px,3.9vw,54px);line-height:1.02;letter-spacing:-.028em;margin:0;max-width:24ch}
+  .section-heading .accent{color:var(--gold)}
+
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:44px}
+  .two p,.lede p{font-size:16px;line-height:1.62;color:var(--muted);margin:0 0 16px;max-width:60ch}
+  .two p b,.lede p b{color:var(--paper);font-weight:500}
+  .two p .acc,.lede p .acc{color:var(--gold);font-weight:500}
+
+  /* LAYER CARDS */
+  .layers{display:grid;gap:0;border:1px solid var(--line-strong)}
+  .layer{display:grid;grid-template-columns:auto 1fr auto;gap:26px;align-items:center;
+    padding:30px 30px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,rgba(255,255,255,.014),rgba(255,255,255,0))}
+  .layer:last-child{border-bottom:none}
+  .layer-ic{width:54px;height:54px;display:flex;align-items:center;justify-content:center;
+    border:1px solid var(--line-strong)}
+  .layer-body h3{font-family:'Inter Tight',sans-serif;font-weight:700;font-size:22px;
+    letter-spacing:-.02em;margin:0 0 6px}
+  .layer-body p{font-size:14.5px;line-height:1.55;color:var(--muted);margin:0;max-width:64ch}
+  .layer-body p b{color:var(--paper);font-weight:500}
+  .layer-tag{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.14em;
+    text-transform:uppercase;padding:6px 10px;border:1px solid currentColor;white-space:nowrap}
+  .t-facts{color:var(--green)} .t-frame{color:var(--gold)} .t-judge{color:var(--amber)}
+
+  /* FLOW */
+  .flow{display:grid;gap:0;border:1px solid var(--line-strong);counter-reset:step}
+  .step{display:grid;grid-template-columns:auto auto 1fr;gap:22px;align-items:baseline;
+    padding:22px 28px;border-bottom:1px solid var(--line)}
+  .step:last-child{border-bottom:none}
+  .step-n{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink);
+    background:var(--gold);width:26px;height:26px;display:flex;align-items:center;
+    justify-content:center;font-weight:600;align-self:start}
+  .step-ic{width:22px;height:22px;align-self:start;margin-top:2px}
+  .step h4{font-family:'Inter Tight',sans-serif;font-weight:600;font-size:16px;margin:0 0 4px}
+  .step p{font-size:13.5px;line-height:1.55;color:var(--muted);margin:0;
+    font-family:'IBM Plex Mono',monospace}
+  .step p b{color:var(--paper);font-weight:500}
+
+  /* SPLIT TABLE */
+  .split{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line-strong)}
+  .split>div{padding:28px 28px}
+  .split>div:first-child{border-right:1px solid var(--line)}
+  .split h4{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;
+    text-transform:uppercase;margin:0 0 16px;display:flex;align-items:center;gap:10px}
+  .split ul{margin:0;padding:0;list-style:none}
+  .split li{font-size:14px;line-height:1.5;color:var(--muted);padding:9px 0;
+    border-top:1px dashed var(--line);display:flex;gap:10px}
+  .split li:first-child{border-top:none}
+  .split li b{color:var(--paper);font-weight:500}
+
+  /* GATE */
+  .gate{display:grid;grid-template-columns:1fr auto 1fr;gap:24px;align-items:center;
+    border:1px solid var(--line-strong);padding:34px 30px}
+  .gate-node{text-align:center}
+  .gate-node .gn-ic{width:46px;height:46px;margin:0 auto 14px}
+  .gate-node h4{font-family:'Inter Tight',sans-serif;font-weight:700;font-size:18px;margin:0 0 6px}
+  .gate-node p{font-size:13px;line-height:1.5;color:var(--muted);margin:0;
+    font-family:'IBM Plex Mono',monospace}
+  .gate-arrow{font-family:'IBM Plex Mono',monospace;color:var(--gold);font-size:22px}
+  .gate-rule{margin-top:20px;font-family:'IBM Plex Mono',monospace;font-size:12px;
+    color:var(--amber);text-align:center;letter-spacing:.04em}
+
+  /* CODE / TREE */
+  .panel{border:1px solid var(--line-strong);background:var(--ink-2);
+    font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;
+    color:var(--muted);padding:24px 26px;white-space:pre;overflow-x:auto}
+  .panel .c{color:var(--gold)} .panel .g{color:var(--green)} .panel .m{color:var(--muted-3)}
+  .panel-label{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--gold);margin-bottom:12px}
+
+  .cmd{display:flex;gap:14px;align-items:baseline;padding:13px 0;border-top:1px dashed var(--line);
+    font-family:'IBM Plex Mono',monospace;font-size:13px}
+  .cmd:first-child{border-top:none}
+  .cmd .p{color:var(--gold)} .cmd code{color:var(--paper)} .cmd .d{color:var(--muted-2);font-size:12px}
+
+  footer{padding:40px 24px;max-width:1180px;margin:0 auto;position:relative;z-index:2;
+    display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px;
+    font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--muted-2)}
+
+  /* AUDIT */
+  .audit-layer{border:1px solid var(--line-strong);margin-bottom:18px}
+  .audit-head{display:flex;align-items:center;gap:16px;padding:20px 26px;
+    border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,0))}
+  .audit-head h3{font-family:'Inter Tight',sans-serif;font-weight:700;
+    font-size:19px;letter-spacing:-.02em;margin:0}
+  .audit-head .verdict{margin-left:auto;font-family:'IBM Plex Mono',monospace;
+    font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+    padding:5px 10px;border:1px solid currentColor}
+  .v-ok{color:var(--green)} .v-watch{color:var(--amber)} .v-risk{color:var(--rose)}
+  .finding{display:grid;grid-template-columns:96px 1fr;gap:16px;
+    padding:14px 26px;border-bottom:1px dashed var(--line)}
+  .finding:last-child{border-bottom:none}
+  .finding .tag{font-family:'IBM Plex Mono',monospace;font-size:9px;
+    letter-spacing:.1em;text-transform:uppercase;padding:4px 0;
+    height:fit-content;font-weight:500}
+  .tag.blind{color:var(--rose)} .tag.fresh{color:var(--amber)}
+  .tag.recon{color:var(--gold)} .tag.guard{color:var(--green)}
+  .finding p{margin:0;font-size:13.5px;line-height:1.55;color:var(--muted)}
+  .finding p b{color:var(--paper);font-weight:500}
+
+  /* ROADMAP */
+  .tier{border:1px solid var(--line-strong);margin-bottom:16px}
+  .tier-head{padding:16px 24px;border-bottom:1px solid var(--line);
+    display:flex;gap:14px;align-items:baseline;
+    background:linear-gradient(180deg,rgba(212,162,74,.06),transparent)}
+  .tier-head b{font-family:'Inter Tight',sans-serif;font-weight:700;font-size:17px}
+  .tier-head span{font-family:'IBM Plex Mono',monospace;font-size:11px;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--muted-2)}
+  .prio{display:grid;grid-template-columns:auto 1fr auto;gap:16px;
+    padding:14px 24px;border-bottom:1px dashed var(--line);align-items:center}
+  .prio:last-child{border-bottom:none}
+  .prio-n{font-family:'IBM Plex Mono',monospace;color:var(--gold);font-size:12px}
+  .prio p{margin:0;font-size:13.5px;line-height:1.5;color:var(--muted)}
+  .prio p b{color:var(--paper);font-weight:500}
+  .badges{display:flex;gap:6px;white-space:nowrap}
+  .badge{font-family:'IBM Plex Mono',monospace;font-size:9px;padding:4px 8px;
+    letter-spacing:.08em;text-transform:uppercase}
+  .badge.imp{background:var(--gold);color:var(--ink);font-weight:600}
+  .badge.eff{border:1px solid var(--line-strong);color:var(--muted)}
+
+  @media(max-width:860px){
+    .two,.split,.cover-meta{grid-template-columns:1fr}
+    .gate{grid-template-columns:1fr}
+    .gate-arrow{transform:rotate(90deg)}
+    .head{grid-template-columns:1fr}
+    .layer{grid-template-columns:auto 1fr}
+    .layer-tag{display:none}
+    .finding{grid-template-columns:1fr;gap:4px}
+    .prio{grid-template-columns:auto 1fr}
+  }
+</style>
+</head>
+<body>
+
+<!-- icon sprite — color iconography -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-facts" viewBox="0 0 24 24">
+    <ellipse cx="12" cy="5.5" rx="7.5" ry="3" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <path d="M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+  </symbol>
+  <symbol id="i-frame" viewBox="0 0 24 24">
+    <path d="M12 3l8 4.5-8 4.5-8-4.5z" fill="none" stroke="#D4A24A" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M4 12l8 4.5 8-4.5" fill="none" stroke="#D4A24A" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M4 16.5l8 4.5 8-4.5" fill="none" stroke="#D4A24A" stroke-width="1.5" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-agent" viewBox="0 0 24 24">
+    <circle cx="12" cy="5" r="2.6" fill="none" stroke="#F7B955" stroke-width="1.5"/>
+    <circle cx="5" cy="18" r="2.6" fill="none" stroke="#F7B955" stroke-width="1.5"/>
+    <circle cx="19" cy="18" r="2.6" fill="none" stroke="#F7B955" stroke-width="1.5"/>
+    <path d="M10.5 7.2L6.5 15.6M13.5 7.2l4 8.4M7.6 18h8.8" fill="none" stroke="#F7B955" stroke-width="1.5"/>
+  </symbol>
+  <symbol id="i-supply" viewBox="0 0 24 24">
+    <rect x="3.5" y="9" width="7" height="6" rx="1.4" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <rect x="13.5" y="9" width="7" height="6" rx="1.4" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <path d="M10.5 12h3" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+  </symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24">
+    <path d="M6 3h8l4 4v14H6z" fill="none" stroke="#7FE0A6" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M14 3v4h4M9 12h6M9 15.5h6M9 8.5h3" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+  </symbol>
+  <symbol id="i-metric" viewBox="0 0 24 24">
+    <path d="M17 5H7l6 7-6 7h10" fill="none" stroke="#D4A24A" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-cite" viewBox="0 0 24 24">
+    <path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z" fill="none" stroke="#D4A24A" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M8.7 11.8l2.3 2.3 4.3-4.6" fill="none" stroke="#7FE0A6" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-gate" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5" fill="none" stroke="#F7B955" stroke-width="1.5"/>
+    <path d="M12 7v5l3.5 2" fill="none" stroke="#F7B955" stroke-width="1.6" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-eval" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5" fill="none" stroke="#D4A24A" stroke-width="1.5"/>
+    <circle cx="12" cy="12" r="4.5" fill="none" stroke="#D4A24A" stroke-width="1.5"/>
+    <circle cx="12" cy="12" r="1.4" fill="#7FE0A6"/>
+  </symbol>
+  <symbol id="i-human" viewBox="0 0 24 24">
+    <circle cx="12" cy="7" r="3.2" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <path d="M5.5 20c0-3.6 2.9-6.5 6.5-6.5s6.5 2.9 6.5 6.5" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+  </symbol>
+</svg>
+
+<header class="site-header">
+  <div class="statusbar">
+    <div class="statusbar-inner">
+      <span class="status-pill"><span class="dot"></span> System architecture · v0.1</span>
+      <span class="status-pill">Stablecoin Compliance Agent</span>
+    </div>
+  </div>
+  <nav class="nav">
+    <a class="brand" href="#"><span class="brand-mark">RS</span><span>Rayleigh Stark</span></a>
+    <div class="nav-right">
+      <a class="nav-link" href="#layers">Layers</a>
+      <a class="nav-link" href="#flow">Flow</a>
+      <a class="nav-link" href="#trust">Trust</a>
+      <a class="nav-link" href="#gate">Curation</a>
+      <a class="nav-link" href="#evals">Evals</a>
+      <a class="nav-link" href="#map">Modules</a>
+      <a class="nav-link" href="#audit">Audit</a>
+      <a class="nav-link" href="#roadmap">Roadmap</a>
+    </div>
+  </nav>
+</header>
+
+<section class="cover">
+  <div class="eyebrow">Architecture · 2026-Q2</div>
+  <h1 class="cover-title">The agent that <span class="accent">cites its work.</span></h1>
+  <p class="cover-sub">
+    The Stablecoin Compliance Agent analyses reserve backing — comparing a stablecoin's
+    latest attestation against live on-chain supply — and explains what is notable from a
+    regulatory examiner's view. <b>Three layers, nothing free-floating:</b> facts from
+    deterministic tools, judgement framed by a human-curated corpus, every claim traceable.
+  </p>
+  <div class="cover-meta">
+    <div><b>Runtime</b><span class="v">hermes-agent</span>Nous Research, open source</div>
+    <div><b>Layers</b><span class="v">Tools · Corpus · Agent</span>Facts · Frame · Judgement</div>
+    <div><b>v1 surface</b><span class="v">Attestation analysis</span>KYT · redemptions next</div>
+    <div><b>Tests</b><span class="v">34 · offline</span>Deterministic regression guard</div>
+  </div>
+</section>
+
+<!-- 00 PRINCIPLE -->
+<section class="block" id="principle">
+  <div class="head">
+    <span class="section-num">00 · Principle</span>
+    <div>
+      <p class="section-eyebrow">Why the system is shaped this way</p>
+      <h2 class="section-heading">A compliance tool may <span class="accent">never guess.</span></h2>
+    </div>
+  </div>
+  <div class="two">
+    <div>
+      <p>
+        An AI compliance product that is confidently wrong is worse than no product. It tells
+        an issuer they are fine when they are not, and the first time a regulator or a CCO
+        catches it, trust is gone.
+      </p>
+      <p>
+        So the system is built around one rule: <b>the agent reasons, but it never establishes
+        facts.</b> Numbers — on-chain supply, attested reserves, coverage — come only from
+        deterministic tools. Judgements are framed only by a <span class="acc">human-curated
+        corpus</span> of authoritative sources. Nothing the agent outputs floats free of a citation.
+      </p>
+    </div>
+    <div>
+      <p>
+        That gives three layers with hard boundaries. <span class="acc">Tools</span> produce
+        facts and cannot be argued with. <span class="acc">Corpus</span> supplies the reasoning
+        frame and is gated by a human. <span class="acc">Agent</span> synthesises the two and
+        must cite every line.
+      </p>
+      <p>
+        Each boundary is a typed dataclass, so each layer is independently testable. The whole
+        pipeline runs offline against a fake LLM and mocked RPC — which is how 34 tests guard
+        it against regression in under a tenth of a second.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- 01 LAYERS -->
+<section class="block" id="layers">
+  <div class="head">
+    <span class="section-num">01 · Layers</span>
+    <div>
+      <p class="section-eyebrow">The three-layer architecture</p>
+      <h2 class="section-heading">Facts. Frame. <span class="accent">Judgement.</span></h2>
+    </div>
+  </div>
+  <div class="layers">
+    <div class="layer">
+      <div class="layer-ic"><svg width="28" height="28"><use href="#i-facts"/></svg></div>
+      <div class="layer-body">
+        <h3>Tools — the facts</h3>
+        <p><b>onchain_supply</b> reads ERC-20 supply over JSON-RPC, concurrently, cached.
+        <b>attestation_fetch / extract</b> pull reserve figures from the published PDF.
+        <b>metrics</b> computes coverage, staleness, drift. No interpretation — arithmetic and chain reads.</p>
+      </div>
+      <span class="layer-tag t-facts">Deterministic</span>
+    </div>
+    <div class="layer">
+      <div class="layer-ic"><svg width="28" height="28"><use href="#i-frame"/></svg></div>
+      <div class="layer-body">
+        <h3>Corpus — the reasoning frame</h3>
+        <p>A curated set of authoritative sources — regulation, attestation standards,
+        rating-agency methodology. Ingested with section anchors so a citation points to
+        <b>genius-act §4(b)</b>, not just a document. Only <b>approved</b> sources are retrievable.</p>
+      </div>
+      <span class="layer-tag t-frame">Human-gated</span>
+    </div>
+    <div class="layer">
+      <div class="layer-ic"><svg width="28" height="28"><use href="#i-agent"/></svg></div>
+      <div class="layer-body">
+        <h3>Agent — the judgement</h3>
+        <p>Runs on hermes-agent via the <b>attestation-analysis</b> skill. Synthesises facts +
+        frame into an analysis. Bounded: it may only state figures from the tools, only cite
+        passages from the approved corpus, and must surface every gap.</p>
+      </div>
+      <span class="layer-tag t-judge">Bounded LLM</span>
+    </div>
+  </div>
+</section>
+
+<!-- 02 FLOW -->
+<section class="block" id="flow">
+  <div class="head">
+    <span class="section-num">02 · Flow</span>
+    <div>
+      <p class="section-eyebrow">What analyze() does, in order</p>
+      <h2 class="section-heading">One pass, <span class="accent">five steps.</span></h2>
+    </div>
+  </div>
+  <div class="flow">
+    <div class="step">
+      <span class="step-n">1</span>
+      <svg class="step-ic"><use href="#i-supply"/></svg>
+      <div><h4>Resolve on-chain supply</h4>
+        <p><b>get_onchain_supply</b> — totalSupply across chains, in parallel. Unverified
+        addresses are used but loudly flagged.</p></div>
+    </div>
+    <div class="step">
+      <span class="step-n">2</span>
+      <svg class="step-ic"><use href="#i-doc"/></svg>
+      <div><h4>Fetch + extract the attestation</h4>
+        <p><b>fetch_latest_attestation</b> then <b>extract_attestation</b> — LLM does
+        structured extraction only, with a confidence score.</p></div>
+    </div>
+    <div class="step">
+      <span class="step-n">3</span>
+      <svg class="step-ic"><use href="#i-metric"/></svg>
+      <div><h4>Compute metrics</h4>
+        <p><b>compute_metrics</b> — coverage ratio, attestation staleness, supply drift.
+        Pure arithmetic, no judgement.</p></div>
+    </div>
+    <div class="step">
+      <span class="step-n">4</span>
+      <svg class="step-ic"><use href="#i-frame"/></svg>
+      <div><h4>Retrieve the reasoning frame</h4>
+        <p><b>retrieve</b> — BM25 over approved, ingested corpus passages. Empty corpus is
+        reported as a gap, not silently ignored.</p></div>
+    </div>
+    <div class="step">
+      <span class="step-n">5</span>
+      <svg class="step-ic"><use href="#i-agent"/></svg>
+      <div><h4>Synthesise the analysis</h4>
+        <p><b>synthesize</b> — the SKILL.md rulebook as system prompt; facts + passages as
+        the only permitted inputs. Every claim cited.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 TRUST -->
+<section class="block" id="trust">
+  <div class="head">
+    <span class="section-num">03 · Trust</span>
+    <div>
+      <p class="section-eyebrow">The boundary that makes it safe</p>
+      <h2 class="section-heading">Where facts <span class="accent">end</span>, judgement begins.</h2>
+    </div>
+  </div>
+  <div class="split">
+    <div>
+      <h4><svg width="16" height="16"><use href="#i-facts"/></svg> Facts — from tools</h4>
+      <ul>
+        <li><b>On-chain supply.</b> A contract call. Not estimated, ever.</li>
+        <li><b>Attested reserves.</b> Structured extraction from the PDF, with confidence.</li>
+        <li><b>Coverage, staleness, drift.</b> Arithmetic over the above.</li>
+        <li><b>Provenance.</b> Each figure carries the tool that produced it.</li>
+      </ul>
+    </div>
+    <div>
+      <h4><svg width="16" height="16"><use href="#i-cite"/></svg> Judgement — from the agent</h4>
+      <ul>
+        <li><b>What is notable.</b> Cited to an approved corpus section.</li>
+        <li><b>What an examiner asks.</b> Framed against GENIUS / MiCA / FCA.</li>
+        <li><b>Confidence &amp; gaps.</b> Low extraction confidence is surfaced, not smoothed.</li>
+        <li><b>No investment view.</b> The agent never says "safe" or "buy".</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 04 GATE -->
+<section class="block" id="gate">
+  <div class="head">
+    <span class="section-num">04 · Curation</span>
+    <div>
+      <p class="section-eyebrow">Who decides what counts as authoritative</p>
+      <h2 class="section-heading">The agent proposes. <span class="accent">A human approves.</span></h2>
+    </div>
+  </div>
+  <div class="lede"><p>
+    Deciding which sources are authoritative is domain judgement. If the agent picked its own
+    authorities it would drift toward popular-but-wrong. So curation is gated:
+  </p></div>
+  <div class="gate">
+    <div class="gate-node">
+      <svg class="gn-ic"><use href="#i-agent"/></svg>
+      <h4>Agent proposes</h4>
+      <p>propose_source()<br>writes status: proposed</p>
+    </div>
+    <div class="gate-arrow">&rarr;</div>
+    <div class="gate-node">
+      <svg class="gn-ic"><use href="#i-human"/></svg>
+      <h4>Human approves</h4>
+      <p>edits sources.yaml<br>sets status: approved</p>
+    </div>
+    <div class="gate-arrow">&rarr;</div>
+    <div class="gate-node">
+      <svg class="gn-ic"><use href="#i-cite"/></svg>
+      <h4>Agent may cite</h4>
+      <p>retrieve() returns<br>approved sources only</p>
+    </div>
+  </div>
+  <p class="gate-rule">▲ Code can never write status: approved. The gate is a manual edit, by design.</p>
+</section>
+
+<!-- 05 EVALS -->
+<section class="block" id="evals">
+  <div class="head">
+    <span class="section-num">05 · Evals</span>
+    <div>
+      <p class="section-eyebrow">The expert-in-the-loop socket</p>
+      <h2 class="section-heading">How the agent <span class="accent">gets better.</span></h2>
+    </div>
+  </div>
+  <div class="two">
+    <div>
+      <p>
+        An LLM that reads forums accumulates breadth, not judgement. Judgement improves only
+        against a ground-truth signal. The <span class="acc">eval harness</span> is that signal.
+      </p>
+      <p>
+        A domain operator defines what a good analysis says; each definition becomes a case in
+        <b>cases.yaml</b> with deterministic checks. Break the curation gate, the supply tool,
+        or gap reporting — and evals fail. It is a regression guard and a teaching loop at once.
+      </p>
+    </div>
+    <div class="panel"><span class="panel-label">evals/cases.yaml</span><span class="g">- id:</span> usdc-supply-resolves
+  <span class="c">symbol:</span> USDC
+  <span class="c">expects:</span>
+    - kind: supply_resolved
+    - kind: gap_contains
+      value: <span class="g">"unverified"</span>
+<span class="m"># graded by src/sca/evals/harness.py</span>
+<span class="m"># OPERATOR: add cases as the corpus</span>
+<span class="m"># is approved and attestations seeded</span></div>
+  </div>
+</section>
+
+<!-- 06 MAP -->
+<section class="block" id="map">
+  <div class="head">
+    <span class="section-num">06 · Modules</span>
+    <div>
+      <p class="section-eyebrow">The package, mapped to the layers</p>
+      <h2 class="section-heading">Modular by <span class="accent">design.</span></h2>
+    </div>
+  </div>
+  <div class="panel"><span class="panel-label">src/sca/</span>config.py        <span class="m">paths + stablecoin registry</span>
+models.py        <span class="m">typed boundaries between layers</span>
+cache.py         <span class="m">TTL cache — speed</span>
+theme.py         <span class="m">gold/dark design system + iconography</span>
+cli.py           <span class="m">terminal interface</span>
+<span class="c">llm/</span>             <span class="m">provider abstraction — real + fake</span>
+<span class="c">tools/</span>           <span class="g">LAYER 1 · facts</span>
+  onchain_supply.py  metrics.py
+  attestation_fetch.py  attestation_extract.py
+<span class="c">corpus/</span>          <span class="c">LAYER 2 · reasoning frame</span>
+  sources.py  ingest.py  retrieve.py
+<span class="c">agent/</span>           <span class="amber">LAYER 3 · judgement</span>
+  analyze.py  synthesis.py
+<span class="c">evals/</span>           <span class="m">harness — expert-in-the-loop</span></div>
+</section>
+
+<!-- 07 RUN -->
+<section class="block" id="run">
+  <div class="head">
+    <span class="section-num">07 · Run</span>
+    <div>
+      <p class="section-eyebrow">Drive it from the terminal</p>
+      <h2 class="section-heading">The <span class="accent">interface.</span></h2>
+    </div>
+  </div>
+  <div class="cmd"><span class="p">$</span><code>sca analyze USDC</code><span class="d">full attestation analysis</span></div>
+  <div class="cmd"><span class="p">$</span><code>sca supply USDT</code><span class="d">on-chain supply only</span></div>
+  <div class="cmd"><span class="p">$</span><code>sca tokens</code><span class="d">configured stablecoins + address verification</span></div>
+  <div class="cmd"><span class="p">$</span><code>sca sources</code><span class="d">corpus sources + curation status</span></div>
+  <div class="cmd"><span class="p">$</span><code>sca evals</code><span class="d">run the eval harness</span></div>
+  <div class="cmd"><span class="p">$</span><code>pytest</code><span class="d">58 offline tests — the regression guard</span></div>
+</section>
+
+<!-- 08 AUDIT -->
+<section class="block" id="audit">
+  <div class="head">
+    <span class="section-num">08 · Audit</span>
+    <div>
+      <p class="section-eyebrow">An honest look at the five layers</p>
+      <h2 class="section-heading">Where it is <span class="accent">weak.</span></h2>
+    </div>
+  </div>
+  <div class="lede"><p>
+    The pipeline runs end-to-end on real data. It is also v0.1. Below, each
+    layer with its blind spots, freshness gaps, cross-chain reconciliation
+    gaps, and missing guards — named plainly, because a compliance tool that
+    hides its own limitations is the problem it claims to solve.
+  </p></div>
+
+  <div class="audit-layer">
+    <div class="audit-head">
+      <svg width="30" height="30"><use href="#i-doc"/></svg>
+      <h3>1 · Attestation pipeline</h3>
+      <span class="verdict v-watch">Watch</span>
+    </div>
+    <div class="finding"><span class="tag fresh">Freshness</span>
+      <p><b>Cached URLs never expire by date.</b> A resolved URL is reused
+      while it returns HTTP 200 — so when a new monthly report publishes, the
+      old URL still resolves and last month's figures keep flowing.</p></div>
+    <div class="finding"><span class="tag fresh">Freshness</span>
+      <p><b>The locator finds the latest <i>visible</i> report.</b> On
+      JS-heavy sites only old reports sit in static HTML — PYUSD resolved to a
+      Feb-2025 report. Downstream staleness flags it, but it is a real gap.</p></div>
+    <div class="finding"><span class="tag guard">Guard gap</span>
+      <p><b>Extraction is unvalidated.</b> The LLM's numbers are trusted as-is
+      — no check that the reserve breakdown sums to the stated total; negatives
+      and 100× errors pass silently.</p></div>
+    <div class="finding"><span class="tag blind">Blind spot</span>
+      <p><b>Confidence is self-reported.</b> The extracting model scores its
+      own confidence — a confidently-wrong extraction still reports 1.0.</p></div>
+    <div class="finding"><span class="tag guard">Guard gap</span>
+      <p><b>No download content-type check.</b> A 404 HTML page or a scanned
+      image-PDF yields empty or garbage text with no clear error.</p></div>
+  </div>
+
+  <div class="audit-layer">
+    <div class="audit-head">
+      <svg width="30" height="30"><use href="#i-supply"/></svg>
+      <h3>2 · On-chain supply</h3>
+      <span class="verdict v-watch">Watch</span>
+    </div>
+    <div class="finding"><span class="tag recon">Recon gap</span>
+      <p><b>Configured chains ≠ all chains.</b> USDC and USDT live on 15+
+      chains; the registry reads a handful. Supply is systematically
+      <i>under</i>-counted — and silently: nothing reports "N of M known
+      deployments seen."</p></div>
+    <div class="finding"><span class="tag recon">Recon gap</span>
+      <p><b>totalSupply ≠ circulating supply.</b> Treasury, locked and
+      bridge-locked tokens inflate the on-chain figure versus the issuer's own
+      circulation basis — a definitional mismatch with the attestation.</p></div>
+    <div class="finding"><span class="tag blind">Blind spot</span>
+      <p><b>Native vs bridged ambiguity.</b> Several chains carry both native
+      and bridged versions of a token; summing both would double-count.</p></div>
+    <div class="finding"><span class="tag guard">Guard gap</span>
+      <p><b>No block / timestamp captured.</b> Each chain is read "latest" with
+      no provenance of <i>when</i> that figure was true.</p></div>
+    <div class="finding"><span class="tag blind">Blind spot</span>
+      <p><b>Single public RPC per chain.</b> A rate-limited or stale RPC that
+      returns a plausible-but-wrong number is not caught — only hard errors
+      are.</p></div>
+  </div>
+
+  <div class="audit-layer">
+    <div class="audit-head">
+      <svg width="30" height="30"><use href="#i-metric"/></svg>
+      <h3>3 · Reconciliation</h3>
+      <span class="verdict v-risk">Risk</span>
+    </div>
+    <div class="finding"><span class="tag recon">Recon gap</span>
+      <p><b>Coverage divides incomparable things.</b> Point-in-time attested
+      reserves ÷ <i>live</i> supply is apples-to-oranges. The honest backing
+      ratio is reserves ÷ attested tokens; the live ratio is drift-contaminated.
+      Two distinct ratios are collapsed into one.</p></div>
+    <div class="finding"><span class="tag blind">Blind spot</span>
+      <p><b>Coverage says nothing about reserve quality.</b> $100B of T-bills
+      and $100B of affiliated-entity loans both read "102%." Composition risk —
+      the actual compliance question — is extracted but not assessed.</p></div>
+    <div class="finding"><span class="tag recon">Recon gap</span>
+      <p><b>Cross-chain is a bare sum.</b> No mint/burn parity, no
+      bridge-collateralisation check, no per-chain anomaly detection.</p></div>
+    <div class="finding"><span class="tag guard">Guard gap</span>
+      <p><b>No tolerance bands or sanity bounds.</b> Metrics are raw numbers;
+      nothing classifies "breach" vs "note," and a 50× coverage from a 100×
+      extraction error passes unchallenged.</p></div>
+    <div class="finding"><span class="tag blind">Blind spot</span>
+      <p><b>Snapshot only.</b> No time series — a slow coverage decline or an
+      accelerating drift is invisible.</p></div>
+  </div>
+
+  <div class="audit-layer">
+    <div class="audit-head">
+      <svg width="30" height="30"><use href="#i-frame"/></svg>
+      <h3>4 · Interface &amp; citations</h3>
+      <span class="verdict v-watch">Watch</span>
+    </div>
+    <div class="finding"><span class="tag blind">Blind spot</span>
+      <p><b>No machine-readable output.</b> The CLI prints prose — no
+      <code>--json</code>. An agent product needs composability.</p></div>
+    <div class="finding"><span class="tag blind">Blind spot</span>
+      <p><b>Citations are inline strings, not resolvable links.</b> You cannot
+      click a citation and open the source passage it points to.</p></div>
+    <div class="finding"><span class="tag guard">Guard gap</span>
+      <p><b>Coverage colour thresholds are hardcoded in the theme.</b> A policy
+      decision (green/amber/red) lives in the presentation layer.</p></div>
+    <div class="finding"><span class="tag fresh">Freshness</span>
+      <p><b>No persistence.</b> Every run is ephemeral — no "coverage was 105%
+      last month" diff, no push alerting; pull-only and terminal-only.</p></div>
+  </div>
+
+  <div class="audit-layer">
+    <div class="audit-head">
+      <svg width="30" height="30"><use href="#i-agent"/></svg>
+      <h3>5 · Agent reasoning</h3>
+      <span class="verdict v-risk">Risk</span>
+    </div>
+    <div class="finding"><span class="tag blind">Blind spot</span>
+      <p><b>Citation discipline is instructed, not verified.</b> SKILL.md tells
+      the model to cite every claim — nothing checks the narrative's figures
+      against the facts packet. The trust mechanism is unenforced.</p></div>
+    <div class="finding"><span class="tag guard">Guard gap</span>
+      <p><b>No number-hallucination guard.</b> A digit typo in the narrative is
+      not diffed against the tool outputs.</p></div>
+    <div class="finding"><span class="tag blind">Blind spot</span>
+      <p><b>"Gap detection" is mostly hardcoded <code>if</code> statements.</b>
+      The agent cannot surface a gap it was not programmed to look for;
+      LLM-noticed issues are not captured as structured gaps.</p></div>
+    <div class="finding"><span class="tag guard">Guard gap</span>
+      <p><b>Gaps are flat strings.</b> No severity, no category — a
+      regulator-facing tool needs "breach" distinct from "note."</p></div>
+    <div class="finding"><span class="tag blind">Blind spot</span>
+      <p><b>No prompt-injection defence.</b> Untrusted PDF and corpus text is
+      fed to the model with no framing as data — a malicious document could
+      carry instructions.</p></div>
+    <div class="finding"><span class="tag guard">Guard gap</span>
+      <p><b>Evals test plumbing, not reasoning.</b> All cases are structural; a
+      regression in analytical quality would not be caught.</p></div>
+  </div>
+</section>
+
+<!-- 09 ROADMAP -->
+<section class="block" id="roadmap">
+  <div class="head">
+    <span class="section-num">09 · Roadmap</span>
+    <div>
+      <p class="section-eyebrow">Iteration priorities, ranked by impact and effort</p>
+      <h2 class="section-heading">What to fix, <span class="accent">in order.</span></h2>
+    </div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-head"><b>Tier 1 — Now</b><span>high impact · low effort</span></div>
+    <div class="prio"><span class="prio-n">01</span>
+      <p><b>Extraction validation.</b> Breakdown must sum to the stated total;
+      bound the coverage ratio; reject negatives. Catches LLM extraction errors
+      before they reach reconciliation.</p>
+      <span class="badges"><span class="badge imp">Impact High</span><span class="badge eff">Effort Low</span></span></div>
+    <div class="prio"><span class="prio-n">02</span>
+      <p><b>Cache freshness expiry.</b> Re-resolve any cached attestation URL
+      older than the monthly cadence (~25 days), so a new report is never
+      missed.</p>
+      <span class="badges"><span class="badge imp">Impact High</span><span class="badge eff">Effort Low</span></span></div>
+    <div class="prio"><span class="prio-n">03</span>
+      <p><b>Split the coverage ratio.</b> Report attested coverage (reserves ÷
+      attested tokens) and live-implied coverage separately, each honestly
+      labelled.</p>
+      <span class="badges"><span class="badge imp">Impact High</span><span class="badge eff">Effort Low</span></span></div>
+    <div class="prio"><span class="prio-n">04</span>
+      <p><b>PDF guards.</b> Content-type check on download; an explicit error
+      when a PDF yields no extractable text (scanned image).</p>
+      <span class="badges"><span class="badge imp">Impact Med</span><span class="badge eff">Effort Low</span></span></div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-head"><b>Tier 2 — Next</b><span>high impact · real effort</span></div>
+    <div class="prio"><span class="prio-n">05</span>
+      <p><b>Citation verification.</b> Post-process the narrative — every figure
+      must trace to the facts packet or it is flagged. Makes the trust
+      mechanism real instead of instructed.</p>
+      <span class="badges"><span class="badge imp">Impact High</span><span class="badge eff">Effort Med</span></span></div>
+    <div class="prio"><span class="prio-n">06</span>
+      <p><b>Chain-coverage completeness.</b> Configure every material chain per
+      token and emit a "seen N of M known deployments" signal — end the silent
+      undercount.</p>
+      <span class="badges"><span class="badge imp">Impact High</span><span class="badge eff">Effort Med</span></span></div>
+    <div class="prio"><span class="prio-n">07</span>
+      <p><b>Prompt-injection hardening.</b> Delimit all untrusted document and
+      corpus text; instruct the model to treat it strictly as data.</p>
+      <span class="badges"><span class="badge imp">Impact High</span><span class="badge eff">Effort Med</span></span></div>
+    <div class="prio"><span class="prio-n">08</span>
+      <p><b>Structured gaps.</b> Gaps become {severity, category, message,
+      citation} — "breach" distinct from "note," machine-filterable.</p>
+      <span class="badges"><span class="badge imp">Impact Med</span><span class="badge eff">Effort Med</span></span></div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-head"><b>Tier 3 — Strategic</b><span>high value · high effort or dependency</span></div>
+    <div class="prio"><span class="prio-n">09</span>
+      <p><b>Reserve-quality assessment.</b> Classify composition — HQLA share,
+      affiliated-entity exposure, duration. The actual compliance question, not
+      just the headline ratio.</p>
+      <span class="badges"><span class="badge imp">Impact High</span><span class="badge eff">Effort High</span></span></div>
+    <div class="prio"><span class="prio-n">10</span>
+      <p><b>Circulating vs total supply.</b> Per-issuer treasury and locked
+      exclusions, reconciled to the attestation's circulation basis.</p>
+      <span class="badges"><span class="badge imp">Impact Med</span><span class="badge eff">Effort High</span></span></div>
+    <div class="prio"><span class="prio-n">11</span>
+      <p><b>Analysis history &amp; trends.</b> Persist every run; detect
+      declining coverage and accelerating drift over time.</p>
+      <span class="badges"><span class="badge imp">Impact Med</span><span class="badge eff">Effort Med</span></span></div>
+    <div class="prio"><span class="prio-n">12</span>
+      <p><b>Eval quality cases.</b> Operator-defined cases that test reasoning,
+      not plumbing. Blocked on a domain operator in the loop.</p>
+      <span class="badges"><span class="badge imp">Impact High</span><span class="badge eff">Dependency</span></span></div>
+  </div>
+</section>
+
+<footer>
+  <span>Rayleigh Stark · Stablecoin Compliance Agent</span>
+  <span>Architecture · v0.1 · 2026-Q2</span>
+  <span><span class="dot"></span>&nbsp; Built on hermes-agent</span>
+</footer>
+
+</body>
+</html>

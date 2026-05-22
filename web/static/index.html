@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Doré — by Rayleigh Stark</title>
+<meta name="description" content="Doré — stablecoin reserve verification: live on-chain supply, reserve attestations, cited analysis. By Rayleigh Stark." />
+<meta name="robots" content="noindex,nofollow" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Inter+Tight:wght@500;600;700&family=Bodoni+Moda:opsz,wght@6..96,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css?v=27">
+</head>
+<body>
+
+<!-- ── colour icon sprite — matches docs/architecture-booklet.html ─── -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-facts" viewBox="0 0 24 24">
+    <ellipse cx="12" cy="5.5" rx="7.5" ry="3" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <path d="M4.5 5.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <path d="M4.5 11.5v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+  </symbol>
+  <symbol id="i-frame" viewBox="0 0 24 24">
+    <path d="M12 3l8 4.5-8 4.5-8-4.5z" fill="none" stroke="#D4A24A" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M4 12l8 4.5 8-4.5" fill="none" stroke="#D4A24A" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M4 16.5l8 4.5 8-4.5" fill="none" stroke="#D4A24A" stroke-width="1.5" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-agent" viewBox="0 0 24 24">
+    <circle cx="12" cy="5" r="2.6" fill="none" stroke="#F7B955" stroke-width="1.5"/>
+    <circle cx="5" cy="18" r="2.6" fill="none" stroke="#F7B955" stroke-width="1.5"/>
+    <circle cx="19" cy="18" r="2.6" fill="none" stroke="#F7B955" stroke-width="1.5"/>
+    <path d="M10.5 7.2L6.5 15.6M13.5 7.2l4 8.4M7.6 18h8.8" fill="none" stroke="#F7B955" stroke-width="1.5"/>
+  </symbol>
+  <symbol id="i-supply" viewBox="0 0 24 24">
+    <rect x="3.5" y="9" width="7" height="6" rx="1.4" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <rect x="13.5" y="9" width="7" height="6" rx="1.4" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <path d="M10.5 12h3" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+  </symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24">
+    <path d="M6 3h8l4 4v14H6z" fill="none" stroke="#7FE0A6" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M14 3v4h4M9 12h6M9 15.5h6M9 8.5h3" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+  </symbol>
+  <symbol id="i-metric" viewBox="0 0 24 24">
+    <path d="M17 5H7l6 7-6 7h10" fill="none" stroke="#D4A24A" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-cite" viewBox="0 0 24 24">
+    <path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z" fill="none" stroke="#D4A24A" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M8.7 11.8l2.3 2.3 4.3-4.6" fill="none" stroke="#7FE0A6" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-gate" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5" fill="none" stroke="#F7B955" stroke-width="1.5"/>
+    <path d="M12 7v5l3.5 2" fill="none" stroke="#F7B955" stroke-width="1.6" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-eval" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5" fill="none" stroke="#D4A24A" stroke-width="1.5"/>
+    <circle cx="12" cy="12" r="4.5" fill="none" stroke="#D4A24A" stroke-width="1.5"/>
+    <circle cx="12" cy="12" r="1.4" fill="#7FE0A6"/>
+  </symbol>
+  <symbol id="i-human" viewBox="0 0 24 24">
+    <circle cx="12" cy="7" r="3.2" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <path d="M5.5 20c0-3.6 2.9-6.5 6.5-6.5s6.5 2.9 6.5 6.5" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+  </symbol>
+  <symbol id="i-ok" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" fill="none" stroke="#7FE0A6" stroke-width="1.6"/>
+    <path d="M8 12.4l2.6 2.6L16 9" fill="none" stroke="#7FE0A6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24">
+    <path d="M12 3.5l9 16H3z" fill="none" stroke="#F7B955" stroke-width="1.6" stroke-linejoin="round"/>
+    <path d="M12 9.5v4.5M12 16.6v.2" fill="none" stroke="#F7B955" stroke-width="1.8" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-error" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" fill="none" stroke="#F87171" stroke-width="1.6"/>
+    <path d="M9 9l6 6M15 9l-6 6" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-info" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" fill="none" stroke="#D4A24A" stroke-width="1.6"/>
+    <path d="M12 11v6M12 7.6v.2" fill="none" stroke="#D4A24A" stroke-width="1.8" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-sanction" viewBox="0 0 24 24">
+    <path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z" fill="none" stroke="#F7B955" stroke-width="1.5" stroke-linejoin="round"/>
+    <circle cx="12" cy="12" r="3.4" fill="none" stroke="#F87171" stroke-width="1.6"/>
+    <path d="M9.6 9.6l4.8 4.8" fill="none" stroke="#F87171" stroke-width="1.6" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="i-redeem" viewBox="0 0 24 24">
+    <path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <path d="M4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7" fill="none" stroke="#7FE0A6" stroke-width="1.5"/>
+    <path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" fill="none" stroke="#D4A24A" stroke-width="1.4"/>
+  </symbol>
+  <!-- analyst — a conversation mark: speech contour with an assay diamond -->
+  <symbol id="i-analyst" viewBox="0 0 24 24">
+    <path d="M4 5.5h16v10.5H9.5L5 20v-4H4z" fill="none" stroke="#F7B955" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M12 8.1l3 1.7-3 1.7-3-1.7z" fill="none" stroke="#D4A24A" stroke-width="1.4" stroke-linejoin="round"/>
+    <path d="M9 9.8l3 1.7 3-1.7" fill="none" stroke="#7FE0A6" stroke-width="1.4" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="i-chain" viewBox="0 0 24 24">
+    <rect x="3" y="9.5" width="9" height="5" rx="2.5" fill="none" stroke="#7FE0A6" stroke-width="1.5"
+      transform="rotate(-40 7.5 12)"/>
+    <rect x="12" y="9.5" width="9" height="5" rx="2.5" fill="none" stroke="#7FE0A6" stroke-width="1.5"
+      transform="rotate(-40 16.5 12)"/>
+  </symbol>
+
+  <!-- ── instrument brand marks — monochrome, currentColor, terminal-grade ─── -->
+  <!-- USDC · Circle — ring with a dollar stroke (Circle's ringed-glyph motif) -->
+  <symbol id="t-USDC" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M12 6.6v10.8M9.7 9.2c0-1.3 1-2.1 2.3-2.1s2.3.8 2.3 2 -.7 1.7-2.3 2.2-2.4 1-2.4 2.3.9 2.3 2.4 2.3 2.4-.9 2.4-2.2"
+      fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  </symbol>
+  <!-- EURC · Circle — same ring, euro stroke -->
+  <symbol id="t-EURC" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M15.5 8.4a4.2 4.2 0 0 0-3-1.3c-2.6 0-4.4 2.1-4.4 4.9s1.8 4.9 4.4 4.9a4.2 4.2 0 0 0 3-1.3M6.4 10.8h6.4M6.4 13.4h6.4"
+      fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  </symbol>
+  <!-- USDT · Tether — circle with the tether mark (T on a crossbar) -->
+  <symbol id="t-USDT" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M7.6 8.4h8.8M12 8.4v9.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    <ellipse cx="12" cy="11.2" rx="4.5" ry="1.7" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  </symbol>
+  <!-- PYUSD · Paxos/PayPal — the double-P mark -->
+  <symbol id="t-PYUSD" viewBox="0 0 24 24">
+    <path d="M6 19V6.5h4.4c2.4 0 3.9 1.5 3.9 3.7s-1.5 3.8-3.9 3.8H8.4"
+      fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M11 19V9.8h4.4c2.4 0 3.9 1.5 3.9 3.7s-1.5 3.8-3.9 3.8H13.4"
+      fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <!-- USDP · Paxos — the Paxos origami diamond mark -->
+  <symbol id="t-USDP" viewBox="0 0 24 24">
+    <path d="M12 3l9 9-9 9-9-9z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    <path d="M12 3v18M3 12h18M7.5 7.5l9 9M16.5 7.5l-9 9" fill="none" stroke="currentColor" stroke-width="1" opacity=".5"/>
+    <path d="M12 3l4.5 4.5L12 12 7.5 7.5z" fill="currentColor" opacity=".9"/>
+  </symbol>
+  <!-- GUSD · Gemini — the Gemini glyph (twin bars closed by arcs) -->
+  <symbol id="t-GUSD" viewBox="0 0 24 24">
+    <path d="M9 5.5v13M15 5.5v13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    <path d="M6 5.5q6 -3 12 0M6 18.5q6 3 12 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+  </symbol>
+
+  <!-- ── chain marks — rendered in each chain's brand colour via the
+       data-chain scoped CSS in app.css. Solana uses a two-stop gradient. -->
+  <linearGradient id="c-solana-grad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#14F195"/>
+    <stop offset="1" stop-color="#9945FF"/>
+  </linearGradient>
+  <!-- Ethereum — the twin-tetrahedron diamond -->
+  <symbol id="c-ethereum" viewBox="0 0 24 24">
+    <path d="M12 2.5l6 9.6-6 3.5-6-3.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M6 13.3l6 3.5 6-3.5-6 8.2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M12 2.5v13" fill="none" stroke="currentColor" stroke-width="1.1" opacity=".55"/>
+  </symbol>
+  <!-- Arbitrum — concentric arc nesting (the Arbitrum mark motif) -->
+  <symbol id="c-arbitrum" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <path d="M8 16.5l4-9 4 9M9.4 13.4h5.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <!-- Base — a single ring with a flat cut (the Base coin glyph) -->
+  <symbol id="c-base" viewBox="0 0 24 24">
+    <path d="M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M5 12h9.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  </symbol>
+  <!-- Optimism — twin filled discs (the OP double-O mark) -->
+  <symbol id="c-optimism" viewBox="0 0 24 24">
+    <circle cx="8" cy="12" r="4.4" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <circle cx="16" cy="12" r="4.4" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <circle cx="8" cy="12" r="1.5" fill="currentColor"/>
+    <circle cx="16" cy="12" r="1.5" fill="currentColor"/>
+  </symbol>
+  <!-- Polygon — the Polygon hexagon outline -->
+  <symbol id="c-polygon" viewBox="0 0 24 24">
+    <path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M12 8l3.9 2.25v4.5L12 17l-3.9-2.25v-4.5z" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".55" stroke-linejoin="round"/>
+  </symbol>
+  <!-- Solana — three stacked slanted bars (the Solana mark).
+       Bars use the brand teal→purple gradient; falls back to currentColor
+       (the monochrome treatment) for any context without the gradient. -->
+  <symbol id="c-solana" viewBox="0 0 24 24">
+    <path d="M7 6.5h11.5l-2.6 2.6H4.4z" fill="currentColor"/>
+    <path d="M5.5 10.7h11.5l2.6 2.6H8.1z" fill="currentColor"/>
+    <path d="M7 14.9h11.5l-2.6 2.6H4.4z" fill="currentColor"/>
+  </symbol>
+</svg>
+
+<!-- ── top status bar ───────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-brand">
+    <span class="brand-mark">RS</span>
+    <span class="brand-sep">│</span>
+    <span class="brand-lockup">
+      <span class="brand-hero">Dor<span class="acc">é</span></span>
+      <span class="brand-rule"><i></i><span></span><i></i></span>
+      <span class="brand-credit">By Rayleigh Stark</span>
+    </span>
+  </div>
+  <div class="topbar-stats" id="topbar-stats">
+    <span class="tstat"><i class="tk">SESSION</i> <b id="ts-clock">--:--:--</b></span>
+    <span class="tstat"><i class="tk">TOKENS</i> <b id="ts-tokens">--</b></span>
+    <span class="tstat"><i class="tk">FEED</i> <b id="ts-lines">0</b> ln</span>
+    <span class="tstat"><i class="tk">LLM</i> <b id="ts-llm">--</b></span>
+    <span class="tstat conn"><span class="dot" id="ts-dot"></span> <b id="ts-conn">LINK…</b></span>
+  </div>
+  <div class="topbar-auth" id="topbar-auth">
+    <button class="auth-ctl" id="auth-ctl" type="button">
+      <span class="dot auth-dot" id="auth-dot"></span>
+      <span id="auth-label">SIGN IN</span>
+    </button>
+  </div>
+</header>
+
+<!-- ── auth panel — sign in / create account (persistence is optional) ── -->
+<div class="auth-overlay" id="auth-overlay" hidden>
+  <div class="auth-panel" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <div class="auth-head">
+      <span class="auth-mark">RS</span>
+      <span id="auth-title" class="auth-title">ACCESS</span>
+      <button class="auth-x" id="auth-close" type="button" aria-label="close">×</button>
+    </div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" id="auth-tab-in" type="button" data-mode="in">SIGN IN</button>
+      <button class="auth-tab" id="auth-tab-up" type="button" data-mode="up">CREATE ACCOUNT</button>
+    </div>
+    <p class="auth-blurb" id="auth-blurb">
+      The terminal is fully usable without an account. An account only
+      unlocks <b>saving</b> — analysis history, curation votes, your profile.
+    </p>
+    <div class="auth-oauth">
+      <button class="oauth-btn" id="oauth-google" type="button">
+        <span class="oauth-ic" aria-hidden="true">
+          <svg viewBox="0 0 18 18" width="16" height="16">
+            <path fill="#4285F4" d="M17.64 9.205c0-.639-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/>
+            <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.859-3.048.859-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/>
+            <path fill="#FBBC05" d="M3.964 10.709A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.709V4.959H.957A8.997 8.997 0 0 0 0 9c0 1.452.348 2.827.957 4.041l3.007-2.332z"/>
+            <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.959L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/>
+          </svg>
+        </span>
+        <span class="oauth-lbl">Continue with Google</span>
+      </button>
+      <button class="oauth-btn" id="oauth-apple" type="button">
+        <span class="oauth-ic" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="15" height="15">
+            <path fill="currentColor" d="M11.182.008C11.148-.03 9.923.023 8.857 1.18c-1.066 1.156-.902 2.482-.878 2.516.024.034 1.52.087 2.475-1.258.955-1.345.762-2.391.728-2.43zm3.314 11.733c-.048-.096-2.325-1.234-2.113-3.422.212-2.189 1.675-2.789 1.698-2.854.023-.065-.597-.79-1.254-1.157a3.692 3.692 0 0 0-1.563-.434c-.108-.003-.483-.095-1.254.116-.508.139-1.653.589-1.968.607-.316.018-1.256-.522-2.267-.665-.647-.125-1.333.131-1.824.328-.49.196-1.422.754-2.074 2.237-.652 1.482-.311 3.83-.067 4.56.244.729.625 1.924 1.273 2.796.576.984 1.34 1.667 1.659 1.899.319.232 1.219.386 1.843.067.502-.308 1.408-.485 1.766-.472.357.013 1.061.154 1.782.539.571.197 1.111.115 1.652-.105.541-.221 1.324-1.059 2.238-2.758.347-.79.505-1.217.473-1.282z"/>
+          </svg>
+        </span>
+        <span class="oauth-lbl">Continue with Apple</span>
+      </button>
+    </div>
+    <div class="auth-or"><span>or</span></div>
+    <form class="auth-form" id="auth-form" autocomplete="on">
+      <label class="auth-field">
+        <span class="auth-k">EMAIL</span>
+        <input id="auth-email" class="auth-in" type="email" required
+          autocomplete="email" spellcheck="false" placeholder="you@firm.com" />
+      </label>
+      <label class="auth-field">
+        <span class="auth-k">PASSWORD</span>
+        <input id="auth-pass" class="auth-in" type="password" required
+          autocomplete="current-password" minlength="6" placeholder="••••••••" />
+      </label>
+      <div class="auth-msg" id="auth-msg" hidden></div>
+      <button class="btn auth-submit" id="auth-submit" type="submit">SIGN IN</button>
+    </form>
+    <div class="auth-foot" id="auth-foot"></div>
+  </div>
+</div>
+
+<!-- ── live ticker tape — real /api/supply data, marquee scroll ──────── -->
+<div class="ticker" id="ticker" aria-label="live stablecoin supply ticker">
+  <div class="ticker-tag">SUPPLY</div>
+  <div class="ticker-viewport">
+    <div class="ticker-track" id="ticker-track">
+      <span class="tick-empty">awaiting on-chain reads…</span>
+    </div>
+  </div>
+</div>
+
+<!-- ── three-zone shell ─────────────────────────────────────────────── -->
+<div class="shell">
+
+  <!-- left sidebar -->
+  <aside class="sidebar">
+    <div class="side-block">
+      <div class="side-head">VIEWS</div>
+      <nav class="side-nav" id="side-views">
+        <a class="side-row" href="#monitor" data-route="monitor"><span class="fk">F1</span><span class="lbl">MONITOR</span></a>
+        <a class="side-row" href="#analyze" data-route="analyze"><span class="fk">F2</span><span class="lbl">ANALYZE</span></a>
+        <a class="side-row" href="#corpus" data-route="corpus"><span class="fk">F3</span><span class="lbl">CORPUS</span></a>
+        <a class="side-row" href="#evals" data-route="evals"><span class="fk">F4</span><span class="lbl">EVALS</span></a>
+        <a class="side-row" href="#sanctions" data-route="sanctions"><span class="fk">F5</span><span class="lbl">SANCTIONS</span></a>
+        <a class="side-row" href="#redemptions" data-route="redemptions"><span class="fk">F6</span><span class="lbl">REDEMPTIONS</span></a>
+        <a class="side-row" href="#analyst" data-route="analyst"><span class="fk">F7</span><span class="lbl">ANALYST</span></a>
+      </nav>
+    </div>
+    <div class="side-block grow">
+      <div class="side-head">INSTRUMENTS <span class="side-count" id="instr-count">--</span></div>
+      <div class="side-instr" id="side-instr">
+        <div class="side-empty">loading registry…</div>
+      </div>
+    </div>
+    <div class="side-block">
+      <div class="side-head">ENGINE</div>
+      <div class="side-meta">
+        <div class="smeta-row"><span>facts</span><b>deterministic tools</b></div>
+        <div class="smeta-row"><span>frame</span><b>human-gated corpus</b></div>
+        <div class="smeta-row"><span>synth</span><b>cited agent</b></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- main area -->
+  <main id="app" class="main"></main>
+
+</div>
+
+<!-- ── bottom command line ──────────────────────────────────────────── -->
+<footer class="cmdline">
+  <span class="cmd-prompt">DORÉ&gt;</span>
+  <input id="cmd-input" class="cmd-input" type="text" autocomplete="off" spellcheck="false"
+    placeholder="command — analyze USDC · screen USDC · redeem USDC · ask the analyst · monitor · corpus · evals · clear" />
+  <span class="cmd-hint" id="cmd-hint">three layers · no layer free-floating</span>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="/static/app.js?v=27"></script>
+</body>
+</html>

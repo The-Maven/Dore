@@ -1,0 +1,107 @@
+# Stablecoin registry for the attestation-analysis agent.
+#
+# VERIFY EVERY ADDRESS before trusting it. A wrong contract address silently
+# returns a wrong supply number — unacceptable for a compliance tool.
+# `verified: true` means a human checked it (via `sca curate`). Unverified
+# addresses are used but loudly flagged.
+#
+# transparency_url is the DURABLE anchor — the attestation locator resolves
+# the current PDF from it, so a changed PDF URL never blindsides us.
+# latest_attestation_url is an optional seed / cache hint and may rot.
+#
+# Scope: fiat-backed stablecoins that publish reserve attestations.
+# Crypto-collateralised tokens (DAI/USDS, GHO, crvUSD) and synthetics (USDe)
+# are out of v1 — their backing is on-chain collateral, not a PDF attestation.
+
+chains:
+  ethereum: {kind: evm, rpc: "https://ethereum-rpc.publicnode.com"}
+  base: {kind: evm, rpc: "https://base-rpc.publicnode.com"}
+  arbitrum: {kind: evm, rpc: "https://arbitrum-one-rpc.publicnode.com"}
+  optimism: {kind: evm, rpc: "https://optimism-rpc.publicnode.com"}
+  polygon: {kind: evm, rpc: "https://polygon-bor-rpc.publicnode.com"}
+  solana: {kind: solana, rpc: "https://api.mainnet-beta.solana.com"}
+  tron: {kind: tron, rpc: "https://api.trongrid.io"}
+
+stablecoins:
+  - symbol: USDC
+    name: USD Coin
+    issuer: Circle
+    transparency_url: https://www.circle.com/transparency
+    latest_attestation_url: "https://6778953.fs1.hubspotusercontent-na1.net/hubfs/6778953/USDCAttestationReports/2026/2026%20USDC_Examination%20Report%20March%2026.pdf"
+    deployments:
+      - {chain: ethereum, contract: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", verified: true}
+      - {chain: base, contract: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", verified: false}
+      - {chain: arbitrum, contract: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", verified: false}
+      - {chain: optimism, contract: "0x0b2c639c533813f4aa9d7837caf62653d097ff85", verified: false}
+      - {chain: polygon, contract: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", verified: false}
+      - {chain: solana, contract: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", verified: false}
+
+  - symbol: USDT
+    name: Tether USD
+    issuer: Tether
+    transparency_url: https://tether.to/en/transparency
+    latest_attestation_url: ""
+    deployments:
+      - {chain: ethereum, contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7", verified: true}
+      - {chain: tron, contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", verified: false}
+
+  - symbol: PYUSD
+    name: PayPal USD
+    issuer: Paxos
+    transparency_url: https://www.paxos.com/pyusd-transparency
+    latest_attestation_url: ""
+    deployments:
+      - {chain: ethereum, contract: "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8", verified: false}
+
+  - symbol: USDP
+    name: Pax Dollar
+    issuer: Paxos
+    transparency_url: https://www.paxos.com/usdp-transparency
+    latest_attestation_url: ""
+    deployments:
+      - {chain: ethereum, contract: "0x8E870D67F660D95d5be530380D0eC0bd388289E1", verified: false}
+
+  - symbol: USDG
+    name: Global Dollar
+    issuer: Paxos
+    transparency_url: https://www.paxos.com/usdg-transparency
+    latest_attestation_url: ""
+    deployments:
+      - {chain: ethereum, contract: "0xe343167631d89B6Ffc58B88d6b7fB0228795491D", verified: false}
+
+  - symbol: TUSD
+    name: TrueUSD
+    issuer: Techteryx
+    transparency_url: https://tusd.io/transparency
+    latest_attestation_url: ""
+    deployments:
+      - {chain: ethereum, contract: "0x0000000000085d4780B73119b644AE5ecd22b376", verified: false}
+
+  - symbol: GUSD
+    name: Gemini Dollar
+    issuer: Gemini
+    transparency_url: https://www.gemini.com/dollar
+    # Real BPM reserves attestation. Dated — Gemini's current monthly reports
+    # sit on Next.js/Contentful infra the locator can't reach yet; the
+    # staleness guardrail flags the age, and `sca refresh` updates it when a
+    # reachable newer source exists.
+    latest_attestation_url: "https://assets.ctfassets.net/jg6lo9a2ukvr/44zQHA7FLzJFkk7d4e9bDS/abbf4cd6c4a295f991d9674d874d6271/Gemini_Trust_Company__LLC_-_GUSD_Reserves_Report_July_2025.pdf"
+    deployments:
+      - {chain: ethereum, contract: "0x056Fd409E1d7A124BD7017459dFEa2F387b6d5Cd", verified: false}
+
+  - symbol: FDUSD
+    name: First Digital USD
+    issuer: First Digital
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      - {chain: ethereum, contract: "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409", verified: false}
+
+  - symbol: EURC
+    name: Euro Coin
+    issuer: Circle
+    peg: EUR
+    transparency_url: https://www.circle.com/transparency
+    latest_attestation_url: ""
+    deployments:
+      - {chain: ethereum, contract: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c", verified: false}

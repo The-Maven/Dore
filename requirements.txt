@@ -1,0 +1,7 @@
+# Active — v1 deterministic tools
+requests>=2.31
+pyyaml>=6.0
+
+# Needed as the stubs get implemented:
+# pdfplumber>=0.11      # attestation PDF text extraction
+# anthropic>=0.40       # LLM: structured extraction + analysis synthesis
