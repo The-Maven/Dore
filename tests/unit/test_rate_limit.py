@@ -55,12 +55,27 @@ def test_per_ip_isolation():
     rate_limit.enforce(_FakeRequest(ip="1.1.1.1"))
 
 
-def test_x_forwarded_for_first_value_used():
-    """Proxy-aware: trust the first XFF entry."""
+def test_x_forwarded_for_first_value_used(monkeypatch):
+    """Proxy-aware: when SCA_TRUST_PROXY is set, trust the first XFF entry."""
+    monkeypatch.setenv("SCA_TRUST_PROXY", "1")
     for _ in range(int(rate_limit._CAPACITY)):
         rate_limit.enforce(_FakeRequest(fwd="203.0.113.5, 10.0.0.1"))
     # Another client behind the same proxy is independent
     rate_limit.enforce(_FakeRequest(fwd="203.0.113.99"))
+
+
+def test_x_forwarded_for_ignored_when_proxy_untrusted(monkeypatch):
+    """Default posture: XFF is ignored. A spoofed header cannot evade the
+    rate limit by claiming a fresh bucket on every call — the socket peer
+    is what we bucket on."""
+    monkeypatch.delenv("SCA_TRUST_PROXY", raising=False)
+    # Exhaust from a single socket peer, all claiming different XFF IPs.
+    for i in range(int(rate_limit._CAPACITY)):
+        rate_limit.enforce(_FakeRequest(ip="5.5.5.5", fwd=f"10.0.0.{i}"))
+    # Next call from the same peer is rejected even with a new XFF value
+    with pytest.raises(HTTPException) as exc:
+        rate_limit.enforce(_FakeRequest(ip="5.5.5.5", fwd="10.0.0.99"))
+    assert exc.value.status_code == 429
 
 
 def test_bucket_refills_over_time(monkeypatch):

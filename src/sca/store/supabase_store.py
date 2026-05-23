@@ -321,6 +321,88 @@ class SupabaseStore(Store):
             "address_decisions": address_decisions,
         }
 
+    # ── attestation URL overrides ─────────────────────────────────────
+    # Schema-drift fallback: if the live DB hasn't run migration 0003 yet,
+    # every method here degrades to a no-op so the resolver falls through
+    # to the YAML seed and the UI keeps rendering. Same pattern as
+    # `list_sources` reading YAML when the table is missing.
+    def _table_missing(self, exc: Exception) -> bool:
+        msg = str(exc)
+        return "attestation_url_overrides" in msg and (
+            "schema cache" in msg or "does not exist" in msg
+        )
+
+    def get_attestation_url_override(self, symbol: str) -> dict | None:
+        try:
+            resp = (
+                self._client.table("attestation_url_overrides")
+                .select("*")
+                .eq("symbol", symbol)
+                .order("set_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self._table_missing(exc):
+                return None
+            raise
+        rows = resp.data or []
+        if not rows or not rows[0].get("url"):
+            return None
+        return rows[0]
+
+    def set_attestation_url_override(
+        self,
+        symbol: str,
+        url: str,
+        *,
+        via: str = "manual",
+        set_by: str | None = None,
+        notes: str = "",
+    ) -> None:
+        row = {
+            "symbol": symbol,
+            "url": url,
+            "via": via,
+            "set_by": set_by,
+            "notes": notes,
+        }
+        try:
+            self._client.table("attestation_url_overrides").insert(row).execute()
+        except Exception as exc:  # noqa: BLE001
+            if self._table_missing(exc):
+                # Log once; the resolver will fall through to seed/locator.
+                from sca.observability import log_event
+                log_event(
+                    "attestation.override_table_missing", level="warn",
+                    detail="run supabase/migrations/0003_attestation_url_overrides.sql",
+                )
+                return
+            raise
+
+    def list_attestation_url_overrides(self) -> list[dict]:
+        try:
+            resp = (
+                self._client.table("attestation_url_overrides")
+                .select("*")
+                .order("set_at", desc=True)
+                .limit(500)
+                .execute()
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self._table_missing(exc):
+                return []
+            raise
+        seen: set[str] = set()
+        out: list[dict] = []
+        for row in resp.data or []:
+            sym = row.get("symbol")
+            if sym in seen:
+                continue
+            seen.add(sym)
+            out.append(row)
+        return out
+
     # ── monitor ───────────────────────────────────────────────────────
     def save_snapshot(
         self,

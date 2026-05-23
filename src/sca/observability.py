@@ -68,6 +68,41 @@ def set_sink(sink: Callable[[dict], None]) -> Callable[[dict], None]:
     return prev
 
 
+# ── In-process ring buffer for the Data Compendium UI ─────────────────
+# Most recent N events kept in memory so the /api/compendium endpoint
+# can show a live log stream of background-thread activity, RPC errors,
+# discoveries, etc. Bounded so it can never leak memory.
+from collections import deque as _deque
+from threading import Lock as _Lock
+
+_RECENT_MAX = 500
+_recent_events: "deque[dict]" = _deque(maxlen=_RECENT_MAX)
+_recent_lock = _Lock()
+
+
+def _ring_buffer_sink(event: dict) -> None:
+    """Append to the ring buffer AND keep streaming to stderr."""
+    with _recent_lock:
+        _recent_events.append(event)
+    try:
+        sys.stderr.write(json.dumps(event, default=str) + "\n")
+    except Exception:  # noqa: BLE001 - observability never breaks the caller
+        pass
+
+
+def recent_events(limit: int = 200) -> list[dict]:
+    """Snapshot of the most recent events, newest first."""
+    with _recent_lock:
+        # Slice the deque; copy each event so the caller can mutate safely.
+        items = list(_recent_events)
+    return [dict(e) for e in reversed(items[-limit:])]
+
+
+# Install the ring-buffer sink by default; tests can still set_sink() to
+# capture events and restore on teardown.
+_SINK = _ring_buffer_sink
+
+
 def _enabled() -> bool:
     """Off in tests by default; on in production. Override with SCA_LOG=1."""
     flag = os.environ.get("SCA_LOG", "").strip().lower()

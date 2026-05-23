@@ -108,7 +108,14 @@ def _asdict(obj: Any) -> Any:
 # ── cached-result freshness ───────────────────────────────────────────
 # A compute that ran within this window is treated as fresh: serve the
 # stored result instantly, with no job and no staged-progress animation.
-_CACHE_FRESH_S = 10 * 60
+#
+# Sized for "the background thread keeps us current": every 6h the canary
+# re-resolves attestation URLs and the discovery thread closes gaps, so a
+# 6h analysis-result cache is materially backed by fresh underlying data.
+# Force-refresh remains the on-demand escape hatch (the SPA's "refresh"
+# action always bypasses this), and the Compendium shows the user when
+# each cached artefact was last computed.
+_CACHE_FRESH_S = 6 * 60 * 60
 
 
 def _parse_ts(raw: Any) -> datetime | None:
@@ -568,8 +575,15 @@ def vote_source(
 
 
 @app.get("/api/supply/{symbol}")
-def supply(symbol: str) -> dict[str, Any]:
-    """Live on-chain supply only — fast, no LLM, no attestation."""
+def supply(
+    symbol: str,
+    _rate: None = Depends(rate_limit_enforce),
+) -> dict[str, Any]:
+    """Live on-chain supply only — fast, no LLM, no attestation.
+
+    Rate-limited: a supply read still hits live RPCs and could be used to
+    burn a free-tier RPC budget if uncapped.
+    """
     try:
         # Canonicalize via the case-insensitive lookup so USDe / USDf / crvUSD
         # resolve from URL params without forcing the caller to know casing.
@@ -614,8 +628,14 @@ def address_decision(
 
 
 @app.get("/api/evals")
-def evals() -> dict[str, Any]:
-    """Run the eval harness. This is slow (one analyze() per case)."""
+def evals(
+    _rate: None = Depends(rate_limit_enforce),
+) -> dict[str, Any]:
+    """Run the eval harness. This is slow (one analyze() per case).
+
+    Rate-limited: each case invokes the LLM and live RPCs; an uncapped
+    caller could burn the LLM quota in minutes.
+    """
     from sca.evals import run_evals
 
     try:
@@ -644,6 +664,141 @@ def health() -> dict[str, Any]:
         "ok": True,
         "tokens": len(config.stablecoins()),
         "llm_configured": bool(os.environ.get("LLM_API_KEY")),
+    }
+
+
+# ── compendium ────────────────────────────────────────────────────────
+# The Data Compendium page reads from this endpoint to render a live
+# audit-of-our-own-freshness: attestation URL provenance, per-source
+# snapshot health, supply-history recency, web-discovery activity, and a
+# rolling log of background-thread events. The contract is: every figure
+# here ties back to durable state (the store + the ring-buffer sink) —
+# nothing computed, nothing inferred.
+@app.get("/api/compendium")
+def compendium() -> dict[str, Any]:
+    """Aggregate live freshness state for the Compendium page."""
+    from sca import config as _cfg
+    from sca import snapshots as _snap
+    from sca import supply_history as _hist
+    from sca import web_discovery as _wd
+    from sca.observability import recent_events
+    from sca.tools import attestation_fetch as _af
+
+    # Attestation URL provenance, per token. Combines store overrides +
+    # local cache so the UI sees whichever path is currently serving.
+    store = get_store()
+    overrides = {r["symbol"]: r for r in store.list_attestation_url_overrides()}
+    cache = _af._load_cache()
+    attestations: list[dict[str, Any]] = []
+    for coin in _cfg.stablecoins().values():
+        sym = coin.symbol
+        ovr = overrides.get(sym)
+        cached = cache.get(sym, {})
+        attestations.append({
+            "symbol": sym,
+            "issuer": coin.issuer,
+            "yaml_seed": coin.latest_attestation_url or "",
+            "override_url": (ovr or {}).get("url", ""),
+            "override_via": (ovr or {}).get("via", ""),
+            "override_set_at": (ovr or {}).get("set_at", ""),
+            "cache_url": cached.get("url", ""),
+            "cache_via": cached.get("via", ""),
+            "cache_resolved_at": cached.get("resolved_at", ""),
+        })
+
+    # Source-snapshot health, newest first.
+    sources_health: list[dict[str, Any]] = []
+    for src in all_sources():
+        meta = _snap.load_meta(f"corpus::{src.id}")
+        if meta is None:
+            sources_health.append({
+                "id": src.id, "title": src.title,
+                "status": "unknown", "fetched_at": "",
+                "age_days": None, "url": "",
+            })
+            continue
+        sources_health.append({
+            "id": src.id,
+            "title": src.title,
+            "status": "broken" if meta.status_code >= 400 else "live",
+            "status_code": meta.status_code,
+            "fetched_at": meta.fetched_at,
+            "age_days": _snap.staleness_days(meta),
+            "url": meta.url,
+            "sha256": meta.sha256,
+        })
+
+    # Supply history — last reading per (symbol, chain). Read straight
+    # from the JSON state for the Compendium snapshot; the module's
+    # _load() is a deliberate private helper, so we re-read the file we
+    # know it writes. Falsy = empty / not-yet-written.
+    history_snapshot = _hist._load()  # noqa: SLF001 - intentional read-through
+
+    # Web-discovery activity — most recent attestation discoveries.
+    discoveries = _wd.recent_discoveries(limit=30)
+
+    # Rolling log — last N background-thread events. Filter to the kinds
+    # the Compendium cares about so the stream is readable.
+    INTERESTING = {
+        "web_discovery.search.start", "web_discovery.search.results",
+        "web_discovery.hit", "web_discovery.no_pdf",
+        "web_discovery.disabled", "web_discovery.backend_error",
+        "web_discovery.cache_hit",
+        "health.flip", "health.heal", "health.sweep.start",
+        "health.sweep.complete",
+        "sdn.fetch.ok", "sdn.fetch.failed",
+        "supply.jump", "rpc.consensus.degraded",
+        "attestation.override_persist_failed",
+    }
+    events = [
+        e for e in recent_events(limit=500)
+        if e.get("kind", "") in INTERESTING
+        or e.get("level") in ("warn", "error")
+    ][:120]
+
+    return {
+        "attestations": attestations,
+        "sources_health": sources_health,
+        "supply_history": history_snapshot,
+        "discoveries": discoveries,
+        "events": events,
+        "discovery_provider": os.environ.get(
+            "SCA_WEB_SEARCH_PROVIDER", "",
+        ).strip().lower() or None,
+    }
+
+
+@app.post("/api/attestations/{symbol}/url")
+def set_attestation_url(
+    symbol: str,
+    body: dict[str, Any],
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """Curator endpoint: set the operational attestation URL for a token.
+
+    Writes through the store (durable, survives redeploys). The discovery
+    thread uses the same path under the hood (with `set_by=None`); a
+    human curator's writes are attributed to their `user_id`.
+    """
+    try:
+        coin = config.get_stablecoin(symbol)
+    except ValueError:
+        raise HTTPException(404, f"unknown stablecoin: {symbol}")
+    url = str(body.get("url", "")).strip()
+    if not url or not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "url must be a full http(s) URL")
+    notes = str(body.get("notes", "")).strip()
+    via = str(body.get("via", "manual")).strip().lower() or "manual"
+    if via not in {"manual", "web_search", "locator", "paxos_resolver",
+                   "seed", "import"}:
+        raise HTTPException(400, f"unknown via: {via}")
+    get_store().set_attestation_url_override(
+        coin.symbol, url, via=via,
+        set_by=user["user"]["id"], notes=notes,
+    )
+    return {
+        "ok": True, "symbol": coin.symbol, "url": url,
+        "via": via, "notes": notes,
     }
 
 
@@ -680,6 +835,13 @@ _AGENT_TIMEOUT_S = 180
 
 # strip ANSI escape sequences a TTY-oriented runtime may emit on stdout
 _ANSI = re.compile(r"\x1b\[[0-9;]*[mGKHF]")
+# strip C0 control characters from incoming user input (defense-in-depth for
+# prompt-injection: a smuggled \x00 / \x1b / \x07 sequence cannot reach the
+# Hermes runtime). Tab, newline, carriage return are preserved.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# A reasonable upper bound on a user turn — long enough for a paragraph,
+# short enough that an attacker cannot pump tokens through the agent.
+_AGENT_MAX_MESSAGE_CHARS = 4_000
 
 
 def _hermes_binary() -> str | None:
@@ -688,7 +850,10 @@ def _hermes_binary() -> str | None:
 
 
 @app.post("/api/agent")
-def agent(body: dict[str, Any]) -> dict[str, Any]:
+def agent(
+    body: dict[str, Any],
+    _rate: None = Depends(rate_limit_enforce),
+) -> dict[str, Any]:
     """Relay one turn to Doré's conversational analyst (the Hermes agent).
 
     Takes the user's plain-language message, invokes the Hermes runtime in
@@ -699,10 +864,21 @@ def agent(body: dict[str, Any]) -> dict[str, Any]:
     Dockerfile). When its binary is absent the bridge does not crash — it
     returns ``{"status": "runtime_offline"}`` so the console can render its
     designed offline state. This is the expected response until deployment.
+
+    Defense-in-depth against prompt injection: the agent itself has
+    SOUL.md rules treating returned content as data not instructions, but
+    we also (1) strip C0 control characters, (2) cap message length, and
+    (3) rate-limit per IP so no single client can flood the agent.
     """
     message = str(body.get("message", "")).strip()
     if not message:
         raise HTTPException(400, "message is required")
+    if len(message) > _AGENT_MAX_MESSAGE_CHARS:
+        raise HTTPException(
+            400,
+            f"message exceeds {_AGENT_MAX_MESSAGE_CHARS} characters",
+        )
+    message = _CONTROL_CHARS.sub("", message)
 
     binary = _hermes_binary()
     if binary is None:

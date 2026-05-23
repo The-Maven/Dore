@@ -82,7 +82,11 @@ stablecoins:
     name: Tether USD
     issuer: Tether
     transparency_url: https://tether.to/en/transparency
-    latest_attestation_url: ""
+    # Tether publishes quarterly BDO ISAE 3000 reports under wp-content/uploads.
+    # This is the most recent reachable PDF (Oct 31 2025). The background
+    # thread discovers later quarters when SCA_WEB_SEARCH_PROVIDER is set;
+    # the staleness guardrail flags age honestly in the interim.
+    latest_attestation_url: "https://tether.io/wp-content/uploads/2025/10/ISAE-3000R-Opinion-Tether-International-Financial-Figure-31-10-2025-RC187322025BD0440-Fascicolo.pdf"
     deployments:
       - {chain: ethereum, contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7", verified: true}
       - {chain: tron, contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", verified: false}
@@ -133,7 +137,14 @@ stablecoins:
     name: TrueUSD
     issuer: Techteryx
     transparency_url: https://tusd.io/transparency
-    latest_attestation_url: ""
+    # The tusd.io transparency page advertises daily attestations but does
+    # not statically link them (loaded via JS). The most recent reachable
+    # Moore HK attestation is mirrored on Protos's S3. Staleness will be
+    # flagged honestly by the guardrail layer when this is older than the
+    # monthly cadence. TUSD also publishes a live Chainlink Proof-of-Reserves
+    # feed (data.chain.link/feeds/ethereum/mainnet/tusd-por) — future work
+    # to wire that as a parallel reserves source.
+    latest_attestation_url: "https://protos-media.s3.eu-west-2.amazonaws.com/wp-content/uploads/2025/01/09173311/trueusd-attestation-2025-01-09.pdf"
     deployments:
       - {chain: ethereum, contract: "0x0000000000085d4780B73119b644AE5ecd22b376", verified: false}
 

@@ -36,11 +36,16 @@ class FileStore(Store):
         votes_path: Path | None = None,
         sources_path: Path | None = None,
         corpus_dir: Path | None = None,
+        attestation_overrides_path: Path | None = None,
     ) -> None:
         # Paths default to the repo layout; overridable for hermetic tests.
         self._votes_path = votes_path or (config.ROOT / "votes.yaml")
         self._sources_path = sources_path or (config.CORPUS_DIR / "sources.yaml")
         self._corpus_dir = corpus_dir or (config.CORPUS_DIR / "data")
+        self._att_overrides_path = (
+            attestation_overrides_path
+            or (config.DATA_DIR / "attestation_overrides.json")
+        )
         # analyses + monitor have no on-disk equivalent: keep them in memory.
         self._analyses: dict[str, dict] = {}
         self._snapshots: list[dict] = []
@@ -272,6 +277,51 @@ class FileStore(Store):
     def curation_history(self) -> dict:
         data = self._load_votes()
         return {section: list(data[section]) for section in self._SECTIONS}
+
+    # ── attestation URL overrides ─────────────────────────────────────
+    def _load_attestation_overrides(self) -> dict[str, dict]:
+        if not self._att_overrides_path.exists():
+            return {}
+        try:
+            return json.loads(self._att_overrides_path.read_text())
+        except json.JSONDecodeError:
+            return {}
+
+    def _save_attestation_overrides(self, data: dict[str, dict]) -> None:
+        from sca.persist import atomic_write_json
+        atomic_write_json(self._att_overrides_path, data, sort_keys=False)
+
+    def get_attestation_url_override(self, symbol: str) -> dict | None:
+        row = self._load_attestation_overrides().get(symbol)
+        if not row or not row.get("url"):
+            return None
+        return dict(row)
+
+    def set_attestation_url_override(
+        self,
+        symbol: str,
+        url: str,
+        *,
+        via: str = "manual",
+        set_by: str | None = None,
+        notes: str = "",
+    ) -> None:
+        data = self._load_attestation_overrides()
+        data[symbol] = {
+            "symbol": symbol,
+            "url": url,
+            "via": via,
+            "set_by": set_by or "auto",
+            "set_at": _now(),
+            "notes": notes,
+        }
+        self._save_attestation_overrides(data)
+
+    def list_attestation_url_overrides(self) -> list[dict]:
+        data = self._load_attestation_overrides()
+        rows = list(data.values())
+        rows.sort(key=lambda r: r.get("set_at", ""), reverse=True)
+        return [dict(r) for r in rows]
 
     # ── monitor ───────────────────────────────────────────────────────
     def save_snapshot(

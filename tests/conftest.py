@@ -72,7 +72,11 @@ def _isolate_state(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         _store_mod, "FileStore",
-        lambda **kw: _FileStore(corpus_dir=tmp_path / "corpus_data", **kw),
+        lambda **kw: _FileStore(
+            corpus_dir=tmp_path / "corpus_data",
+            attestation_overrides_path=tmp_path / "attestation_overrides.json",
+            **kw,
+        ),
     )
     monkeypatch.setattr(_ingest_mod, "STAGING_DIR", tmp_path / "staging")
     monkeypatch.setattr(

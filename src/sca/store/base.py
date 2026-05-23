@@ -114,6 +114,40 @@ class Store(ABC):
         oldest-first, mirroring the votes.yaml shape.
         """
 
+    # ── attestation URL overrides ─────────────────────────────────────
+    # YAML's `latest_attestation_url` is a bootstrap seed. In production
+    # the operational source of truth is the store, so freshly-discovered
+    # URLs survive redeploys and curators can manage them live.
+    @abstractmethod
+    def get_attestation_url_override(self, symbol: str) -> dict | None:
+        """Return the current store-side URL override for `symbol`, or None.
+
+        Shape: {symbol, url, via, set_by (user_id or 'auto'), set_at, notes}.
+        The override wins over the YAML seed; falsy `url` means "no override
+        set", treat as no row.
+        """
+
+    @abstractmethod
+    def set_attestation_url_override(
+        self,
+        symbol: str,
+        url: str,
+        *,
+        via: str = "manual",
+        set_by: str | None = None,
+        notes: str = "",
+    ) -> None:
+        """Set the operational attestation URL for `symbol`.
+
+        `via` is the discovery channel ('manual' | 'web_search' |
+        'locator' | 'paxos_resolver' | ...) and `set_by` is the user_id
+        for manual sets or None for automatic ones. Last-write-wins.
+        """
+
+    @abstractmethod
+    def list_attestation_url_overrides(self) -> list[dict]:
+        """All current overrides, newest first — for the Compendium UI."""
+
     # ── monitor ───────────────────────────────────────────────────────
     @abstractmethod
     def save_snapshot(

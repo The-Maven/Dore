@@ -160,6 +160,51 @@ def run_health_cycle() -> dict[str, int]:
     return counts
 
 
+def run_attestation_gap_sweep() -> dict[str, int]:
+    """Walk every fiat-backed token and try to (re-)resolve its attestation.
+
+    Cheap: every step except the LLM-driven locator is a HEAD probe or a
+    cache hit. A successful resolution writes the URL through to the
+    store via `_record_override`, so the next deploy sees it. Per-symbol
+    errors are logged and skipped — the sweep never throws.
+    """
+    from sca import config
+    from sca.tools import attestation_fetch
+
+    summary = {"resolved": 0, "unresolved": 0, "skipped": 0}
+    for coin in config.stablecoins().values():
+        if coin.backing_model != "fiat_reserves":
+            summary["skipped"] += 1
+            continue
+        try:
+            out = attestation_fetch.resolve_url(coin.symbol)
+        except attestation_fetch.AttestationUnavailable as exc:
+            log_event(
+                "attestation.gap_sweep.unresolved", level="warn",
+                symbol=coin.symbol, error_message=str(exc)[:200],
+            )
+            summary["unresolved"] += 1
+            continue
+        except Exception as exc:  # noqa: BLE001 - one bad token, keep going
+            log_event(
+                "attestation.gap_sweep.error", level="error",
+                symbol=coin.symbol, error_class=type(exc).__name__,
+                error_message=str(exc)[:200],
+            )
+            summary["unresolved"] += 1
+            continue
+        log_event(
+            "attestation.gap_sweep.ok", level="info",
+            symbol=coin.symbol, url=out.get("url", ""),
+            via=out.get("via", ""),
+        )
+        summary["resolved"] += 1
+    log_event(
+        "attestation.gap_sweep.done", level="info", **summary,
+    )
+    return summary
+
+
 # ── daemon loop ───────────────────────────────────────────────────────
 def _loop() -> None:
     """The forever-loop body. Sleep first so startup is never delayed.
@@ -180,6 +225,19 @@ def _loop() -> None:
             except Exception as exc:  # noqa: BLE001 - never die on one bad cycle
                 log_event(
                     "health.cycle.failed", level="error",
+                    error_class=type(exc).__name__, error_message=str(exc),
+                )
+            # After the canary, try to close any attestation gaps. This is
+            # the discovery sweep the user asked for: every cycle walks the
+            # fiat token list and re-resolves through the override→cache→
+            # seed→paxos→web_search→locator chain. Each hit writes through
+            # to the store so it survives the next redeploy. Bounded and
+            # cheap (HEAD probes + cache hits dominate).
+            try:
+                run_attestation_gap_sweep()
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    "attestation.gap_sweep.failed", level="error",
                     error_class=type(exc).__name__, error_message=str(exc),
                 )
     except Exception as exc:  # noqa: BLE001 - thread terminates cleanly

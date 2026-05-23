@@ -4265,6 +4265,211 @@ function runCommand(raw) {
 }
 
 // ════════════════════════════════════════════════════════════════════
+//  F8 · COMPENDIUM — the live freshness & background-thread page
+// ════════════════════════════════════════════════════════════════════
+// One observable view onto how often each artefact is refreshed: per-
+// token attestation URL provenance, per-source corpus health, web-
+// discovery activity, and a rolling event tail. Data IS the moat, so
+// expose how recent and verified it is at a glance.
+let compendiumTimer = null;
+
+function viewCompendium() {
+  app.innerHTML = '';
+  if (compendiumTimer) { clearInterval(compendiumTimer); compendiumTimer = null; }
+  app.append(viewHead('F8', 'COMPENDIUM',
+    'data freshness · background threads · discovery log'));
+  const mount = el('div', { class: 'view-body' });
+  app.append(mount);
+  mount.append(el('div', { class: 'empty' },
+    el('span', { class: 'spinner' }),
+    el('b', {}, 'Loading compendium…')));
+
+  const tick = async () => {
+    let data;
+    try { data = await api('/compendium'); }
+    catch (e) {
+      mount.innerHTML = '';
+      mount.append(errorBox('Compendium load failed', e.message));
+      return;
+    }
+    renderCompendium(data, mount);
+  };
+  tick();
+  compendiumTimer = setInterval(tick, 30_000);
+  logLine('WATCH', 'COMPENDIUM', [seg('engaged', 'lg-val'),
+    seg('30s refresh')]);
+}
+
+function _fmtTs(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return ts;
+    const day = d.toISOString().slice(0, 10);
+    const time = d.toISOString().slice(11, 16);
+    return day + ' ' + time + ' UTC';
+  } catch (_) { return ts; }
+}
+
+function _daysSince(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((Date.now() - d.getTime()) / 86_400_000);
+}
+
+function renderCompendium(data, mount) {
+  mount.innerHTML = '';
+  const attCount = data.attestations.length;
+  const withOverride = data.attestations.filter((a) => a.override_url).length;
+  const withCache = data.attestations.filter((a) => a.cache_url).length;
+  const liveSources = data.sources_health.filter((s) => s.status === 'live').length;
+  const brokenSources = data.sources_health.filter((s) => s.status === 'broken').length;
+
+  mount.append(el('div', { class: 'strip fade-in' },
+    stripCell(attCount, 'TOKENS'),
+    stripCell(withCache + '/' + attCount, 'RESOLVED'),
+    stripCell(withOverride, 'OVERRIDES', withOverride ? 'v-green' : 'v-paper'),
+    stripCell(liveSources, 'LIVE SRC', 'v-green'),
+    stripCell(brokenSources, 'BROKEN SRC',
+      brokenSources ? 'v-rose' : 'v-green'),
+    stripCell(data.discovery_provider || 'off',
+      'DISCOVERY', data.discovery_provider ? 'v-green' : 'v-paper'),
+  ));
+
+  // ── Attestation URL provenance ─────────────────────────────────────
+  const attRows = data.attestations.slice().sort((a, b) => {
+    // unresolved first (gaps surface), then by symbol
+    const ar = (a.cache_url || a.override_url) ? 1 : 0;
+    const br = (b.cache_url || b.override_url) ? 1 : 0;
+    if (ar !== br) return ar - br;
+    return a.symbol.localeCompare(b.symbol);
+  });
+  const attBody = el('div', { class: 'cp-table' },
+    el('div', { class: 'cp-row cp-head' },
+      el('div', { class: 'cp-c1' }, 'TOKEN'),
+      el('div', { class: 'cp-c2' }, 'ISSUER'),
+      el('div', { class: 'cp-c3' }, 'CURRENT URL'),
+      el('div', { class: 'cp-c4' }, 'VIA'),
+      el('div', { class: 'cp-c5' }, 'AGE'),
+    ),
+    ...attRows.map((a) => {
+      const url = a.override_url || a.cache_url || a.yaml_seed || '';
+      const via = a.override_url ? (a.override_via || 'override')
+        : (a.cache_via || (a.yaml_seed ? 'seed (unresolved)' : 'none'));
+      const ts = a.override_set_at || a.cache_resolved_at;
+      const days = _daysSince(ts);
+      const cls = !url ? 'cp-warn'
+        : (days !== null && days > 35) ? 'cp-stale' : '';
+      return el('div', { class: 'cp-row ' + cls },
+        el('div', { class: 'cp-c1' }, el('b', {}, a.symbol)),
+        el('div', { class: 'cp-c2' }, a.issuer),
+        el('div', { class: 'cp-c3' },
+          url
+            ? el('a', { href: url, target: '_blank', rel: 'noopener',
+                title: url }, url.length > 64 ? url.slice(0, 64) + '…' : url)
+            : el('span', { class: 'cp-na' }, 'n/a — no URL resolved')),
+        el('div', { class: 'cp-c4' },
+          el('span', { class: 'cp-via cp-via-' + via.split(' ')[0] }, via)),
+        el('div', { class: 'cp-c5' },
+          days === null ? '—' : days + 'd'),
+      );
+    }),
+  );
+  mount.append(panel('01', 'ATTESTATION URL PROVENANCE — per token',
+    'i-eval', attBody));
+
+  // ── Corpus source health ───────────────────────────────────────────
+  const broken = data.sources_health.filter((s) => s.status === 'broken');
+  const unknown = data.sources_health.filter((s) => s.status === 'unknown');
+  const live = data.sources_health.filter((s) => s.status === 'live')
+    .sort((a, b) => (a.fetched_at < b.fetched_at ? 1 : -1));
+  const srcBody = el('div', { class: 'cp-table' },
+    el('div', { class: 'cp-row cp-head' },
+      el('div', { class: 'cp-c1' }, 'STATUS'),
+      el('div', { class: 'cp-c2' }, 'SOURCE'),
+      el('div', { class: 'cp-c3' }, 'URL'),
+      el('div', { class: 'cp-c5' }, 'AGE'),
+    ),
+    ...[...broken, ...unknown, ...live].slice(0, 60).map((s) =>
+      el('div', { class: 'cp-row ' +
+        (s.status === 'broken' ? 'cp-warn'
+          : s.status === 'unknown' ? 'cp-stale' : '') },
+        el('div', { class: 'cp-c1' },
+          el('span', { class: 'cp-via cp-via-' + s.status }, s.status)),
+        el('div', { class: 'cp-c2' }, s.title || s.id),
+        el('div', { class: 'cp-c3' },
+          s.url
+            ? el('a', { href: s.url, target: '_blank', rel: 'noopener',
+                title: s.url }, s.url.length > 56 ? s.url.slice(0, 56) + '…' : s.url)
+            : el('span', { class: 'cp-na' }, '—')),
+        el('div', { class: 'cp-c5' },
+          s.age_days === null || s.age_days === undefined
+            ? '—' : s.age_days + 'd'),
+      )),
+  );
+  mount.append(panel('02', 'CORPUS SOURCE HEALTH — canary observations',
+    'i-eval', srcBody));
+
+  // ── Web discovery ──────────────────────────────────────────────────
+  const discBody = el('div', {},
+    el('div', { class: 'cp-disc-head' },
+      el('div', {},
+        el('span', { class: 'cp-disc-lbl' }, 'BACKEND'),
+        el('span', { class: 'cp-disc-val' },
+          data.discovery_provider || 'off — set SCA_WEB_SEARCH_PROVIDER + KEY')),
+      el('div', {},
+        el('span', { class: 'cp-disc-lbl' }, 'HITS'),
+        el('span', { class: 'cp-disc-val' },
+          String(data.discoveries.length))),
+    ),
+    data.discoveries.length === 0
+      ? el('div', { class: 'cp-na pb-pad' },
+          'No discoveries yet. When the resolver hits a gap and a search ' +
+          'backend is configured, hits will appear here with the URL and ' +
+          'the query that found it.')
+      : el('div', { class: 'cp-table' },
+          el('div', { class: 'cp-row cp-head' },
+            el('div', { class: 'cp-c1' }, 'TOKEN'),
+            el('div', { class: 'cp-c3' }, 'URL'),
+            el('div', { class: 'cp-c4' }, 'PROVIDER'),
+            el('div', { class: 'cp-c5' }, 'WHEN'),
+          ),
+          ...data.discoveries.map((d) => el('div', { class: 'cp-row' },
+            el('div', { class: 'cp-c1' }, el('b', {}, d.symbol)),
+            el('div', { class: 'cp-c3' },
+              el('a', { href: d.url, target: '_blank', rel: 'noopener',
+                title: d.url },
+                d.url.length > 64 ? d.url.slice(0, 64) + '…' : d.url)),
+            el('div', { class: 'cp-c4' }, d.provider || d.via),
+            el('div', { class: 'cp-c5' }, _fmtTs(d.resolved_at)),
+          )),
+      ),
+  );
+  mount.append(panel('03', 'WEB DISCOVERY — gap-closure log', 'i-eval', discBody));
+
+  // ── Event tail ─────────────────────────────────────────────────────
+  const evBody = data.events.length === 0
+    ? el('div', { class: 'cp-na pb-pad' },
+        'No background events recorded yet in this process. The canary, ' +
+        'discovery thread, and any RPC degradation events will surface here.')
+    : el('div', { class: 'cp-events' },
+        ...data.events.map((e) => el('div', {
+          class: 'cp-event cp-lvl-' + (e.level || 'info'),
+        },
+          el('span', { class: 'cp-ev-ts' }, _fmtTs(
+            new Date((e.ts || 0) * 1000).toISOString())),
+          el('span', { class: 'cp-ev-kind' }, e.kind || ''),
+          el('span', { class: 'cp-ev-lvl' }, (e.level || 'info').toUpperCase()),
+          el('span', { class: 'cp-ev-detail' },
+            (e.symbol ? '[' + e.symbol + '] ' : '') +
+            (e.detail || e.error_message || e.url || '')),
+        )));
+  mount.append(panel('04', 'EVENT STREAM — most recent background work',
+    'i-eval', evBody));
+}
+
+// ════════════════════════════════════════════════════════════════════
 //  ROUTER
 // ════════════════════════════════════════════════════════════════════
 function route() {
@@ -4274,6 +4479,7 @@ function route() {
     l.classList.toggle('active', l.dataset.route === view));
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   if (surfacePollTimer) { clearInterval(surfacePollTimer); surfacePollTimer = null; }
+  if (compendiumTimer) { clearInterval(compendiumTimer); compendiumTimer = null; }
   if (view === 'analyze') {
     viewAnalyze(arg ? arg.toUpperCase() : '');
   } else if (view === 'sanctions') {
@@ -4284,6 +4490,10 @@ function route() {
     STATE.activeSymbol = '';
     refreshInstruments();
     viewAnalyst();
+  } else if (view === 'compendium') {
+    STATE.activeSymbol = '';
+    refreshInstruments();
+    viewCompendium();
   } else {
     STATE.activeSymbol = '';
     refreshInstruments();
@@ -4315,7 +4525,7 @@ async function boot() {
   // F-key navigation
   window.addEventListener('keydown', (e) => {
     const map = { F1: '#monitor', F2: '#analyze', F3: '#corpus', F4: '#evals',
-      F5: '#sanctions', F6: '#redemptions', F7: '#analyst' };
+      F5: '#sanctions', F6: '#redemptions', F7: '#analyst', F8: '#compendium' };
     if (map[e.key]) { e.preventDefault(); location.hash = map[e.key]; }
     if (e.key === '/' && document.activeElement !== ci) { e.preventDefault(); ci.focus(); }
   });

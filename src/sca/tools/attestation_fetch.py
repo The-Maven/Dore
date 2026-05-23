@@ -2,13 +2,20 @@
 
 Resilient to URL rot. The URL is chosen in this order:
 
-  1. cached resolution  (data/attestation_cache.json) — HEAD-checked
-  2. config seed        (latest_attestation_url)      — HEAD-checked
-  3. the locator        — re-resolves from the transparency page
+  1. store override     (set by curators / web_discovery / locator)
+                        — HEAD-checked; this is the production source of
+                        truth that survives redeploys.
+  2. cached resolution  (data/attestation_cache.json) — HEAD-checked
+  3. config seed        (latest_attestation_url, YAML bootstrap)
+                        — HEAD-checked
+  4. paxos resolver     (PYUSD / USDP / USDG only)
+  5. web discovery      (search-the-web for a fresh PDF)
+  6. the locator        — re-resolves from the transparency page
 
 A URL that can neither be reused nor re-resolved raises AttestationUnavailable.
 The pipeline then reports a clear gap — it never serves a stale or wrong
-attestation silently.
+attestation silently. Whichever path succeeds writes through to the store
+so the next call short-circuits at step (1).
 """
 from __future__ import annotations
 
@@ -77,31 +84,68 @@ def _cache_fresh(entry: dict) -> bool:
     return (date.today() - when).days <= _CACHE_MAX_AGE_DAYS
 
 
+def _record_override(symbol: str, url: str, via: str) -> None:
+    """Persist a discovered URL through the store so it survives a redeploy.
+
+    Best-effort: a store failure (e.g. Supabase blip) must never break the
+    resolution call site. The local cache still records the URL via
+    `_save_cache` for the next call within this process.
+    """
+    try:
+        from sca.store import get_store
+        get_store().set_attestation_url_override(
+            symbol, url, via=via, set_by=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        from sca.observability import log_event
+        log_event(
+            "attestation.override_persist_failed", level="warn",
+            symbol=symbol, via=via, error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+
+
 def resolve_url(symbol: str, *, refresh: bool = False) -> dict:
     """Resolve a healthy attestation PDF URL for `symbol`.
 
-    Returns {"url", "via"} — via is cache | seed | locator.
+    Returns {"url", "via"} — via is one of:
+        store_override | cache | seed | paxos_resolver | web_search | locator.
     Raises AttestationUnavailable if nothing resolves.
     """
     token = config.get_stablecoin(symbol)
     cache = _load_cache()
 
-    # 1. cached resolution — only if recent (within the monthly cadence)
+    # 1. store override — the durable production source of truth. A curator
+    # (or the discovery thread) sets this in Supabase / FileStore; it
+    # survives redeploys, where the YAML seed alone would not.
+    if not refresh:
+        try:
+            from sca.store import get_store
+            override = get_store().get_attestation_url_override(symbol)
+        except Exception:  # noqa: BLE001 - store hiccup falls through
+            override = None
+        if override:
+            ovr_url = override.get("url", "")
+            if ovr_url and _head_ok(ovr_url):
+                return {"url": ovr_url, "via": "store_override"}
+
+    # 2. cached resolution — only if recent (within the monthly cadence)
     if not refresh:
         entry = cache.get(symbol, {})
         cached = entry.get("url")
         if cached and _cache_fresh(entry) and _head_ok(cached):
             return {"url": cached, "via": "cache"}
 
-    # 2. config seed
+    # 3. config seed (YAML bootstrap)
     seed = token.latest_attestation_url
     if seed and _head_ok(seed):
         cache[symbol] = {"url": seed, "via": "seed",
                          "resolved_at": date.today().isoformat()}
         _save_cache(cache)
+        _record_override(symbol, seed, "seed")
         return {"url": seed, "via": "seed"}
 
-    # 3. Paxos URL pattern probe — paxos.com transparency pages are JS-
+    # 4. Paxos URL pattern probe — paxos.com transparency pages are JS-
     # rendered so the HTML locator can't see the link, but the WP CDN
     # publishes at a predictable shape we can probe directly. Try this
     # BEFORE the LLM-driven locator: it's cheap, deterministic, and avoids
@@ -115,9 +159,35 @@ def resolve_url(symbol: str, *, refresh: bool = False) -> dict:
                 "resolved_at": date.today().isoformat(),
             }
             _save_cache(cache)
+            _record_override(symbol, paxos_url, "paxos_resolver")
             return {"url": paxos_url, "via": "paxos_resolver"}
 
-    # 4. locator — re-resolve from the durable transparency page
+    # 5. web discovery — typed web search for "[symbol] reserves attestation
+    # [year] pdf". No-op unless SCA_WEB_SEARCH_PROVIDER is configured;
+    # logs a one-shot "disabled" event when it isn't, so the Compendium
+    # surfaces the gap rather than silently swallowing it.
+    try:
+        from sca.web_discovery import discover_attestation_url
+        web_url = discover_attestation_url(symbol, token.issuer)
+    except Exception as exc:  # noqa: BLE001 - discovery is best-effort
+        from sca.observability import log_event
+        log_event(
+            "web_discovery.unexpected_error", level="warn",
+            symbol=symbol, error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+        web_url = None
+    if web_url and _head_ok(web_url):
+        cache[symbol] = {
+            "url": web_url,
+            "via": "web_search",
+            "resolved_at": date.today().isoformat(),
+        }
+        _save_cache(cache)
+        _record_override(symbol, web_url, "web_search")
+        return {"url": web_url, "via": "web_search"}
+
+    # 6. locator — re-resolve from the durable transparency page
     if not token.transparency_url:
         raise AttestationUnavailable(
             f"{symbol}: no working attestation URL and no transparency_url "
@@ -136,6 +206,7 @@ def resolve_url(symbol: str, *, refresh: bool = False) -> dict:
         "confidence": found["confidence"],
     }
     _save_cache(cache)
+    _record_override(symbol, found["url"], "locator")
     return {"url": found["url"], "via": "locator"}
 
 

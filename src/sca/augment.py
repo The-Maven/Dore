@@ -61,10 +61,53 @@ def _backing_model_brief(model: str) -> str:
 
 
 def web_search_enabled() -> bool:
-    """Feature flag for web search — off by default, opt in for live runs."""
+    """Feature flag for web search — off by default, opt in for live runs.
+
+    Both flags must be set for live news snippets to reach the LLM:
+      - `SCA_AUGMENT_WEB=1` enables this layer
+      - `SCA_WEB_SEARCH_PROVIDER` selects the backend (brave|serper)
+    """
     return os.environ.get("SCA_AUGMENT_WEB", "").strip().lower() in (
         "1", "true", "on"
     )
+
+
+def _live_news_block(coin: Stablecoin, kind: str) -> str:
+    """Fetch a few fresh news snippets and format for the augmentation
+    prompt. Empty string when the feature isn't enabled or returns nothing.
+
+    The snippets are *factual context*, not figures — the LLM is reminded
+    again in the prefix that it must cite URLs from these snippets rather
+    than inventing them, and must NEVER state numeric figures.
+    """
+    if not web_search_enabled():
+        return ""
+    try:
+        from sca.web_discovery import recent_news_snippets
+        snippets = recent_news_snippets(
+            coin.symbol, issuer=coin.issuer, kind=kind, limit=3,
+        )
+    except Exception as exc:  # noqa: BLE001 - never break augmentation
+        log_event(
+            "augment.news.fetch_failed", level="warn",
+            symbol=coin.symbol, kind=kind,
+            error_class=type(exc).__name__, error_message=str(exc),
+        )
+        return ""
+    if not snippets:
+        return ""
+    lines = [
+        "",
+        "## Recent news context (factual material — cite URLs from here, "
+        "never invent them; do NOT state numeric figures from these snippets):",
+    ]
+    for i, s in enumerate(snippets, 1):
+        lines.append(
+            f"  [{i}] {s.get('title', '')} ({s.get('age', '')})\n"
+            f"      {s.get('snippet', '')}\n"
+            f"      URL: {s.get('url', '')}"
+        )
+    return "\n".join(lines)
 
 
 def _augment_prompt(
@@ -107,7 +150,8 @@ def _augment_prompt(
         f"Known protocol URL: {coin.protocol_url or '(none)'}\n"
         f"Known transparency URL: {coin.transparency_url or '(none)'}\n"
         f"Surface needing context: {surface}\n"
-        f"Reason original source unavailable: {reason}\n\n"
+        f"Reason original source unavailable: {reason}\n"
+        f"{_live_news_block(coin, kind='reserves')}\n\n"
         "Provide useful context for a financial reader."
     )
     return system, user
@@ -189,7 +233,8 @@ def _sanctions_prompt(
         f"Known protocol URL: {coin.protocol_url or '(none)'}\n"
         f"Known transparency URL: {coin.transparency_url or '(none)'}\n"
         f"Surface needing context: sanctions\n"
-        f"Reason original SDN screen unavailable: {reason}\n\n"
+        f"Reason original SDN screen unavailable: {reason}\n"
+        f"{_live_news_block(coin, kind='regulatory')}\n\n"
         "Provide qualitative context about the OFAC SDN list itself "
         "and the regulatory regime this issuer operates under. "
         "Do NOT assert anything about whether the token is or isn't "
@@ -290,7 +335,8 @@ def _redemption_prompt(
         f"Known transparency URL: {coin.transparency_url or '(none)'}\n"
         f"Surface needing context: redemption\n"
         f"Reason original tier breakdown unavailable: {reason}\n"
-        f"Requested flavour: {flavour}\n\n"
+        f"Requested flavour: {flavour}\n"
+        f"{_live_news_block(coin, kind='redemption')}\n\n"
         "Provide useful qualitative context about how a holder actually "
         "redeems this token."
     )

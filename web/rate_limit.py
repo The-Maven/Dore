@@ -36,13 +36,27 @@ _lock = threading.Lock()
 
 
 def _client_key(request: Request) -> str:
-    """Best-effort client identity. X-Forwarded-For trusted only when
-    the deploy sits behind a reverse proxy you trust (Railway, Fly,
-    Caddy); fall back to socket peer."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """Best-effort client identity.
+
+    `X-Forwarded-For` is only honoured when `SCA_TRUST_PROXY` is set to "1"
+    (or "true"/"yes") — production behind a trusted reverse proxy like
+    Cloudflare/Railway. Otherwise we use the socket peer, so a hostile
+    client cannot spoof a header to claim a fresh bucket and evade the
+    rate limit. Default is paranoid (proxy NOT trusted): production must
+    opt in explicitly.
+    """
+    if _trust_proxy():
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd:
+            return fwd.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
+
+
+def _trust_proxy() -> bool:
+    """Whether to honour X-Forwarded-For. Read fresh so tests can flip it."""
+    return os.environ.get("SCA_TRUST_PROXY", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 def _take_token(key: str) -> tuple[bool, float]:
