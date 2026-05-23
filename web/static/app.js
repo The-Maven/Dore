@@ -2002,8 +2002,8 @@ function friendlyErrorCopy(raw) {
     return {
       head: 'Source took too long',
       msg: 'An issuer page or RPC endpoint didn\'t respond within the ' +
-        'deadline. This is usually transient — try RE-RUN in a minute, ' +
-        'or wait for the next six-hourly background sweep.',
+        'deadline. This is usually transient; try again below, or wait ' +
+        'for the next six-hourly background sweep.',
     };
   }
   if (s.includes('not configured') || s.includes('llmnotconfigured')) {
@@ -2020,7 +2020,7 @@ function friendlyErrorCopy(raw) {
       msg: 'A document Doré expected to find returned 404 — the issuer ' +
         'has likely rotated their attestation URL. The background ' +
         'discovery sweep will try to find the new location on the next ' +
-        'cycle; for an immediate refresh, click RE-RUN.',
+        'cycle; for an immediate refresh, use the button below.',
     };
   }
   // Generic fallback — keep the original message, but in plain English
@@ -2028,19 +2028,31 @@ function friendlyErrorCopy(raw) {
   return {
     head: 'Doré couldn\'t finish this run',
     msg: String(raw || '').split(':').slice(-1)[0].trim().slice(0, 200) ||
-      'No further detail. Try RE-RUN; the background canary will retry ' +
-      'on its own every six hours.',
+      'No further detail. Try again below; the background canary ' +
+      'retries on its own every six hours.',
   };
 }
 
-function errorBox(title, msg, trace) {
+function errorBox(title, msg, trace, opts) {
   // Engineers can still see the raw trace via a collapsible disclosure
   // (Compendium event stream carries the full structured event), but
-  // the user-facing copy is product-quality.
+  // the user-facing copy is product-quality. `opts.onRetry` adds an
+  // in-line "Try again" button so the friendly copy's "use the button
+  // below" promise is fulfilled regardless of what the view's header
+  // run button happens to be labelled.
   const friendly = friendlyErrorCopy(msg);
   const body = el('div', { class: 'error-box fade-in' },
     el('div', { class: 'eb-head' }, friendly.head),
     el('div', { class: 'eb-msg' }, friendly.msg));
+  if (opts && typeof opts.onRetry === 'function') {
+    const retry = el('button', {
+      class: 'btn',
+      style: 'margin-top:12px',
+      onclick: opts.onRetry,
+    }, icon('i-supply'),
+       document.createTextNode(opts.retryLabel || 'TRY AGAIN'));
+    body.append(retry);
+  }
   if (trace || (msg && String(msg) !== friendly.msg)) {
     const det = el('details', { class: 'eb-trace' });
     det.append(el('summary', {}, 'System trace · for an operator'));
@@ -2426,7 +2438,10 @@ async function startAnalysis(symbol, mount, refresh = false) {
       seg(symbol.padEnd(5), 'lg-sym'), seg('START-FAIL', 'd-warn'),
       seg(String(e.message).slice(0, 48)),
     ]);
-    mount.append(errorBox('Could not start analysis · ' + symbol, e.message));
+    mount.append(errorBox('Could not start analysis · ' + symbol,
+      e.message, undefined,
+      { onRetry: () => startAnalysis(symbol, mount, true),
+        retryLabel: 'TRY AGAIN' }));
     return;
   }
 
@@ -2539,7 +2554,10 @@ async function startAnalysis(symbol, mount, refresh = false) {
         seg(symbol.padEnd(5), 'lg-sym'), seg('POLL-FAIL', 'd-warn'),
         seg(String(e.message).slice(0, 48)),
       ]);
-      mount.append(errorBox('Polling failed · ' + symbol, e.message));
+      mount.append(errorBox('Polling failed · ' + symbol, e.message,
+        undefined,
+        { onRetry: () => startAnalysis(symbol, mount, true),
+          retryLabel: 'TRY AGAIN' }));
       return;
     }
     if (st.status === 'running') return;
@@ -2552,7 +2570,9 @@ async function startAnalysis(symbol, mount, refresh = false) {
         seg(symbol.padEnd(5), 'lg-sym'), seg('FAILED', 'd-warn'),
         seg(String(st.error).slice(0, 56)),
       ]);
-      mount.append(errorBox('Analysis failed · ' + symbol, st.error, st.trace));
+      mount.append(errorBox('Analysis failed · ' + symbol, st.error, st.trace,
+        { onRetry: () => startAnalysis(symbol, mount, true),
+          retryLabel: 'TRY AGAIN' }));
     } else {
       const m = st.result.metrics;
       const gaps = (st.result.gaps || []).length;
@@ -3535,7 +3555,9 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
       seg(String(e.message).slice(0, 48)),
     ]);
     mount.append(errorBox('Could not start ' + cfg.title.toLowerCase()
-      + ' · ' + symbol, e.message));
+      + ' · ' + symbol, e.message, undefined,
+      { onRetry: () => startSurfaceJob(kind, symbol, mount, true),
+        retryLabel: 'TRY AGAIN' }));
     return;
   }
 
@@ -3634,7 +3656,10 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
         seg(symbol.padEnd(5), 'lg-sym'), seg('POLL-FAIL', 'd-warn'),
         seg(String(e.message).slice(0, 48)),
       ]);
-      mount.append(errorBox('Polling failed · ' + symbol, e.message));
+      mount.append(errorBox('Polling failed · ' + symbol, e.message,
+        undefined,
+        { onRetry: () => startSurfaceJob(kind, symbol, mount, true),
+          retryLabel: 'TRY AGAIN' }));
       return;
     }
     if (st.status === 'running') return;
@@ -3648,7 +3673,9 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
         seg(String(st.error).slice(0, 56)),
       ]);
       mount.append(errorBox(cfg.title + ' failed · ' + symbol,
-        st.error, st.trace));
+        st.error, st.trace,
+        { onRetry: () => startSurfaceJob(kind, symbol, mount, true),
+          retryLabel: 'TRY AGAIN' }));
     } else {
       cfg.render(st.result, st.elapsed, mount,
         new Date().toISOString(),
@@ -4089,7 +4116,8 @@ async function viewCorpus() {
   try { data = await api('/sources'); }
   catch (e) {
     mount.innerHTML = '';
-    mount.append(errorBox('Could not load corpus', e.message));
+    mount.append(errorBox('Could not load corpus', e.message, undefined,
+      { onRetry: () => viewCorpus(), retryLabel: 'TRY AGAIN' }));
     return;
   }
   // share the freshly-loaded registry with the passage renderer (F2/F5/F6)
@@ -4308,7 +4336,8 @@ function viewEvals() {
       mount.innerHTML = '';
       logLine('ERR', 'EVALS', [seg('SUITE-FAIL', 'd-warn'),
         seg(String(e.message).slice(0, 48))]);
-      mount.append(errorBox('Eval run failed', e.message));
+      mount.append(errorBox('Eval run failed', e.message, undefined,
+        { onRetry: () => runBtn.click(), retryLabel: 'TRY AGAIN' }));
       runBtn.disabled = false;
       runBtn.replaceChildren(icon('i-eval'), document.createTextNode('RUN SUITE'));
       return;
@@ -4825,7 +4854,8 @@ function viewCompendium() {
     try { data = await api('/compendium'); }
     catch (e) {
       mount.innerHTML = '';
-      mount.append(errorBox('Compendium load failed', e.message));
+      mount.append(errorBox('Compendium load failed', e.message,
+        undefined, { onRetry: tick, retryLabel: 'TRY AGAIN' }));
       return;
     }
     renderCompendium(data, mount);
