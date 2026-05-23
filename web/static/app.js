@@ -1957,11 +1957,83 @@ function panel(num, title, iconId, body, bodyPad) {
     el('div', { class: 'panel-body' + (bodyPad ? ' pb-pad' : '') }, body),
   );
 }
+// Translate a raw exception (or HTTP error message) into product-quality
+// copy a financial reader can act on. Engineers can still get the trace
+// via a collapsible disclosure. Same humane-error rule as the rest of
+// the UI: never lead with "system failed", lead with what we know and
+// what the user can do.
+function friendlyErrorCopy(raw) {
+  const s = String(raw || '').toLowerCase();
+  if (s.includes('errno 35') || s.includes('resource temporarily') ||
+      s.includes('readerror') || s.includes('connection reset')) {
+    return {
+      head: 'Source temporarily unreachable',
+      msg: 'Doré couldn\'t finish reading from one of the upstream ' +
+        'sources (an issuer page or an RPC endpoint timed out). Try ' +
+        'RE-RUN in a moment — the background canary also retries every ' +
+        'six hours, so the cached result will refresh on its own.',
+    };
+  }
+  if (s.includes('429') || s.includes('rate limit') ||
+      s.includes('quota')) {
+    return {
+      head: 'Search backend rate-limited',
+      msg: 'The web-discovery backend (Brave + DuckDuckGo) hit a soft ' +
+        'rate limit on this query. The cached result is still served ' +
+        'instantly; a fresh search will retry on the next canary sweep.',
+    };
+  }
+  if (s.includes('timeout') || s.includes('timed out')) {
+    return {
+      head: 'Source took too long',
+      msg: 'An issuer page or RPC endpoint didn\'t respond within the ' +
+        'deadline. This is usually transient — try RE-RUN in a minute, ' +
+        'or wait for the next six-hourly background sweep.',
+    };
+  }
+  if (s.includes('not configured') || s.includes('llmnotconfigured')) {
+    return {
+      head: 'LLM key not configured on this server',
+      msg: 'The synthesis step needs an LLM_API_KEY. Set it in the ' +
+        'server env and restart; the deterministic facts above are ' +
+        'still valid.',
+    };
+  }
+  if (s.includes('404') || s.includes('not found')) {
+    return {
+      head: 'Source URL has moved',
+      msg: 'A document Doré expected to find returned 404 — the issuer ' +
+        'has likely rotated their attestation URL. The background ' +
+        'discovery sweep will try to find the new location on the next ' +
+        'cycle; for an immediate refresh, click RE-RUN.',
+    };
+  }
+  // Generic fallback — keep the original message, but in plain English
+  // framing rather than as a stack-trace header.
+  return {
+    head: 'Doré couldn\'t finish this run',
+    msg: String(raw || '').split(':').slice(-1)[0].trim().slice(0, 200) ||
+      'No further detail. Try RE-RUN; the background canary will retry ' +
+      'on its own every six hours.',
+  };
+}
+
 function errorBox(title, msg, trace) {
-  return el('div', { class: 'error-box fade-in' },
-    el('div', { class: 'eb-head' }, title),
-    el('div', { class: 'eb-msg' }, msg || 'Unknown error'),
-    trace ? el('pre', {}, trace) : null);
+  // Engineers can still see the raw trace via a collapsible disclosure
+  // (Compendium event stream carries the full structured event), but
+  // the user-facing copy is product-quality.
+  const friendly = friendlyErrorCopy(msg);
+  const body = el('div', { class: 'error-box fade-in' },
+    el('div', { class: 'eb-head' }, friendly.head),
+    el('div', { class: 'eb-msg' }, friendly.msg));
+  if (trace || (msg && String(msg) !== friendly.msg)) {
+    const det = el('details', { class: 'eb-trace' });
+    det.append(el('summary', {}, 'System trace · for an operator'));
+    if (msg) det.append(el('div', { class: 'eb-raw-msg' }, String(msg)));
+    if (trace) det.append(el('pre', {}, String(trace)));
+    body.append(det);
+  }
+  return body;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -2365,10 +2437,16 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
   const gross = nativeS + bridgedS;
   const bridgedShare = gross ? bridgedS / gross : null;
 
-  // summary strip
+  // Summary strip — the "as of" cell adapts to the backing model so it
+  // shows the on-chain read date for crypto / synthetic / algorithmic
+  // tokens rather than a useless dash.
+  const isFiatA = (a.backing_model || 'fiat_reserves') === 'fiat_reserves';
+  const asOfLabelA = isFiatA ? 'ATTESTED AS OF' : 'ON-CHAIN AS OF';
+  const asOfValueA = att ? att.as_of_date
+    : (supply.read_at ? supply.read_at.slice(0, 10) : '—');
   mount.append(el('div', { class: 'strip fade-in' },
     stripCell(a.symbol, 'TOKEN', 'v-gold'),
-    stripCell(att ? att.as_of_date : '—', 'ATTESTED AS OF'),
+    stripCell(asOfValueA, asOfLabelA),
     stripCell(fmtUSD(supply.total_supply), 'HEADLINE · NATIVE'),
     stripCell(elapsed != null ? elapsed + 's' : '—', 'RUN TIME'),
   ));
@@ -3512,10 +3590,17 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
     seg('tiers' + tiers.length),
   ]);
 
-  // summary strip
+  // Summary strip — the "as of" cell adapts to the backing model so it
+  // shows a meaningful date for crypto-collateral / synthetic /
+  // algorithmic tokens (the on-chain read time) rather than a useless
+  // dash. ATTESTED AS OF still applies for fiat-backed CPA reports.
+  const isFiat = (r.backing_model || 'fiat_reserves') === 'fiat_reserves';
+  const asOfLabel = isFiat ? 'ATTESTED AS OF' : 'ON-CHAIN AS OF';
+  const asOfValue = att ? att.as_of_date
+    : (supply.read_at ? supply.read_at.slice(0, 10) : '—');
   mount.append(el('div', { class: 'strip fade-in' },
     stripCell(r.symbol, 'TOKEN', 'v-gold'),
-    stripCell(att ? att.as_of_date : '—', 'ATTESTED AS OF'),
+    stripCell(asOfValue, asOfLabel),
     stripCell(fmtUSD(supply.total_supply), 'ON-CHAIN · NATIVE'),
     stripCell(elapsed != null ? elapsed + 's' : '—', 'RUN TIME'),
   ));
@@ -3674,14 +3759,53 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
         + 'illiquid is slow to realise. Liquid coverage counts the liquid '
         + 'tier only.')));
   } else {
-    tierBody.append(el('div', { class: 'empty' },
-      icon('i-metric'),
-      el('b', {}, 'No reserve breakdown available'),
-      el('div', {}, 'Liquidity tiers need an attestation with a reserve '
-        + 'breakdown — none could be resolved for this issuer.')));
+    // Empty-state copy is backing-model aware. For crypto / synthetic /
+    // algorithmic tokens, fiat liquidity tiering doesn't apply by
+    // design — point the reader to the protocol's live on-chain
+    // dashboard instead of saying "we couldn't resolve". For fiat
+    // tokens with a missing attestation, the message is honest but
+    // also actionable (the AI Context above explains the gap).
+    const bm = r.backing_model || 'fiat_reserves';
+    const protoUrl = r.protocol_url || '';
+    if (bm !== 'fiat_reserves') {
+      const bmLabel = ({
+        crypto_collateral: 'on-chain collateral',
+        synthetic_delta_neutral: 'delta-neutral positions',
+        algorithmic: 'algorithmic + partial-collateral mechanism',
+        new_or_unverified: 'unverified backing model',
+      })[bm] || 'on-chain backing';
+      tierBody.append(el('div', { class: 'empty' },
+        icon('i-metric'),
+        el('b', {}, 'Fiat-style tier breakdown doesn\'t apply here'),
+        el('div', {},
+          r.symbol + ' is backed by ' + bmLabel + ' rather than ' +
+          'off-chain reserves. Redemption is on-chain via the ' +
+          'protocol\'s smart contracts. The live picture is on the ' +
+          'protocol dashboard.',
+          protoUrl ? el('div', { style: 'margin-top:10px' },
+            el('a', { href: protoUrl, target: '_blank',
+              rel: 'noopener', class: 'btn ghost' },
+              icon('i-chain'), 'OPEN PROTOCOL DASHBOARD ↗')) : null)));
+    } else {
+      tierBody.append(el('div', { class: 'empty' },
+        icon('i-metric'),
+        el('b', {}, 'Reserve breakdown isn\'t available yet'),
+        el('div', {}, 'The latest CPA attestation couldn\'t be read ' +
+          'this run — the AI Context above explains where the ' +
+          'issuer publishes and what the most recent reported figure ' +
+          'is. The background discovery thread retries every six ' +
+          'hours; RE-RUN above for an immediate refresh.')));
+    }
   }
-  mount.append(panel('02', `RESERVE LIQUIDITY · ${tiers.length} TIER LINE(S)`,
-    'i-metric', tierBody));
+  // Panel title is backing-model aware: fiat tokens get the tier-count
+  // label, non-fiat tokens get a model-appropriate title that signals
+  // "this isn't a CPA-tiered breakdown by design".
+  const panelTitle = tiers.length
+    ? `RESERVE LIQUIDITY · ${tiers.length} TIER LINE(S)`
+    : (r.backing_model || 'fiat_reserves') === 'fiat_reserves'
+      ? 'RESERVE LIQUIDITY · awaiting attestation'
+      : 'REDEMPTION MECHANISM · on-chain';
+  mount.append(panel('02', panelTitle, 'i-metric', tierBody));
 
   // deployment provenance
   const chainTbl = supplyChainTable(supply);
