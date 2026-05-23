@@ -80,6 +80,26 @@
     gap: 14px;
   }
   .topbar-meta-sep { color: rgba(212,162,74,.3); }
+  .cmp-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green); box-shadow: 0 0 8px rgba(127,224,166,.55);
+    transition: background .2s, box-shadow .2s;
+  }
+  .cmp-dot.refreshing {
+    background: var(--gold); box-shadow: 0 0 10px rgba(212,162,74,.7);
+    animation: cmpPulse 1.1s infinite;
+  }
+  .cmp-dot.error {
+    background: #e6918e; box-shadow: 0 0 8px rgba(248,113,113,.6);
+  }
+  @keyframes cmpPulse {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.4); }
+  }
+  .cmp-next {
+    color: rgba(212,162,74,.65);
+    font-variant-numeric: tabular-nums;
+  }
   .topbar-refresh {
     background: transparent;
     border: 1px solid rgba(212,162,74,.4);
@@ -386,7 +406,10 @@
       <span>Doré · Compendium</span>
     </a>
     <div class="topbar-meta">
+      <span class="cmp-dot" id="cmp-dot"></span>
       <span id="meta-updated">loading…</span>
+      <span class="topbar-meta-sep">·</span>
+      <span id="cmp-next" class="cmp-next">next refresh in 30s</span>
       <span class="topbar-meta-sep">·</span>
       <button class="topbar-refresh" id="btn-refresh">REFRESH</button>
     </div>
@@ -840,31 +863,61 @@ function render(data) {
   ));
 }
 
+// Refresh cadence: a tick every 30s with a visible countdown so the
+// reader sees the page is alive. The dot pulses gold during a fetch
+// and stays green afterwards; turns rose on error. Manual REFRESH
+// resets the countdown and reuses the same visual feedback.
+const REFRESH_MS = 30_000;
 let timer = null;
+let nextTimer = null;
+let nextAt = Date.now() + REFRESH_MS;
+const dot = $('cmp-dot');
+const nextLabel = $('cmp-next');
+
+function setNext(ts) {
+  nextAt = ts;
+}
+
+function updateNextLabel() {
+  const sec = Math.max(0, Math.round((nextAt - Date.now()) / 1000));
+  nextLabel.textContent = sec > 0
+    ? 'next refresh in ' + sec + 's'
+    : 'refreshing…';
+}
 
 async function tick() {
+  dot.classList.remove('error');
+  dot.classList.add('refreshing');
   try {
-    const resp = await fetch('/api/compendium');
+    const resp = await fetch('/api/compendium', { cache: 'no-store' });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     render(data);
+    dot.classList.remove('refreshing');
   } catch (e) {
+    dot.classList.remove('refreshing');
+    dot.classList.add('error');
     $('doc').innerHTML =
       '<div class="loading">Could not load compendium · ' +
       String(e.message || e) + '</div>';
+  } finally {
+    setNext(Date.now() + REFRESH_MS);
+    updateNextLabel();
   }
 }
 
 $('btn-refresh').addEventListener('click', async (ev) => {
   ev.target.disabled = true;
   ev.target.textContent = 'refreshing…';
+  setNext(Date.now());  // shows "refreshing…" in the countdown too
   await tick();
   ev.target.disabled = false;
   ev.target.textContent = 'REFRESH';
 });
 
 tick();
-timer = setInterval(tick, 30_000);
+timer = setInterval(tick, REFRESH_MS);
+nextTimer = setInterval(updateNextLabel, 1000);
 </script>
 
 </body>
