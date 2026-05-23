@@ -348,11 +348,12 @@ function aiBriefHero(brief) {
     });
     hero.append(news);
   }
-  // Provenance footer: AI-composed tag, never confused with deterministic
+  // Provenance footer: short, present-tense, ownership-first. Tells the
+  // reader the brief's lineage without sounding defensive.
   hero.append(el('div', { class: 'brief-foot' },
-    el('span', {}, 'AI-composed from deterministic facts + recent corpus. ' +
-      'Figures verbatim from the verification pipeline; never invented. ' +
-      'Read the panels below for the structured detail.')));
+    el('span', {}, 'Composed by an LLM from the verified figures above '
+      + 'and the cited corpus below. Numbers are lifted verbatim from the '
+      + 'pipeline; the prose connects them.')));
   return hero;
 }
 
@@ -410,15 +411,18 @@ function _backingNaCopy(a) {
       protoLabel: 'issuer page',
     };
   }
-  // Default: fiat_reserves where the fetch failed
+  // Default: fiat_reserves where the fetch failed. Quiet copy: do NOT
+  // lead with "fetch unavailable" or "no attestation available" — those
+  // read as broken product. The AI Context card above already carries
+  // the qualitative answer; this row stays neutral and points to it.
   return {
-    kicker: 'ATTESTATION — FETCH UNAVAILABLE',
-    big: 'n/a',
-    desc: 'The current ' + issuer + ' attestation could not be fetched '
-      + 'automatically — see the AI Context below for WHY (typically a '
-      + 'JavaScript-rendered issuer page) and where to find the document '
-      + 'manually. On-chain supply figures above are unaffected.',
-    protoLabel: '',
+    kicker: 'ATTESTED COVERAGE',
+    big: '—',
+    desc: 'Reserves and coverage ratios populate from a current CPA '
+      + 'attestation PDF. The AI Context above describes ' + issuer
+      + '’s backing structure and where the live report lives; '
+      + 'on-chain supply figures are unaffected.',
+    protoLabel: 'issuer transparency page',
   };
 }
 
@@ -474,17 +478,24 @@ function augmentationCard(ctx) {
   if (!ctx || !ctx.text) return el('span');
   const confidence = ctx.confidence || 'training-data-only';
   const conf = confidence === 'web-searched'
-    ? { label: 'web-augmented', cls: 'aug-conf-web' }
-    : { label: 'training-data only', cls: 'aug-conf-training' };
+    ? { label: 'web search + model',
+        cls: 'aug-conf-web',
+        title: 'Composed by an LLM with grounding from a live web search '
+          + 'on the issuer’s name and recent regulatory news. Numbers '
+          + 'come from the verified pipeline only, never from the LLM.' }
+    : { label: 'model knowledge',
+        cls: 'aug-conf-training',
+        title: 'Composed by an LLM from its training data; the pipeline '
+          + 'never injects numeric figures via the LLM.' };
   const reasonLabel = {
-    'no-fiat-attestation-by-design': 'No fiat attestation by design',
-    'live-attestation-fetch-failed': 'Live attestation fetch failed',
+    'no-fiat-attestation-by-design':
+      'this backing model has no fiat attestation',
+    'live-attestation-fetch-failed':
+      'fresh attestation PDF not yet resolved',
   }[ctx.reason] || ctx.reason || '';
   const head = el('div', { class: 'aug-head' },
     el('span', { class: 'aug-tag' }, 'AI CONTEXT'),
-    el('span', { class: 'aug-conf ' + conf.cls,
-      title: 'AI-generated text from ' + confidence
-        + '. The pipeline never injects numeric figures via the LLM.' },
+    el('span', { class: 'aug-conf ' + conf.cls, title: conf.title },
       conf.label));
   if (reasonLabel) {
     head.append(el('span', { class: 'aug-reason' }, '· ' + reasonLabel));
@@ -2590,28 +2601,28 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
   const mgrid = el('div', { class: 'mgrid' },
     mcell('ON-CHAIN SUPPLY · NATIVE', fmtNum(supply.total_supply, 0), 'v-paper',
       `${(supply.per_chain || []).length} deployment(s) · excludes bridged`, 'i-supply'),
-    mcell('ATTESTED RESERVES', att ? fmtUSD(att.total_reserves) : 'n/a', 'v-gold',
+    mcell('ATTESTED RESERVES', att ? fmtUSD(att.total_reserves) : '—', 'v-gold',
       att ? 'from the latest attestation'
-          : naFieldNote('no attestation resolved — hover'),
+          : naFieldNote('see AI Context above'),
       'i-doc', att ? null : tip.na.reserves),
-    mcell('TOKENS OUTSTANDING', att ? fmtNum(att.tokens_outstanding, 0) : 'n/a',
+    mcell('TOKENS OUTSTANDING', att ? fmtNum(att.tokens_outstanding, 0) : '—',
       'v-paper',
-      att ? 'per the attestation' : naFieldNote('no attestation resolved — hover'),
+      att ? 'per the attestation' : naFieldNote('see AI Context above'),
       'i-metric', att ? null : tip.na.tokens),
-    mcell('EXTRACTION CONFIDENCE', att ? fmtPct(att.confidence) : 'n/a',
+    mcell('EXTRACTION CONFIDENCE', att ? fmtPct(att.confidence) : '—',
       att && att.confidence >= 0.6 ? 'v-green' : 'v-amber',
       att ? 'LLM structured-extraction score'
-          : naFieldNote('nothing to extract — hover'),
+          : naFieldNote('populates when a PDF resolves'),
       'i-cite', att ? tip.confidence : tip.na.confidence),
-    mcell('STALENESS', m && att ? m.staleness_days + ' days' : 'n/a',
+    mcell('STALENESS', m && att ? m.staleness_days + ' days' : '—',
       m && att && m.staleness_days > 35 ? 'v-amber' : 'v-paper',
       m && att ? 'age of the attestation'
-               : naFieldNote('no attestation date — hover'),
+               : naFieldNote('populates when a PDF resolves'),
       'i-gate', m && att ? tip.staleness : tip.na.staleness),
-    mcell('SUPPLY DRIFT', m && m.supply_drift != null ? fmtPct(m.supply_drift) : 'n/a',
+    mcell('SUPPLY DRIFT', m && m.supply_drift != null ? fmtPct(m.supply_drift) : '—',
       'v-paper',
       m && m.supply_drift != null ? 'supply move since attestation'
-                                  : naFieldNote('no attestation baseline — hover'),
+                                  : naFieldNote('needs an attestation baseline'),
       'i-metric', m && m.supply_drift != null ? tip.drift : tip.na.drift),
   );
 
@@ -2637,17 +2648,30 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
         `${(supply.per_chain || []).length} deployment(s) · excludes bridged`,
         'i-supply'),
     ));
-    // n/a fields under a clearly-labelled disclosure.
+    // Detailed reserve fields under a quiet disclosure. The summary
+    // language is neutral (not "no attestation available") because the
+    // AI Context above already serves the answer; this just exposes the
+    // empty deterministic fields for trace-readers. A small footnote
+    // names why the fetcher couldn't extract the PDF this run.
     const naDetails = el('details', { class: 'na-disclosure' });
     naDetails.append(el('summary', {},
       el('span', { class: 'na-disc-glyph' }, '⊕'),
-      el('b', {}, 'Open the detailed reserve fields '),
+      el('b', {}, 'Reserve detail fields '),
       el('span', { class: 'na-disc-hint' },
-        '(coverage ratios, reserve composition, staleness — populated ' +
-        'when a CPA attestation resolves)')));
+        '(coverage, reserve composition, staleness; populated when a '
+        + 'fresh attestation PDF resolves)')));
     const inner = el('div', { class: 'na-disc-body' });
     inner.append(cov);
     inner.append(mgrid);
+    // Tiny operator note: WHY the automated extractor came up empty
+    // this run. Quiet, factual, no "could not"/"failed" framing.
+    inner.append(el('div', { class: 'na-disc-footnote' },
+      el('span', { class: 'glyph' }, '§'),
+      'Automated fetch returned no PDF this run — most often the issuer '
+      + 'page is JavaScript-rendered, the attestation URL rotated, or the '
+      + 'document is gated behind a SPA. The AI Context block above '
+      + 'covers backing structure; the cached attestation URL (if any) '
+      + 'remains in the Compendium.'));
     naDetails.append(inner);
     snapBody.append(naDetails);
   } else {
@@ -3758,41 +3782,50 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
         `${(supply.per_chain || []).length} deployment(s) · excludes bridged`,
         'i-supply'),
     ));
-    // n/a fields under a clearly-labelled disclosure.
+    // Reserve detail fields under a quiet disclosure (same pattern as
+    // analyze): the AI Context above already serves the answer; the
+    // deterministic placeholders are tucked here for trace-readers, and
+    // a small footnote names why the raw extractor came up empty.
     const naDetails = el('details', { class: 'na-disclosure' });
     naDetails.append(el('summary', {},
       el('span', { class: 'na-disc-glyph' }, '⊕'),
-      el('b', {}, 'Open the detailed reserve fields '),
+      el('b', {}, 'Reserve detail fields '),
       el('span', { class: 'na-disc-hint' },
-        '(coverage ratios, reserve breakdown, staleness — populated when ' +
-        'a CPA attestation resolves)')));
+        '(coverage ratios, reserve breakdown, staleness; populated when '
+        + 'a fresh CPA attestation PDF resolves)')));
     const inner = el('div', { class: 'na-disc-body' });
     inner.append(el('div', { class: 'cov-row' },
       el('div', { class: 'cov-cell' },
-        el('div', { class: 'cov-kick' },
-          'LIQUID COVERAGE — FAST REDEMPTION CAPACITY'),
-        el('div', { class: 'cov-big v-paper' }, 'n/a'),
+        el('div', { class: 'cov-kick' }, 'LIQUID COVERAGE'),
+        el('div', { class: 'cov-big v-paper' }, '—'),
         el('div', { class: 'cov-desc' },
-          'Liquid reserves ÷ current on-chain supply. Populated when an ' +
-          'attestation with a reserve breakdown is available.')),
+          'Liquid reserves ÷ current on-chain supply. The AI Context '
+          + 'above carries the qualitative picture; this populates when '
+          + 'a fresh attestation PDF resolves.')),
       el('div', { class: 'cov-cell' },
-        el('div', { class: 'cov-kick' }, 'LIVE COVERAGE — TOTAL RESERVES'),
-        el('div', { class: 'cov-big v-paper' }, 'n/a'),
+        el('div', { class: 'cov-kick' }, 'LIVE COVERAGE'),
+        el('div', { class: 'cov-big v-paper' }, '—'),
         el('div', { class: 'cov-desc' },
-          'Total attested reserves ÷ current on-chain supply. Populated ' +
-          'when an attestation resolves.')),
+          'Total attested reserves ÷ current on-chain supply. '
+          + 'Populates when a fresh attestation PDF resolves.')),
     ));
     inner.append(el('div', { class: 'mgrid' },
-      mcell('ATTESTED RESERVES', 'n/a', 'v-paper',
-        'populated when the CPA report resolves', 'i-doc'),
-      mcell('LIQUID RESERVES', '$0.00', 'v-muted',
-        'reserves redeemable fast — from the attestation breakdown',
+      mcell('ATTESTED RESERVES', '—', 'v-paper',
+        'see AI Context above', 'i-doc'),
+      mcell('LIQUID RESERVES', '—', 'v-muted',
+        'fast-redeemable assets from the attestation breakdown',
         'i-metric'),
-      mcell('NET REDEMPTION FLOW', 'n/a', 'v-paper',
+      mcell('NET REDEMPTION FLOW', '—', 'v-paper',
         'on-chain supply minus attested tokens outstanding', 'i-metric'),
-      mcell('STALENESS', 'n/a', 'v-paper',
+      mcell('STALENESS', '—', 'v-paper',
         'age of the attestation', 'i-gate'),
     ));
+    inner.append(el('div', { class: 'na-disc-footnote' },
+      el('span', { class: 'glyph' }, '§'),
+      'Automated fetch returned no PDF this run — most often the issuer '
+      + 'page is JavaScript-rendered, the attestation URL rotated, or '
+      + 'the document is gated behind a SPA. Background discovery '
+      + 'retries every six hours; RE-RUN above for an immediate refresh.'));
     naDetails.append(inner);
     snapBody.append(naDetails);
   } else {
@@ -3915,23 +3948,42 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
               rel: 'noopener', class: 'btn ghost' },
               icon('i-chain'), 'OPEN PROTOCOL DASHBOARD ↗')) : null)));
     } else {
+      // Lead with what we DO know (issuer + cadence + where to look);
+      // the raw-parsing limitation is a quiet footnote, not the headline.
+      const issuer = r.issuer || r.symbol;
+      const transparency = r.transparency_url || '';
+      const body = el('div', {},
+        `${issuer} publishes reserve composition in periodic CPA `
+        + 'attestations. The AI Context above carries the qualitative '
+        + 'picture (auditor, cadence, regulatory regime); the live PDF '
+        + 'is the source of truth for the tier-by-tier liquidity split.');
+      if (transparency) {
+        body.append(el('div', { style: 'margin-top:10px' },
+          el('a', { href: transparency, target: '_blank',
+            rel: 'noopener', class: 'btn ghost' },
+            icon('i-chain'), 'OPEN ISSUER TRANSPARENCY PAGE ↗')));
+      }
+      body.append(el('div', { class: 'soft-foot' },
+        el('span', { class: 'glyph' }, '§'),
+        'Automated tier extraction needs a machine-readable PDF; this '
+        + 'run’s fetch returned no document, most often because the '
+        + 'issuer page is JavaScript-rendered or the URL has rotated. '
+        + 'Background discovery retries every six hours.'));
       tierBody.append(el('div', { class: 'empty' },
         icon('i-metric'),
-        el('b', {}, 'Reserve breakdown isn\'t available yet'),
-        el('div', {}, 'The latest CPA attestation couldn\'t be read ' +
-          'this run — the AI Context above explains where the ' +
-          'issuer publishes and what the most recent reported figure ' +
-          'is. The background discovery thread retries every six ' +
-          'hours; RE-RUN above for an immediate refresh.')));
+        el('b', {}, 'Reserve composition lives in the issuer’s attestation'),
+        body));
     }
   }
   // Panel title is backing-model aware: fiat tokens get the tier-count
   // label, non-fiat tokens get a model-appropriate title that signals
-  // "this isn't a CPA-tiered breakdown by design".
+  // "this isn't a CPA-tiered breakdown by design". When the fiat path
+  // has no tier rows yet, the title points at the issuer transparency
+  // mechanism rather than apologising for the missing run.
   const panelTitle = tiers.length
     ? `RESERVE LIQUIDITY · ${tiers.length} TIER LINE(S)`
     : (r.backing_model || 'fiat_reserves') === 'fiat_reserves'
-      ? 'RESERVE LIQUIDITY · awaiting attestation'
+      ? 'RESERVE LIQUIDITY · per issuer transparency'
       : 'REDEMPTION MECHANISM · on-chain';
   mount.append(panel('02', panelTitle, 'i-metric', tierBody));
 

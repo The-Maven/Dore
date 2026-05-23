@@ -501,8 +501,8 @@ b { font-weight: 600; }
 }
 .feed-bar {
   display: flex; align-items: center; gap: 10px;
-  padding: 4px 14px; border-bottom: 1px solid var(--line-2);
-  color: var(--muted-2); font-size: 9.5px; letter-spacing: .14em;
+  padding: 5px 14px; border-bottom: 1px solid var(--line-2);
+  color: var(--muted-2); font-size: 10.5px; letter-spacing: .12em;
   flex: none;
 }
 .feed-bar .blink { color: var(--green); animation: pulse 1.4s infinite; }
@@ -924,6 +924,72 @@ a.addr-link:hover .addr-ext { opacity: 1; }
 }
 .prov-stamp .glyph { color: var(--gold); margin-right: 5px; }
 
+/* details disclosure for empty reserve fields — quietly tucks the
+   deterministic placeholders below the AI CONTEXT card so the page
+   never leads with "no attestation" type copy. */
+.na-disclosure {
+  border-top: 1px solid var(--line-2);
+  background: rgba(255,255,255,.012);
+}
+.na-disclosure[open] { background: var(--ink-2); }
+.na-disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 14px;
+  color: var(--muted);
+  font-size: 11.5px; line-height: 1.4;
+  user-select: none;
+  transition: color .15s, background .15s;
+}
+.na-disclosure > summary::-webkit-details-marker { display: none; }
+.na-disclosure > summary:hover { color: var(--paper); background: rgba(212,162,74,.04); }
+.na-disclosure[open] > summary {
+  border-bottom: 1px solid var(--line-2);
+  color: var(--paper);
+}
+.na-disc-glyph {
+  display: inline-block;
+  width: 14px; height: 14px;
+  text-align: center; line-height: 14px;
+  color: var(--muted-2);
+  font-size: 11px;
+  transition: transform .2s, color .15s;
+}
+.na-disclosure[open] .na-disc-glyph {
+  transform: rotate(45deg);
+  color: var(--gold);
+}
+.na-disclosure > summary b { font-weight: 600; color: inherit; }
+.na-disc-hint {
+  color: var(--muted-2);
+  font-size: 10.5px;
+  font-weight: 400;
+  margin-left: 2px;
+}
+.na-disc-body { padding: 4px 0 0; }
+.na-disc-footnote {
+  display: flex; gap: 7px;
+  padding: 9px 14px 11px;
+  margin-top: 4px;
+  border-top: 1px dashed var(--line-2);
+  color: var(--muted-2);
+  font-size: 10.5px; line-height: 1.55;
+}
+.na-disc-footnote .glyph { color: var(--gold); flex: none; }
+
+/* Subtle parsing-difficulty footnote inside an empty-state block.
+   Sits below the helpful CTA, quietly explaining why automation
+   couldn't fill the panel without sounding defensive. */
+.soft-foot {
+  display: flex; gap: 7px;
+  margin-top: 14px; padding-top: 10px;
+  border-top: 1px dashed var(--line-2);
+  color: var(--muted-2);
+  font-size: 10.5px; line-height: 1.55;
+}
+.soft-foot .glyph { color: var(--gold); flex: none; }
+
 /* checks — dense rows */
 .check {
   display: grid; grid-template-columns: 16px 1fr auto;
@@ -934,10 +1000,10 @@ a.addr-link:hover .addr-ext { opacity: 1; }
 .check.fail-critical { background: rgba(248,113,113,.06); }
 .check.fail-warn { background: rgba(247,185,85,.05); }
 .check-name { color: var(--paper); font-weight: 500; }
-.check-detail { color: var(--muted); font-size: 10px; margin-top: 1px; }
+.check-detail { color: var(--muted); font-size: 10.5px; margin-top: 2px; line-height: 1.4; }
 .sev {
-  font-size: 8.5px; letter-spacing: .1em; font-weight: 600;
-  padding: 1px 5px; border: 1px solid; align-self: center;
+  font-size: 10px; letter-spacing: .09em; font-weight: 600;
+  padding: 1.5px 6px; border: 1px solid; align-self: center;
 }
 .sev-info, .sev.pass { color: var(--green); border-color: rgba(127,224,166,.4); }
 .sev-warn { color: var(--amber); border-color: rgba(247,185,85,.4); }
@@ -1114,12 +1180,12 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .gap-msg { color: var(--paper); }
 .gap-tags { display: flex; gap: 6px; margin-top: 3px; }
 .gap-cat {
-  font-size: 8.5px; letter-spacing: .1em; color: var(--muted-2);
-  border: 1px solid var(--line); padding: 1px 5px;
+  font-size: 10px; letter-spacing: .09em; color: var(--muted-2);
+  border: 1px solid var(--line); padding: 1.5px 6px;
 }
 .gap-sev {
-  font-size: 8.5px; letter-spacing: .1em; font-weight: 600;
-  padding: 1px 5px; border: 1px solid;
+  font-size: 10px; letter-spacing: .09em; font-weight: 600;
+  padding: 1.5px 6px; border: 1px solid;
 }
 
 /* plain-language "why" sub-line on a gap row — terminal-quiet, explanatory.
@@ -2228,13 +2294,13 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .hist-row:hover { background: var(--ink-3); }
 .hist-row .h-sym { color: var(--gold); font-weight: 600; width: 52px; }
 .hist-row .h-surface {
-  color: var(--muted); font-size: 9px; letter-spacing: .1em;
-  text-transform: uppercase; width: 78px;
+  color: var(--muted); font-size: 10px; letter-spacing: .09em;
+  text-transform: uppercase; width: 84px;
 }
-.hist-row .h-status { font-size: 9px; letter-spacing: .08em; }
+.hist-row .h-status { font-size: 10px; letter-spacing: .07em; }
 .hist-row .h-status.done { color: var(--green); }
 .hist-row .h-status.error { color: var(--rose); }
-.hist-row .h-time { margin-left: auto; color: var(--muted-2); font-size: 9.5px; }
+.hist-row .h-time { margin-left: auto; color: var(--muted-2); font-size: 10.5px; }
 .hist-empty { padding: 14px 12px; color: var(--muted-2); font-size: 10.5px; }
 
 /* ════════════════════════════════════════════════════════════════════
