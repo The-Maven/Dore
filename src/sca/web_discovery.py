@@ -43,6 +43,80 @@ _HTTP_TIMEOUT = 25.0
 _MAX_RESULTS = 8
 _UA = {"User-Agent": "Mozilla/5.0"}
 
+# ── Authoritative-domain trust tier ──────────────────────────────────
+# "Search is a lead, never a fact" — when a search returns results, we
+# rank candidates from KNOWN authoritative origins (issuer transparency
+# CDNs, regulators, major auditors, explorers) above generic results.
+# This is one of two safeguards (the other is the two-source confirmation
+# rule) that keep SEO spam and content-farm pages out of the verified-
+# fact path. See dore-search-is-a-lead-not-a-fact in memory.
+_AUTHORITATIVE_DOMAINS = (
+    # Issuer / transparency CDNs (the highest tier of trust for an
+    # attestation PDF — these are the issuers' own pages)
+    "circle.com", "hubspotusercontent-na1.net",  # USDC + EURC
+    "tether.to", "tether.io",  # USDT, EURT, XAU₮
+    "paxos.com", "withum.com",  # PYUSD / USDP / USDG + auditor
+    "tusd.io",  # TrueUSD
+    "gemini.com",  # GUSD
+    "firstdigitallabs.com",  # FDUSD
+    "ripple.com",  # RLUSD
+    "agora.io", "buildwithfern.com",  # AUSD
+    "bitgo.com", "worldlibertyfinancial.com",  # USD1
+    "mountainprotocol.com",  # USDM
+    "makerdao.com", "sky.money",  # DAI / USDS
+    "ethena.fi",  # USDe
+    "aave.com",  # GHO
+    "curve.fi", "curve.finance",  # crvUSD
+    "liquity.org",  # LUSD
+    "abracadabra.money",  # MIM
+    "frax.finance",  # FRAX
+    "usdf.com",  # USDf
+    # Regulators + standards bodies
+    "treasury.gov", "ofac.treasury.gov", "sec.gov", "cftc.gov",
+    "federalreserve.gov", "fdic.gov", "occ.treas.gov",
+    "europa.eu", "ecb.europa.eu", "esma.europa.eu",
+    "fsb.org", "bis.org", "iosco.org", "iaasb.org",
+    "dfs.ny.gov",  # NYDFS
+    "fca.org.uk", "bankofengland.co.uk",
+    "mas.gov.sg", "bma.bm",
+    # Major auditors / accounting firms
+    "deloitte.com", "kpmg.com", "ey.com", "pwc.com",
+    "grantthornton.com", "bdo.com", "moorehk.com.hk",
+    "withum.com", "crowe.com", "bpmcpa.com",
+    # On-chain explorers (independent verification)
+    "etherscan.io", "arbiscan.io", "basescan.org",
+    "polygonscan.com", "bscscan.com", "snowtrace.io",
+    "optimistic.etherscan.io", "solscan.io", "tronscan.org",
+    "data.chain.link",  # Chainlink PoR feeds
+)
+
+
+def _domain_trust_rank(url: str) -> int:
+    """Lower number = more trusted. 0 for authoritative-domain matches,
+    1 for sub-domains of authoritative origins, 2 for everything else.
+    Used to re-rank search results so issuer / regulator / auditor pages
+    surface above SEO spam."""
+    if not url:
+        return 9
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return 9
+    for trusted in _AUTHORITATIVE_DOMAINS:
+        if host == trusted:
+            return 0
+        if host.endswith("." + trusted):
+            return 1
+    return 2
+
+
+def _rank_by_trust(urls: list[str]) -> list[str]:
+    """Stable sort by domain trust rank — authoritative origins first.
+    Preserves the underlying search-rank order within each tier so we
+    still benefit from Brave/DDG's relevance signal."""
+    return sorted(urls, key=lambda u: (_domain_trust_rank(u), urls.index(u)))
+
 
 def _provider() -> str:
     return os.environ.get("SCA_WEB_SEARCH_PROVIDER", "").strip().lower()
@@ -339,14 +413,17 @@ def _search_llm(query: str) -> list[str]:
 
 def _search_combo(query: str) -> list[str]:
     """Brave first (better relevance, paid free-tier-friendly), fall back
-    to DuckDuckGo if Brave returns nothing or errors.
+    to DuckDuckGo if Brave returns nothing or errors. Results are then
+    re-ranked by authoritative-domain trust tier — issuer transparency
+    CDNs, regulators, and major auditors surface above generic results.
 
     Why this order: Brave's results are typically more useful for our
     typed-attestation-PDF queries, and the free 2k/month is plenty given
     our discovery thread caches every hit for 25 days. DDG is the safety
     net for the queries Brave misses (less common but happens for
     obscure tokens) or for the day a Brave outage or quota exhaustion
-    would otherwise blank the page.
+    would otherwise blank the page. The trust-tier re-rank is the
+    "source-quality filtering" half of the search-is-a-lead discipline.
     """
     results = _search_brave(query)
     if results:
@@ -354,13 +431,13 @@ def _search_combo(query: str) -> list[str]:
             "web_discovery.combo.brave_hit", level="info",
             query=query, count=len(results),
         )
-        return results
+        return _rank_by_trust(results)
     results = _search_duckduckgo(query)
     log_event(
         "web_discovery.combo.ddg_fallback", level="info",
         query=query, count=len(results),
     )
-    return results
+    return _rank_by_trust(results)
 
 
 _BACKENDS = {
