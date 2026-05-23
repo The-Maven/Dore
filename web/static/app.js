@@ -4200,14 +4200,50 @@ function viewEvals() {
       document.createTextNode(' RUNNING'));
     mount.innerHTML = '';
     logLine('WORK', 'EVALS', [seg('suite start', 'lg-val'), seg('grading all cases')]);
+    // Dynamic narration during the synchronous eval run — same feel as
+    // the analyze view's stage narration, but the endpoint is blocking
+    // so we cycle through plausible eval-time steps client-side. Each
+    // line corresponds to something the harness actually does.
+    const subLine = el('div', { class: 'rs-sub rs-sub-tick' },
+      'loading the eval case list');
+    const clock = el('span', { class: 'rs-tk', style: 'margin-left:auto' }, '0s');
+    const head = el('div', { class: 'rstage active' },
+      el('div', { class: 'rs-mark' }),
+      el('div', { class: 'rs-text' },
+        el('div', { class: 'rs-label' }, 'Eval suite running'),
+        subLine),
+      clock);
     mount.append(panel(null, 'EVAL SUITE — RUNNING', 'i-eval',
       el('div', {},
-        el('div', { class: 'pb-pad', style: 'color:var(--muted-2)' },
-          'Grading every case against a live analysis…'),
+        el('div', { class: 'run-stages' }, head),
         el('div', { class: 'scanbar' }))));
+    const evalLines = [
+      'loading the eval case list',
+      'running USDC supply-resolves check',
+      'running USDT supply-resolves check',
+      'running PYUSD attestation-absent expectation',
+      'verifying GUSD gap-contains assertions',
+      'checking the corpus-included-by-default guard',
+      'asserting no investment-advice language in narratives',
+      'grading attestation-confidence thresholds',
+      'tallying pass / fail across every case',
+    ];
+    let i = 0;
+    const t0 = Date.now();
+    const subTimer = setInterval(() => {
+      i = (i + 1) % evalLines.length;
+      subLine.textContent = evalLines[i];
+      subLine.classList.remove('rs-sub-tick');
+      void subLine.offsetWidth;
+      subLine.classList.add('rs-sub-tick');
+    }, 1600);
+    const clockTimer = setInterval(() => {
+      clock.textContent = Math.round((Date.now() - t0) / 1000) + 's';
+    }, 250);
     let data;
     try { data = await api('/evals'); }
     catch (e) {
+      clearInterval(subTimer); clearInterval(clockTimer);
       mount.innerHTML = '';
       logLine('ERR', 'EVALS', [seg('SUITE-FAIL', 'd-warn'),
         seg(String(e.message).slice(0, 48))]);
@@ -4216,6 +4252,7 @@ function viewEvals() {
       runBtn.replaceChildren(icon('i-eval'), document.createTextNode('RUN SUITE'));
       return;
     }
+    clearInterval(subTimer); clearInterval(clockTimer);
     mount.innerHTML = '';
     logLine(data.passed === data.count ? 'OK' : 'ALERT', 'EVALS', [
       seg(data.passed === data.count ? 'GREEN' : 'FAIL',
@@ -4230,6 +4267,78 @@ function viewEvals() {
   });
 }
 
+// Eval points come back as programmatic kind strings ("supply_resolved",
+// "gap_contains(identity check)", "passages_included_only") with raw
+// assertion details ("total_supply=72,503,244,574.51", "needle='X'",
+// "excluded_cited=[]"). That reads as test-runner output, not as a
+// product. This humaniser turns each into a sentence a financial
+// reader can scan. The raw kind stays available on hover for the
+// audit-minded.
+function humanizeEvalPoint(p) {
+  const raw = p.point || '';
+  const det = p.detail || '';
+  // Split "gap_contains(some phrase)" into kind + needle.
+  const m = raw.match(/^([a-z_]+)(?:\((.*)\))?$/);
+  const kind = m ? m[1] : raw;
+  const arg = m && m[2] ? m[2] : '';
+
+  // Pretty assertion-detail: "total_supply=72,503..." → "Total supply: 72,503..."
+  const prettyDetail = () => {
+    if (!det) return '';
+    const kv = det.match(/^([a-z_]+)=(.+)$/);
+    if (kv) {
+      const k = kv[1].replace(/_/g, ' ');
+      const v = kv[2].replace(/^['"]|['"]$/g, '');
+      return k.charAt(0).toUpperCase() + k.slice(1) + ': ' + v;
+    }
+    return det;
+  };
+
+  const labels = {
+    supply_resolved: {
+      ok: 'Live supply resolved from on-chain reads',
+      fail: 'Live supply did not resolve',
+    },
+    metrics_present: {
+      ok: 'Coverage metrics computed',
+      fail: 'Coverage metrics missing',
+    },
+    metrics_absent: {
+      ok: 'Coverage metrics correctly absent for this case',
+      fail: 'Coverage metrics were computed when none were expected',
+    },
+    narrative_present: {
+      ok: 'Narrative synthesised',
+      fail: 'No narrative was synthesised',
+    },
+    no_investment_language: {
+      ok: 'Narrative is free of investment-advice language',
+      fail: 'Narrative contains banned investment-advice phrasing',
+    },
+    passages_included_only: {
+      ok: 'Reasoning frame cites only included corpus passages',
+      fail: 'Reasoning frame cited an excluded passage',
+    },
+    attestation_confidence_min: {
+      ok: 'Attestation extraction confidence cleared the threshold',
+      fail: 'Attestation extraction confidence fell below the threshold',
+    },
+    gap_contains: {
+      ok: arg
+        ? `Expected gap mentioning "${arg}" was reported`
+        : 'Expected gap was reported',
+      fail: arg
+        ? `Expected gap mentioning "${arg}" was missing`
+        : 'Expected gap was missing',
+    },
+  };
+  const entry = labels[kind];
+  const name = entry
+    ? (p.passed ? entry.ok : entry.fail)
+    : raw;
+  return { name, detail: prettyDetail(), rawKind: raw };
+}
+
 function renderEvals(data, mount) {
   const allPass = data.passed === data.count;
   mount.append(el('div', { class: 'strip fade-in' },
@@ -4240,13 +4349,19 @@ function renderEvals(data, mount) {
     stripCell(allPass ? 'GREEN' : 'FAIL', 'SUITE', allPass ? 'v-green' : 'v-rose')));
 
   data.cases.forEach((c) => {
-    const body = el('div', {}, ...c.points.map((p) => el('div', { class: 'check' },
-      icon(p.passed ? 'i-ok' : 'i-error'),
-      el('div', {},
-        el('div', { class: 'check-name' }, p.point),
-        p.detail ? el('div', { class: 'check-detail' }, p.detail) : null),
-      el('span', { class: 'sev ' + (p.passed ? 'pass' : 'sev-critical') },
-        p.passed ? 'pass' : 'fail'))));
+    const body = el('div', {}, ...c.points.map((p) => {
+      const h = humanizeEvalPoint(p);
+      return el('div', {
+        class: 'check' + (p.passed ? '' : ' fail-critical'),
+        title: 'check id: ' + h.rawKind,
+      },
+        icon(p.passed ? 'i-ok' : 'i-error'),
+        el('div', {},
+          el('div', { class: 'check-name' }, h.name),
+          h.detail ? el('div', { class: 'check-detail' }, h.detail) : null),
+        el('span', { class: 'sev ' + (p.passed ? 'pass' : 'sev-critical') },
+          p.passed ? 'pass' : 'fail'));
+    }));
     mount.append(panel(null, `${c.case_id} · ${c.symbol}`, c.passed ? 'i-ok' : 'i-error', body));
   });
 }
