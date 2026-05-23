@@ -14,8 +14,9 @@
   --green:    #7FE0A6;
   --amber:    #F7B955;
   --rose:     #F87171;
-  --muted:    #96928A;
-  --muted-2:  #6C6963;
+  --muted:    #96928A;  /* 6.35:1 vs ink — AA body, near-AAA */
+  --muted-2:  #8A8580;  /* 5.39:1 vs ink — AA body (bumped from
+                           #6C6963 which was 3.60, failed AA body) */
   --line:     #23262c;
   --line-2:   #1a1c21;
   --topbar-h: 30px;
@@ -37,12 +38,15 @@
   --ink-2:    #ECE6D6;  /* secondary surface */
   --ink-3:    #E2DBC6;  /* tertiary / table-stripe */
   --paper:    #1C1A14;  /* primary ink — near-black with warmth */
-  --gold:     #8B6720;  /* richer brass for contrast on cream */
-  --green:    #2E7D5B;  /* AA on cream */
-  --amber:    #B26A12;  /* darker amber for warnings */
-  --rose:     #B43E3E;  /* darker rose for errors */
-  --muted:    #5A5648;
-  --muted-2:  #7C7868;
+  --gold:     #8B6720;  /* 4.59:1 vs cream — AA body */
+  --green:    #287052;  /* 5.28:1 vs cream — AA body (bumped from
+                           #2E7D5B at 4.43, just shy of AA) */
+  --amber:    #9A5C0E;  /* 4.76:1 vs cream — AA body (bumped from
+                           #B26A12 at 3.75, failed AA body) */
+  --rose:     #B43E3E;  /* 5.04:1 vs cream — AA body */
+  --muted:    #5A5648;  /* 6.52:1 vs cream — AA body, near-AAA */
+  --muted-2:  #645F50;  /* 5.65:1 vs cream — AA body (bumped from
+                           #7C7868 at 3.93, failed AA body) */
   --line:     #C9C2AC;
   --line-2:   #D9D2BD;
   --bg: var(--ink);
