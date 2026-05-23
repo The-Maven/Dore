@@ -1876,10 +1876,15 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 
   .main { width: 100%; height: auto; flex: 1; min-height: 0; }
 
-  /* ── view header — looser on phone, hide subtitle ────────────────── */
-  .view-head { padding: 8px 12px; gap: 9px; flex-wrap: wrap; }
+  /* ── view header — looser on phone, hide subtitle ──────────────────
+     The actions row drops onto its own line at full width; the symbol
+     input grows to fill the leftover space while the RUN button sits
+     flush right at a consistent touch height. */
+  .view-head { padding: 10px 14px; gap: 10px; flex-wrap: wrap; }
   .view-sub { display: none; }
-  .view-actions { width: 100%; margin-left: 0; }
+  .view-actions { width: 100%; margin-left: 0; gap: 10px; align-items: stretch; }
+  .view-actions .tinput { flex: 1; min-width: 0; }
+  .view-actions .btn { flex: none; align-self: stretch; white-space: nowrap; }
 
   /* ── metric grid → horizontal scroll carousel ────────────────────
      Each cell becomes a snap-point so the user swipes through metrics
@@ -2035,8 +2040,24 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   .cmdline { padding: 0 10px; }
   .cmd-input { font-size: 12px; }
 
-  /* ── buttons — promote to 44px touch on phone ───────────────────── */
-  .btn { min-height: 36px; padding: 8px 14px; font-size: 11px; }
+  /* ── buttons — promote to 40px touch on phone with consistent
+       vertical rhythm. All button-like controls share the same height
+       so a row of buttons reads as a deliberate set, not a jumble. */
+  .btn { min-height: 40px; padding: 0 16px; font-size: 11px;
+         justify-content: center; line-height: 1; }
+  .btn svg { width: 14px; height: 14px; }
+  .tinput { min-height: 40px; padding: 0 11px; font-size: 12px; line-height: 1; }
+  /* Match the freshness strip RE-RUN to the standard button height,
+     remove the margin-left:auto so on phones it sits flush right of
+     the timestamp with a normal gap instead of a yawning empty band. */
+  .fresh-strip { padding: 8px 14px; gap: 10px; flex-wrap: wrap;
+                 align-items: center; }
+  .fresh-refresh { margin-left: auto; min-height: 36px; }
+  .vote-btn { min-height: 36px; padding: 0 12px; line-height: 1;
+              justify-content: center; }
+  .an-send { min-height: 40px; padding: 0 14px; line-height: 1; }
+  .tier-btn { min-height: 32px; padding: 0 10px; line-height: 1;
+              display: inline-flex; align-items: center; }
 
   /* ── monitor log feed — let the wide log scroll horizontally
      (preserving the column grid) instead of bleeding off-screen */
