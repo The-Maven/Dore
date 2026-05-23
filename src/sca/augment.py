@@ -90,7 +90,7 @@ def _live_news_block(coin: Stablecoin, kind: str) -> str:
     except Exception as exc:  # noqa: BLE001 - never break augmentation
         log_event(
             "augment.news.fetch_failed", level="warn",
-            symbol=coin.symbol, kind=kind,
+            symbol=coin.symbol, news_kind=kind,
             error_class=type(exc).__name__, error_message=str(exc),
         )
         return ""

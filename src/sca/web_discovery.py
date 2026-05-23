@@ -145,9 +145,145 @@ def _search_serper(query: str) -> list[str]:
     return [r.get("link", "") for r in organic if r.get("link")]
 
 
+def _search_anthropic(query: str) -> list[str]:
+    """Anthropic's native web_search tool — uses ANTHROPIC_API_KEY.
+
+    Lets the LLM do the searching itself, no separate Brave/Serper key
+    needed. Returns a list of URLs Claude found relevant to the query,
+    extracted from the tool's citation blocks.
+    """
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not key:
+        log_event(
+            "web_discovery.anthropic_no_key", level="warn",
+            detail="ANTHROPIC_API_KEY required for the anthropic backend",
+        )
+        return []
+    try:
+        import anthropic
+    except ImportError:
+        log_event(
+            "web_discovery.anthropic_no_sdk", level="warn",
+            detail="pip install '.[llm]' to enable the anthropic backend",
+        )
+        return []
+    try:
+        client = anthropic.Anthropic(api_key=key)
+        msg = client.messages.create(
+            model=os.environ.get(
+                "SCA_WEB_SEARCH_MODEL", "claude-haiku-4-5-20251001",
+            ),
+            max_tokens=1024,
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 3,
+            }],
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Search the web for: {query}\n\n"
+                    "Return only the URLs of the most relevant results. "
+                    "One URL per line. No commentary."
+                ),
+            }],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "web_discovery.backend_error", level="warn",
+            backend="anthropic", error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return []
+    # Anthropic returns citation blocks + text blocks; harvest both.
+    urls: list[str] = []
+    for block in msg.content:
+        # Text block — parse line-by-line for URLs.
+        if getattr(block, "type", "") == "text":
+            for line in (block.text or "").splitlines():
+                line = line.strip().strip("•-* ")
+                if line.startswith(("http://", "https://")):
+                    urls.append(line.split()[0])
+        # Web-search tool result block — its citations carry source URLs.
+        if getattr(block, "type", "") == "server_tool_use":
+            continue  # the tool invocation, not the results
+        results = getattr(block, "content", None)
+        if isinstance(results, list):
+            for r in results:
+                u = (
+                    getattr(r, "url", "")
+                    or (r.get("url") if isinstance(r, dict) else "")
+                )
+                if u and u.startswith(("http://", "https://")):
+                    urls.append(u)
+    # Dedup while preserving order.
+    seen = set()
+    out: list[str] = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out[:_MAX_RESULTS]
+
+
+def _search_llm(query: str) -> list[str]:
+    """LLM-as-search — uses the configured LLM (DeepSeek by default).
+
+    No separate Brave/Serper key needed. The model proposes URLs it
+    knows for the query and we HEAD-check each one before accepting.
+    Bounded by the model's training cutoff, so genuinely-recent items
+    may need a real search backend. Returns at most _MAX_RESULTS URLs.
+    """
+    try:
+        from sca.llm import get_llm
+        client = get_llm()
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "web_discovery.llm_unavailable", level="warn",
+            error_class=type(exc).__name__, error_message=str(exc),
+        )
+        return []
+    system = (
+        "You are a URL-recall tool. Given a search query, return a JSON "
+        "array of the most relevant URLs you know that would answer "
+        "it — issuer PDFs, official transparency pages, regulator "
+        "filings, mainstream financial press articles. Be conservative: "
+        "if you are not confident a URL exists exactly as you remember "
+        "it, omit it. Do NOT invent URL paths. Cap the list at 8."
+    )
+    prompt = (
+        f"Query: {query}\n\n"
+        "Return strict JSON: [\"https://...\", \"https://...\", ...]\n"
+        "No commentary, just the JSON array. Use [] if you have no "
+        "confident recall."
+    )
+    try:
+        raw = client.extract_json(
+            system=system, prompt=prompt,
+            schema={"type": "array", "items": {"type": "string"}},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "web_discovery.backend_error", level="warn",
+            backend="llm", error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("urls") or raw.get("items") or []
+    urls: list[str] = []
+    for u in (raw if isinstance(raw, list) else []):
+        s = str(u).strip()
+        if s.startswith(("http://", "https://")):
+            urls.append(s)
+    return urls[:_MAX_RESULTS]
+
+
 _BACKENDS = {
     "brave": _search_brave,
     "serper": _search_serper,
+    "anthropic": _search_anthropic,
+    "llm": _search_llm,
 }
 
 
@@ -324,9 +460,152 @@ def _search_serper_news(query: str) -> list[dict]:
     return [s for s in out if s["url"]]
 
 
+def _search_anthropic_news(query: str) -> list[dict]:
+    """Anthropic native search for recent news snippets.
+
+    Asks Claude to search the web and return structured news items.
+    Same shape as the brave/serper news returns. Uses ANTHROPIC_API_KEY.
+    """
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not key:
+        return []
+    try:
+        import anthropic
+        import json as _json
+    except ImportError:
+        return []
+    try:
+        client = anthropic.Anthropic(api_key=key)
+        msg = client.messages.create(
+            model=os.environ.get(
+                "SCA_WEB_SEARCH_MODEL", "claude-haiku-4-5-20251001",
+            ),
+            max_tokens=2048,
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 3,
+            }],
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Search the web for recent news on: {query}\n\n"
+                    "Return a JSON array of up to 5 items, each with: "
+                    "{title, url, snippet, age}. Age is a short relative "
+                    "phrase like 'last week' or 'today'. Only items from "
+                    "the past month. No commentary, just the JSON."
+                ),
+            }],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "web_discovery.news_backend_error", level="warn",
+            backend="anthropic", error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return []
+    # The last text block should be the JSON array.
+    text_parts = []
+    for block in msg.content:
+        if getattr(block, "type", "") == "text":
+            text_parts.append(block.text or "")
+    raw = "\n".join(text_parts).strip()
+    # Strip a markdown fence if Claude added one.
+    if raw.startswith("```"):
+        raw = raw.split("```", 2)[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+    try:
+        items = _json.loads(raw)
+    except _json.JSONDecodeError:
+        return []
+    out: list[dict] = []
+    for r in (items if isinstance(items, list) else [])[:5]:
+        if not isinstance(r, dict) or not r.get("url"):
+            continue
+        out.append({
+            "title": str(r.get("title", ""))[:160],
+            "url": str(r.get("url", "")),
+            "snippet": str(r.get("snippet", ""))[:300],
+            "age": str(r.get("age", "")),
+        })
+    return out
+
+
+def _search_llm_news(query: str) -> list[dict]:
+    """LLM-as-news-search — uses the configured LLM (DeepSeek).
+
+    Same caveat as `_search_llm`: bounded by the model's training
+    cutoff. Better than nothing — the LLM can recall well-known
+    regulatory events, depegs, partnerships, etc. We trust the URLs
+    only insofar as they're plausible; downstream code may HEAD-check.
+    """
+    try:
+        from sca.llm import get_llm
+        client = get_llm()
+    except Exception:  # noqa: BLE001
+        return []
+    system = (
+        "You are a recent-news recall tool. Given a query, return up "
+        "to 3 well-known news items relevant to it from your training "
+        "knowledge — regulatory actions, market events, partnerships, "
+        "depegs, attestations. Be conservative: never invent stories. "
+        "If you don't have high-confidence recall, return [] honestly."
+    )
+    prompt = (
+        f"Query: {query}\n\n"
+        "Return strict JSON array of items: "
+        "[{\"title\": \"...\", \"url\": \"https://...\", "
+        "\"snippet\": \"one-line summary\", \"age\": \"approx date\"}].\n"
+        "No commentary."
+    )
+    try:
+        raw = client.extract_json(
+            system=system, prompt=prompt,
+            schema={
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "url": {"type": "string"},
+                        "snippet": {"type": "string"},
+                        "age": {"type": "string"},
+                    },
+                },
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "web_discovery.news_backend_error", level="warn",
+            backend="llm", error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("items") or raw.get("news") or []
+    out: list[dict] = []
+    for r in (raw if isinstance(raw, list) else [])[:5]:
+        if not isinstance(r, dict) or not r.get("url"):
+            continue
+        u = str(r.get("url", "")).strip()
+        if not u.startswith(("http://", "https://")):
+            continue
+        out.append({
+            "title": str(r.get("title", ""))[:160],
+            "url": u,
+            "snippet": str(r.get("snippet", ""))[:300],
+            "age": str(r.get("age", "")),
+        })
+    return out
+
+
 _NEWS_BACKENDS = {
     "brave": _search_brave_news,
     "serper": _search_serper_news,
+    "anthropic": _search_anthropic_news,
+    "llm": _search_llm_news,
 }
 
 
@@ -359,11 +638,11 @@ def recent_news_snippets(
     query = f"{symbol}{issuer_term} {qualifiers}"
     log_event(
         "web_discovery.news.start", level="info",
-        symbol=symbol, kind=kind, provider=provider, query=query,
+        symbol=symbol, news_kind=kind, provider=provider, query=query,
     )
     hits = backend(query)
     log_event(
         "web_discovery.news.results", level="info",
-        symbol=symbol, kind=kind, count=len(hits),
+        symbol=symbol, news_kind=kind, count=len(hits),
     )
     return hits[:limit]
