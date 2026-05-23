@@ -743,15 +743,34 @@ def compendium() -> dict[str, Any]:
     # Rolling log — last N background-thread events. Filter to the kinds
     # the Compendium cares about so the stream is readable.
     INTERESTING = {
+        # Web discovery
         "web_discovery.search.start", "web_discovery.search.results",
         "web_discovery.hit", "web_discovery.no_pdf",
         "web_discovery.disabled", "web_discovery.backend_error",
         "web_discovery.cache_hit",
-        "health.flip", "health.heal", "health.sweep.start",
-        "health.sweep.complete",
+        "web_discovery.combo.brave_hit", "web_discovery.combo.ddg_fallback",
+        "web_discovery.second_hop_failed",
+        # Issuer status Q&A
+        "issuer_status.refreshed", "issuer_status.failed",
+        # Canary
+        "health.source.flipped", "health.sweep.done", "health.sweep.failed",
+        "canary.recovery.start", "canary.recovery.hit",
+        "canary.recovery.no_match", "canary.replacement.proposed",
+        # Address auto-verify (background)
+        "address.auto_verify.sweep_done", "address.auto_verify.failed",
+        # Attestation gap-sweep
+        "attestation.gap_sweep.ok", "attestation.gap_sweep.unresolved",
+        "attestation.gap_sweep.done",
+        # Discovery
+        "discovery.brave.query", "discovery.brave.sweep_done",
+        "discovery.sweep",
+        # SDN
         "sdn.fetch.ok", "sdn.fetch.failed",
+        # On-chain anomalies
         "supply.jump", "rpc.consensus.degraded",
+        # Persistence anomalies
         "attestation.override_persist_failed",
+        "verified_facts.write_failed", "verified_facts.table_missing",
     }
     events = [
         e for e in recent_events(limit=500)
@@ -940,6 +959,13 @@ _NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html", headers=_NO_CACHE)
+
+
+@app.get("/compendium")
+def compendium_page() -> FileResponse:
+    """Standalone Compendium document — lives outside the SPA so it can
+    be opened in its own tab as a sharable, printable docs page."""
+    return FileResponse(STATIC_DIR / "compendium.html", headers=_NO_CACHE)
 
 
 @app.get("/static/{name}")

@@ -228,6 +228,22 @@ b { font-weight: 600; }
 .tmark-tick[data-token="GUSD"]  { color: #45D2FF; }
 .tmark-tick[data-token="TUSD"]  { color: #5A86FF; }
 .tmark-tick[data-token="FDUSD"] { color: #E0AE55; }
+.tmark-tick[data-token="DAI"]   { color: #F5AC37; }
+.tmark-tick[data-token="USDS"]  { color: #2EE5BA; }
+.tmark-tick[data-token="USDE"]  { color: #5B68F2; }
+.tmark-tick[data-token="USD1"]  { color: #B89D5F; }
+.tmark-tick[data-token="FRAX"]  { color: #C0C0C0; }
+.tmark-tick[data-token="CRVUSD"] { color: #B49DFF; }
+.tmark-tick[data-token="GHO"]   { color: #B6509E; }
+.tmark-tick[data-token="USDD"]  { color: #EF0027; }
+.tmark-tick[data-token="LUSD"]  { color: #2EB6EA; }
+.tmark-tick[data-token="MIM"]   { color: #9D5BDE; }
+.tmark-tick[data-token="USDF"]  { color: #FBA62A; }
+.tmark-tick[data-token="RLUSD"] { color: #00AAE4; }
+.tmark-tick[data-token="AUSD"]  { color: #FFB000; }
+.tmark-tick[data-token="USDM"]  { color: #3BBF94; }
+.tmark-tick[data-token="EURI"]  { color: #1B6FE0; }
+.tmark-tick[data-token="AEUR"]  { color: #2E5BFF; }
 
 /* the token symbol — prominent, set in the instrument's own brand
    colour. Honest vividness: every item carries colour from brand
@@ -246,6 +262,22 @@ b { font-weight: 600; }
 .tick-sym[data-token="GUSD"]  { color: #45D2FF; }
 .tick-sym[data-token="TUSD"]  { color: #5A86FF; }
 .tick-sym[data-token="FDUSD"] { color: #E0AE55; }
+.tick-sym[data-token="DAI"]   { color: #F5AC37; }
+.tick-sym[data-token="USDS"]  { color: #2EE5BA; }
+.tick-sym[data-token="USDE"]  { color: #5B68F2; }
+.tick-sym[data-token="USD1"]  { color: #B89D5F; }
+.tick-sym[data-token="FRAX"]  { color: #C0C0C0; }
+.tick-sym[data-token="CRVUSD"] { color: #B49DFF; }
+.tick-sym[data-token="GHO"]   { color: #B6509E; }
+.tick-sym[data-token="USDD"]  { color: #EF0027; }
+.tick-sym[data-token="LUSD"]  { color: #2EB6EA; }
+.tick-sym[data-token="MIM"]   { color: #9D5BDE; }
+.tick-sym[data-token="USDF"]  { color: #FBA62A; }
+.tick-sym[data-token="RLUSD"] { color: #00AAE4; }
+.tick-sym[data-token="AUSD"]  { color: #FFB000; }
+.tick-sym[data-token="USDM"]  { color: #3BBF94; }
+.tick-sym[data-token="EURI"]  { color: #1B6FE0; }
+.tick-sym[data-token="AEUR"]  { color: #2E5BFF; }
 
 /* the USD value — bright + clear, the hard datum of the item */
 .tick-val {
@@ -392,6 +424,40 @@ b { font-weight: 600; }
 .view-mark[data-token="TUSD"]  { color: #1A5AFF; }
 .instr-row.active .tmark-side[data-token="FDUSD"],
 .view-mark[data-token="FDUSD"] { color: #C8A24B; }
+/* Remaining tracked tokens — each in its real brand colour. Lit only
+   on the selected row / view-mark to keep the rest of the UI calm. */
+.instr-row.active .tmark-side[data-token="DAI"],
+.view-mark[data-token="DAI"]   { color: #F5AC37; }
+.instr-row.active .tmark-side[data-token="USDS"],
+.view-mark[data-token="USDS"]  { color: #2EE5BA; }
+.instr-row.active .tmark-side[data-token="USDE"],
+.view-mark[data-token="USDE"]  { color: #5B68F2; }
+.instr-row.active .tmark-side[data-token="USD1"],
+.view-mark[data-token="USD1"]  { color: #B89D5F; }
+.instr-row.active .tmark-side[data-token="FRAX"],
+.view-mark[data-token="FRAX"]  { color: #C0C0C0; }
+.instr-row.active .tmark-side[data-token="CRVUSD"],
+.view-mark[data-token="CRVUSD"] { color: #B49DFF; }
+.instr-row.active .tmark-side[data-token="GHO"],
+.view-mark[data-token="GHO"]   { color: #B6509E; }
+.instr-row.active .tmark-side[data-token="USDD"],
+.view-mark[data-token="USDD"]  { color: #EF0027; }
+.instr-row.active .tmark-side[data-token="LUSD"],
+.view-mark[data-token="LUSD"]  { color: #2EB6EA; }
+.instr-row.active .tmark-side[data-token="MIM"],
+.view-mark[data-token="MIM"]   { color: #9D5BDE; }
+.instr-row.active .tmark-side[data-token="USDF"],
+.view-mark[data-token="USDF"]  { color: #FBA62A; }
+.instr-row.active .tmark-side[data-token="RLUSD"],
+.view-mark[data-token="RLUSD"] { color: #00AAE4; }
+.instr-row.active .tmark-side[data-token="AUSD"],
+.view-mark[data-token="AUSD"]  { color: #FFB000; }
+.instr-row.active .tmark-side[data-token="USDM"],
+.view-mark[data-token="USDM"]  { color: #3BBF94; }
+.instr-row.active .tmark-side[data-token="EURI"],
+.view-mark[data-token="EURI"]  { color: #1B6FE0; }
+.instr-row.active .tmark-side[data-token="AEUR"],
+.view-mark[data-token="AEUR"]  { color: #2E5BFF; }
 .instr-sub { font-size: 9.5px; color: var(--muted-2); letter-spacing: .02em; }
 .instr-val { text-align: right; font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .instr-stat { text-align: right; font-size: 9px; letter-spacing: .1em; }
@@ -1501,6 +1567,24 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 .rstage .rs-mark {
   width: 9px; height: 9px; border: 1px solid var(--line); justify-self: center;
+}
+.rstage .rs-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rstage .rs-label { color: inherit; }
+.rstage .rs-sub {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  font-size: 10.5px; letter-spacing: .04em;
+  color: var(--muted-2); opacity: 0;
+  height: 14px; line-height: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rstage .rs-sub.rs-sub-tick {
+  animation: rsSubFade 1.7s ease forwards;
+}
+@keyframes rsSubFade {
+  0%   { opacity: 0; transform: translateY(3px); }
+  18%  { opacity: 1; transform: translateY(0); }
+  82%  { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-2px); }
 }
 .rstage.active { color: var(--paper); }
 .rstage.active .rs-mark { border-color: var(--gold); background: var(--gold);

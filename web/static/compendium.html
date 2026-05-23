@@ -1,0 +1,860 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Compendium · Doré</title>
+<meta name="description" content="The live ledger of Doré's data layer: where each attestation source comes from, which regulatory sources are reachable, the background canary's work, the immutable fact trail." />
+<link rel="icon" type="image/png" sizes="32x32" href="/static/dore-mark.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500;600&family=Inter+Tight:wght@500;600;700;800&family=Bodoni+Moda:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Standalone compendium document — read top-to-bottom as docs.
+     Same visual language as the marketing site product page; no
+     SPA chrome, no F-key sidebar, no terminal feel. */
+  :root {
+    --ink: #0A0B0E;
+    --paper: #EFEAE0;
+    --gold: #D4A24A;
+    --green: #7FE0A6;
+    --amber: #F7B955;
+    --muted-1: #c9b88f;
+    --muted-2: #8b7d62;
+    --line: rgba(212,162,74,.10);
+    --line-strong: rgba(212,162,74,.22);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  a { color: inherit; }
+  ::selection { background: var(--gold); color: var(--ink); }
+
+  /* Sticky minimal header — just the brand mark + back link. No tabs. */
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(10,11,14,.92);
+    backdrop-filter: saturate(140%) blur(10px);
+    -webkit-backdrop-filter: saturate(140%) blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar-inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 14px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.1em;
+  }
+  .topbar-brand {
+    color: var(--paper);
+    text-decoration: none;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .topbar-brand-mark {
+    width: 24px; height: 24px;
+    border: 1.5px solid var(--paper);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .topbar-meta {
+    color: var(--muted-2);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .topbar-meta-sep { color: rgba(212,162,74,.3); }
+  .topbar-refresh {
+    background: transparent;
+    border: 1px solid rgba(212,162,74,.4);
+    color: var(--gold);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .topbar-refresh:hover { background: var(--gold); color: var(--ink); }
+  .topbar-refresh:disabled { opacity: 0.5; cursor: wait; }
+
+  .doc {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 72px 40px 120px;
+    line-height: 1.7;
+  }
+  .doc-head { margin-bottom: 56px; }
+  .doc-kicker {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    color: var(--gold);
+    text-transform: uppercase;
+    margin-bottom: 24px;
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .doc-kicker::after {
+    content: '';
+    width: 40px; height: 1px;
+    background: var(--gold);
+    opacity: 0.7;
+  }
+  .doc-title {
+    font-family: 'Bodoni Moda', 'Times New Roman', serif;
+    font-weight: 500;
+    font-size: 48px;
+    line-height: 1.05;
+    letter-spacing: -0.015em;
+    margin: 0 0 28px;
+    max-width: 20ch;
+  }
+  .doc-lede {
+    font-size: 17px;
+    line-height: 1.7;
+    color: var(--muted-1);
+    max-width: 60ch;
+    margin: 0 0 28px;
+  }
+  .doc-meta {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+  .meta-sep { color: rgba(212,162,74,.3); }
+
+  .doc-summary {
+    border-left: 2px solid var(--gold);
+    padding: 22px 28px;
+    margin: 0 0 64px;
+    font-size: 15.5px;
+    color: var(--muted-1);
+    background: linear-gradient(90deg, rgba(212,162,74,.05),
+      rgba(212,162,74,.01) 70%, transparent);
+  }
+  .doc-summary b { color: var(--paper); font-weight: 500; }
+  .num-good { color: #b9d8a1; font-weight: 600; }
+  .num-neutral { color: var(--gold); font-weight: 600; }
+  .num-bad { color: #e6918e; font-weight: 600; }
+
+  .section {
+    padding-top: 56px;
+    margin-top: 40px;
+    border-top: 1px solid var(--line);
+    scroll-margin-top: 80px;
+  }
+  .section:first-of-type { border-top: none; padding-top: 8px; margin-top: 0; }
+  .section h2 {
+    font-family: 'Bodoni Moda', 'Times New Roman', serif;
+    font-weight: 500;
+    font-size: 32px;
+    letter-spacing: -0.01em;
+    margin: 0 0 24px;
+    line-height: 1.15;
+  }
+  .section p {
+    font-size: 15.5px;
+    line-height: 1.75;
+    color: var(--muted-1);
+    max-width: 62ch;
+    margin: 0 0 22px;
+  }
+  .section p b { color: var(--paper); font-weight: 500; }
+  .section p code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    color: var(--gold);
+    background: rgba(212,162,74,.07);
+    padding: 1px 6px;
+    border-radius: 2px;
+  }
+  .doc-aside {
+    font-size: 13.5px;
+    color: var(--muted-2);
+    font-style: italic;
+    max-width: 62ch;
+  }
+  .doc-alert {
+    border-left: 2px solid #e6918e;
+    background: rgba(220,80,80,.04);
+    padding: 12px 20px;
+    margin: 0 0 22px;
+  }
+  .doc-list {
+    font-size: 15px;
+    color: var(--muted-1);
+    max-width: 62ch;
+    margin: 0 0 22px;
+    padding-left: 24px;
+  }
+  .doc-list li { margin-bottom: 8px; }
+  .doc-list li b { color: var(--paper); font-weight: 500; }
+
+  /* Data table */
+  .tbl {
+    display: flex; flex-direction: column;
+    font-variant-numeric: tabular-nums;
+    margin: 18px 0;
+  }
+  .tbl-row {
+    display: grid;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+    align-items: center;
+  }
+  .tbl-head {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+    border-bottom: 1px solid var(--line-strong);
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .tbl-row.warn { background: rgba(220,80,80,.04); }
+  .tbl-row.stale { background: rgba(247,185,85,.04); }
+  .tbl-row b { color: var(--gold); font-weight: 600; }
+  .tbl-row a {
+    color: var(--gold);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+    max-width: 100%;
+  }
+  .tbl-row a:hover { text-decoration: underline; }
+  .tbl-att { grid-template-columns: 80px 140px 1fr 130px 60px; }
+  .tbl-src { grid-template-columns: 80px 1fr 240px 60px; }
+  .tbl-fact { grid-template-columns: 100px 160px 1fr 100px 140px; }
+  .tbl-disc { grid-template-columns: 80px 1fr 110px 110px; }
+
+  .via {
+    display: inline-block;
+    padding: 1px 7px;
+    font-size: 10px;
+    font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border: 1px solid rgba(212,162,74,.3);
+    border-radius: 2px;
+    color: var(--muted-1);
+  }
+  .via-override, .via-store_override, .via-manual {
+    border-color: rgba(146,193,128,.6); color: #b9d8a1;
+  }
+  .via-web_search, .via-web_search\+locator {
+    border-color: rgba(120,180,220,.6); color: #a7c8e0;
+  }
+  .via-seed { border-color: rgba(212,162,74,.5); color: var(--gold); }
+  .via-locator, .via-paxos_resolver {
+    border-color: rgba(180,140,200,.5); color: #c6a8d4;
+  }
+  .via-cache { border-color: rgba(120,150,170,.4); color: #9eb5c8; }
+  .via-live, .via-verified {
+    border-color: rgba(146,193,128,.6); color: #b9d8a1;
+  }
+  .via-broken { border-color: rgba(220,90,90,.6); color: #e6918e; }
+  .via-unknown { border-color: rgba(140,140,140,.4); color: #a8a8a8; }
+  .via-none { border-color: rgba(220,90,90,.5); color: #e6918e; }
+  .via-supply, .via-reserves, .via-attestation, .via-sanctions {
+    border-color: rgba(212,162,74,.5); color: var(--gold);
+  }
+  .na { color: var(--muted-2); font-style: italic; }
+
+  /* Flow diagram */
+  .flow-svg {
+    display: block;
+    width: 100%;
+    max-width: 800px;
+    height: auto;
+    margin: 8px 0 28px;
+  }
+
+  /* Refresh-cadence table */
+  .refresh-tbl {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    margin: 0 0 22px;
+  }
+  .refresh-tbl th, .refresh-tbl td {
+    border-bottom: 1px solid var(--line);
+    padding: 11px 14px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .refresh-tbl th {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+    font-weight: 500;
+  }
+  .refresh-tbl td { color: var(--muted-1); }
+  .refresh-tbl td:first-child { color: var(--paper); font-weight: 500; }
+  .refresh-tbl code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    color: var(--gold);
+    background: rgba(212,162,74,.07);
+    padding: 1px 6px;
+    border-radius: 2px;
+  }
+
+  /* Event stream — one row per event, fixed font, dense */
+  .events {
+    display: flex; flex-direction: column;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    max-height: 480px;
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    margin: 12px 0;
+  }
+  .event {
+    display: grid;
+    grid-template-columns: 160px 230px 60px 1fr;
+    gap: 12px;
+    padding: 6px 14px;
+    border-bottom: 1px solid rgba(212,162,74,.06);
+  }
+  .event:last-child { border-bottom: none; }
+  .ev-ts { color: var(--muted-2); }
+  .ev-kind { color: var(--muted-1); }
+  .ev-lvl { color: var(--muted-2); font-size: 10px; letter-spacing: 0.1em; }
+  .ev-detail { color: var(--paper); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .ev-warn  { background: rgba(247,185,85,.03); }
+  .ev-warn  .ev-lvl { color: var(--amber); }
+  .ev-error { background: rgba(220,80,80,.04); }
+  .ev-error .ev-lvl { color: #e6918e; }
+  .ev-info  .ev-lvl { color: #9eb5c8; }
+
+  .loading { padding: 60px; text-align: center; color: var(--muted-2); }
+
+  @media (max-width: 720px) {
+    .doc { padding: 32px 20px 80px; }
+    .doc-title { font-size: 32px; }
+    .section h2 { font-size: 22px; }
+    .section p, .doc-list { font-size: 14.5px; }
+    .tbl-att, .tbl-src, .tbl-fact, .tbl-disc {
+      grid-template-columns: 70px 1fr 60px;
+    }
+    .event { grid-template-columns: 100px 1fr; }
+    .event .ev-kind, .event .ev-lvl { display: none; }
+    .topbar-inner { padding: 12px 16px; }
+    .topbar-meta { font-size: 10px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="topbar-brand" href="/">
+      <span class="topbar-brand-mark">RS</span>
+      <span>Doré · Compendium</span>
+    </a>
+    <div class="topbar-meta">
+      <span id="meta-updated">loading…</span>
+      <span class="topbar-meta-sep">·</span>
+      <button class="topbar-refresh" id="btn-refresh">REFRESH</button>
+    </div>
+  </div>
+</header>
+
+<main class="doc" id="doc">
+  <div class="loading">Loading compendium…</div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'class') e.className = v;
+    else if (k === 'html') e.innerHTML = v;
+    else if (v !== null && v !== undefined) e.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    e.append(typeof kid === 'string' ? document.createTextNode(kid) : kid);
+  }
+  return e;
+}
+
+function fmtTs(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return ts;
+    return d.toISOString().slice(0, 10) + ' ' + d.toISOString().slice(11, 16) + ' UTC';
+  } catch { return ts; }
+}
+
+function daysSince(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((Date.now() - d.getTime()) / 86_400_000);
+}
+
+function flowSvg() {
+  return `<svg viewBox="0 0 900 220" xmlns="http://www.w3.org/2000/svg"
+      role="img" aria-label="How data flows from search to verified fact"
+      class="flow-svg">
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#D4A24A"/>
+      </marker>
+    </defs>
+    <g font-family="'IBM Plex Mono', monospace" font-size="10"
+       letter-spacing="1.2" fill="#c9b88f">
+      <rect x="20" y="36" width="140" height="80" fill="rgba(212,162,74,.06)"
+            stroke="rgba(212,162,74,.4)"/>
+      <text x="90" y="64" text-anchor="middle" fill="#d4a24a">SEARCH</text>
+      <text x="90" y="82" text-anchor="middle">Brave + DDG</text>
+      <text x="90" y="100" text-anchor="middle" font-size="9">domain-trust rank</text>
+
+      <rect x="200" y="36" width="140" height="80" fill="rgba(212,162,74,.06)"
+            stroke="rgba(212,162,74,.4)"/>
+      <text x="270" y="64" text-anchor="middle" fill="#d4a24a">VALIDATE</text>
+      <text x="270" y="82" text-anchor="middle">HEAD-check PDF</text>
+      <text x="270" y="100" text-anchor="middle" font-size="9">+ schema extract</text>
+
+      <rect x="380" y="36" width="140" height="80" fill="rgba(212,162,74,.06)"
+            stroke="rgba(212,162,74,.4)"/>
+      <text x="450" y="64" text-anchor="middle" fill="#d4a24a">GUARDRAILS</text>
+      <text x="450" y="82" text-anchor="middle">10 checks</text>
+      <text x="450" y="100" text-anchor="middle" font-size="9">sums · dates · bounds</text>
+
+      <rect x="560" y="36" width="140" height="80" fill="rgba(212,162,74,.10)"
+            stroke="rgba(212,162,74,.6)" stroke-width="1.5"/>
+      <text x="630" y="64" text-anchor="middle" fill="#d4a24a">FACT STORE</text>
+      <text x="630" y="82" text-anchor="middle">append-only</text>
+      <text x="630" y="100" text-anchor="middle" font-size="9">sha256 hash</text>
+
+      <rect x="740" y="36" width="140" height="80" fill="rgba(127,224,166,.08)"
+            stroke="rgba(127,224,166,.6)"/>
+      <text x="810" y="64" text-anchor="middle" fill="#7FE0A6">USER VIEW</text>
+      <text x="810" y="82" text-anchor="middle">cited + tiered</text>
+      <text x="810" y="100" text-anchor="middle" font-size="9">never bare n/a</text>
+    </g>
+    <g stroke="#D4A24A" stroke-width="1.4" fill="none" marker-end="url(#arr)">
+      <line x1="160" y1="76" x2="195" y2="76"/>
+      <line x1="340" y1="76" x2="375" y2="76"/>
+      <line x1="520" y1="76" x2="555" y2="76"/>
+      <line x1="700" y1="76" x2="735" y2="76"/>
+    </g>
+    <g font-family="'IBM Plex Mono', monospace" font-size="9"
+       letter-spacing="1" fill="#8b7d62">
+      <line x1="90" y1="155" x2="810" y2="155"
+            stroke="rgba(212,162,74,.18)" stroke-dasharray="3,3"/>
+      <text x="450" y="178" text-anchor="middle" font-size="10"
+            fill="#d4a24a" letter-spacing="2">BACKGROUND CANARY · EVERY 6 HOURS</text>
+      <text x="450" y="194" text-anchor="middle">
+        re-resolves URLs · re-checks corpus · auto-verifies contracts · proposes replacements
+      </text>
+    </g>
+  </svg>`;
+}
+
+function render(data) {
+  const doc = $('doc');
+  doc.innerHTML = '';
+
+  const att = data.attestations || [];
+  const sources = data.sources_health || [];
+  const facts = data.verified_facts || [];
+  const discoveries = data.discoveries || [];
+  const events = data.events || [];
+  const provider = data.discovery_provider;
+
+  const liveSources = sources.filter(s => s.status === 'live').length;
+  const brokenSources = sources.filter(s => s.status === 'broken').length;
+  const unknownSources = sources.filter(s => s.status === 'unknown').length;
+  const withCache = att.filter(a => a.cache_url || a.override_url).length;
+  const withOverride = att.filter(a => a.override_url).length;
+  const unresolved = att.filter(a => !a.cache_url && !a.override_url).length;
+
+  $('meta-updated').textContent =
+    'Updated ' + fmtTs(new Date().toISOString());
+
+  // Header
+  doc.append(
+    el('header', { class: 'doc-head' },
+      el('div', { class: 'doc-kicker' }, 'Compendium'),
+      el('h1', { class: 'doc-title' }, 'The data behind every Doré answer.'),
+      el('p', { class: 'doc-lede' },
+        'Doré reconciles what stablecoin issuers say against what the ' +
+        'blockchains show. This page is the live ledger of that work: ' +
+        'where each attestation source comes from, which regulatory ' +
+        'sources are reachable right now, what the background threads ' +
+        'have done in the last cycle, and the immutable audit trail of ' +
+        'every verified fact.'),
+      el('div', { class: 'doc-meta' },
+        el('span', {}, att.length + ' stablecoins'),
+        el('span', { class: 'meta-sep' }, '·'),
+        el('span', {}, sources.length + ' regulatory sources'),
+        el('span', { class: 'meta-sep' }, '·'),
+        el('span', {}, 'Auto-refresh every 30 seconds')),
+    ),
+  );
+
+  // Summary
+  doc.append(el('section', { class: 'doc-summary' },
+    el('p', { style: 'margin:0' },
+      'Right now, ',
+      el('b', {}, withCache + ' of ' + att.length),
+      ' tracked stablecoins have a resolved attestation source. ',
+      el('b', { class: 'num-good' }, String(liveSources)),
+      ' of ' + sources.length + ' regulatory sources are live. ',
+      unresolved > 0
+        ? el('span', {},
+            el('b', { class: 'num-neutral' }, String(unresolved)),
+            ' tokens are still seeking a fresh attestation URL — ' +
+            'the background thread tries to close each one every six hours.')
+        : el('span', {}, 'Every tracked token has a resolved attestation source.'),
+    ),
+  ));
+
+  // 1. Flow diagram
+  doc.append(el('section', { class: 'section', id: 'flow' },
+    el('h2', {}, 'How the data flows'),
+    el('p', {},
+      'A question lands on Doré, goes through five gates, and returns a ' +
+      'figure tagged with the channel that produced it. Search proposes; ' +
+      'deterministic code disposes.'),
+    el('div', { html: flowSvg() }),
+    el('p', { class: 'doc-aside' },
+      'Search results are re-ranked by authoritative-domain trust before ' +
+      'they reach the validate gate — issuer transparency CDNs, regulators, ' +
+      'major auditors, and on-chain explorers surface above generic ' +
+      'content. A search-discovered figure stays at a lower trust tier ' +
+      'until a second source confirms it.')));
+
+  // 2. Attestation URLs
+  const attRows = att.slice().sort((a, b) => {
+    const ar = (a.cache_url || a.override_url) ? 1 : 0;
+    const br = (b.cache_url || b.override_url) ? 1 : 0;
+    if (ar !== br) return ar - br;
+    return a.symbol.localeCompare(b.symbol);
+  });
+  doc.append(el('section', { class: 'section', id: 'attestations' },
+    el('h2', {}, 'Attestation URLs'),
+    el('p', {},
+      'Every fiat-backed stablecoin has a monthly attestation PDF ' +
+      'published by an independent accountant. Issuers rotate URLs ' +
+      'frequently. Doré resolves a working URL through a six-step chain, ' +
+      'then writes the winner through to the database so a curator-set ' +
+      'value survives a redeploy. The YAML registry is only a seed.'),
+    el('p', {},
+      'Below: every stablecoin Doré tracks. Tokens with no resolvable ' +
+      'URL are listed first. The ',
+      el('span', { class: 'via via-override' }, 'override'),
+      ' badge means the database is serving the URL; ',
+      el('span', { class: 'via via-seed' }, 'seed'),
+      ' means the YAML bootstrap; ',
+      el('span', { class: 'via via-web_search' }, 'web_search'),
+      ' means the background discovery thread found it.'),
+    el('div', { class: 'tbl' },
+      el('div', { class: 'tbl-row tbl-head tbl-att' },
+        el('div', {}, 'Token'),
+        el('div', {}, 'Issuer'),
+        el('div', {}, 'Current URL'),
+        el('div', {}, 'Via'),
+        el('div', {}, 'Age')),
+      ...attRows.map(a => {
+        const url = a.override_url || a.cache_url || a.yaml_seed || '';
+        const via = a.override_url ? (a.override_via || 'override')
+          : (a.cache_via || (a.yaml_seed ? 'seed' : 'none'));
+        const ts = a.override_set_at || a.cache_resolved_at;
+        const days = daysSince(ts);
+        const cls = !url ? 'warn' : (days !== null && days > 35) ? 'stale' : '';
+        return el('div', { class: 'tbl-row tbl-att ' + cls },
+          el('div', {}, el('b', {}, a.symbol)),
+          el('div', {}, a.issuer || '—'),
+          el('div', {},
+            url ? el('a', { href: url, target: '_blank', rel: 'noopener',
+                title: url }, url.length > 60 ? url.slice(0, 60) + '…' : url)
+                : el('span', { class: 'na' }, 'no URL resolved')),
+          el('div', {},
+            el('span', { class: 'via via-' + via.split(/[ +]/)[0] }, via)),
+          el('div', {}, days === null ? '—' : days + 'd'));
+      })),
+  ));
+
+  // 3. Corpus health — fold unknowns into a single summary line
+  const broken = sources.filter(s => s.status === 'broken');
+  const live = sources.filter(s => s.status === 'live')
+    .sort((a, b) => (a.fetched_at < b.fetched_at ? 1 : -1));
+  doc.append(el('section', { class: 'section', id: 'canary' },
+    el('h2', {}, 'Corpus health'),
+    el('p', {},
+      'The reasoning corpus is a curated set of regulatory sources every ' +
+      'analysis cites against. A background canary thread re-fetches each ' +
+      'source every six hours, archives a snapshot, and now searches for a ' +
+      'replacement URL whenever a source flips to broken. The proposed ' +
+      'replacement is logged for a curator to confirm.'),
+    broken.length > 0
+      ? el('p', { class: 'doc-alert' },
+          el('b', {}, broken.length + ' source(s) are currently broken.'),
+          ' Listed first below. Doré serves the archived snapshots ' +
+          'transparently; the background thread is searching for replacements.')
+      : el('p', {},
+          'All checked sources are currently live (' + live.length + ' live).'),
+    unknownSources > 0
+      ? el('p', { class: 'doc-aside' },
+          el('b', {}, unknownSources + ' source(s) haven\'t been canaried yet'),
+          ' — they\'ll be checked on the next sweep cycle (within 6 hours). ' +
+          'Hiding them from the table below until they have real health data.')
+      : null,
+    el('div', { class: 'tbl' },
+      el('div', { class: 'tbl-row tbl-head tbl-src' },
+        el('div', {}, 'Status'),
+        el('div', {}, 'Source'),
+        el('div', {}, 'URL'),
+        el('div', {}, 'Age')),
+      ...[...broken, ...live].slice(0, 60).map(s =>
+        el('div', { class: 'tbl-row tbl-src ' +
+            (s.status === 'broken' ? 'warn' : '') },
+          el('div', {},
+            el('span', { class: 'via via-' + s.status }, s.status)),
+          el('div', {}, s.title || s.id),
+          el('div', {},
+            s.url ? el('a', { href: s.url, target: '_blank',
+                rel: 'noopener', title: s.url },
+                s.url.length > 50 ? s.url.slice(0, 50) + '…' : s.url)
+                : el('span', { class: 'na' }, '—')),
+          el('div', {},
+            (s.age_days === null || s.age_days === undefined)
+              ? '—' : s.age_days + 'd'))),
+    ),
+  ));
+
+  // 4. Web discovery
+  doc.append(el('section', { class: 'section', id: 'discovery' },
+    el('h2', {}, 'Web discovery'),
+    el('p', {},
+      'When the locator cannot reach a JS-rendered transparency page, Doré ' +
+      'runs a typed web search through Brave (with DuckDuckGo as a free ' +
+      'fallback), HEAD-checks every candidate, and writes the winner ' +
+      'through to the store. Results are first re-ranked by ' +
+      'authoritative-domain trust so issuer / regulator / auditor pages ' +
+      'surface above generic content.'),
+    el('p', {},
+      'Backend currently: ',
+      el('b', { class: provider ? 'num-good' : 'num-neutral' },
+        provider || 'disabled'),
+      '. Recent hits: ',
+      el('b', {}, String(discoveries.length)), '.'),
+    discoveries.length === 0
+      ? el('p', { class: 'doc-aside' },
+          'No discoveries recorded yet in this process — the canary ' +
+          'will populate this on its next cycle.')
+      : el('div', { class: 'tbl' },
+          el('div', { class: 'tbl-row tbl-head tbl-disc' },
+            el('div', {}, 'Token'),
+            el('div', {}, 'URL'),
+            el('div', {}, 'Provider'),
+            el('div', {}, 'When')),
+          ...discoveries.map(d => el('div', { class: 'tbl-row tbl-disc' },
+            el('div', {}, el('b', {}, d.symbol)),
+            el('div', {},
+              el('a', { href: d.url, target: '_blank', rel: 'noopener',
+                title: d.url },
+                d.url.length > 60 ? d.url.slice(0, 60) + '…' : d.url)),
+            el('div', {}, d.provider || d.via),
+            el('div', {}, fmtTs(d.resolved_at))))),
+  ));
+
+  // 5. Verified facts
+  doc.append(el('section', { class: 'section', id: 'facts' },
+    el('h2', {}, 'Verified facts (audit trail)'),
+    el('p', {},
+      'Every successful analysis writes one or more rows into a separate, ' +
+      'append-only table: supply per chain, reserves per token. Each row ' +
+      'carries the claim type, subject, value, sources reconciled against, ' +
+      'block number, timestamp, and a sha256 content hash. Corrections ' +
+      'insert a new row and link the prior as superseded — nothing is ' +
+      'ever updated in place.'),
+    el('p', { class: 'doc-aside' },
+      'The schema is generic. The same table will hold the next claim ' +
+      'type (agent payments) without a schema change.'),
+    facts.length === 0
+      ? el('p', { class: 'doc-aside' },
+          'No verified facts recorded yet in this process. The audit trail ' +
+          'populates on every successful analysis.')
+      : el('div', { class: 'tbl' },
+          el('div', { class: 'tbl-row tbl-head tbl-fact' },
+            el('div', {}, 'Claim'),
+            el('div', {}, 'Subject'),
+            el('div', {}, 'Value'),
+            el('div', {}, 'Status'),
+            el('div', {}, 'Observed')),
+          ...facts.map(f => {
+            const v = f.value || {};
+            let summary = '';
+            if (f.claim_type === 'supply') {
+              summary = (v.supply !== undefined
+                ? Number(v.supply).toLocaleString(undefined,
+                    { maximumFractionDigits: 0 })
+                : '—') + ' on ' + (f.chain || '?');
+            } else if (f.claim_type === 'reserves') {
+              summary = '$' + (v.total_reserves_usd !== undefined
+                ? Number(v.total_reserves_usd).toLocaleString(undefined,
+                    { maximumFractionDigits: 0 })
+                : '—') + ' as of ' + (v.as_of_date || '?');
+            } else {
+              summary = JSON.stringify(v).slice(0, 60);
+            }
+            return el('div', { class: 'tbl-row tbl-fact' },
+              el('div', {},
+                el('span', { class: 'via via-' + f.claim_type }, f.claim_type)),
+              el('div', {}, f.subject),
+              el('div', {}, summary),
+              el('div', {},
+                el('span', { class: 'via via-' + f.status }, f.status)),
+              el('div', {}, fmtTs(f.observed_at)));
+          })),
+  ));
+
+  // 6. Background events
+  doc.append(el('section', { class: 'section', id: 'events' },
+    el('h2', {}, 'Background events'),
+    el('p', {},
+      'Every external call Doré makes emits a structured event. The most ' +
+      'recent ~500 events live in a ring buffer. Below is the tail ' +
+      'filtered to the events that matter: discovery hits, source flips, ' +
+      'replacement proposals, auto-verify sweep results, RPC consensus ' +
+      'degradation, OFAC fetch failures.'),
+    events.length === 0
+      ? el('p', { class: 'doc-aside' },
+          'No background events recorded yet. The canary will surface ' +
+          'its work here within the next sweep cycle.')
+      : el('div', { class: 'events' },
+          ...events.map(e => el('div', {
+            class: 'event ev-' + (e.level || 'info'),
+          },
+            el('span', { class: 'ev-ts' }, fmtTs(
+              new Date((e.ts || 0) * 1000).toISOString())),
+            el('span', { class: 'ev-kind' }, e.kind || ''),
+            el('span', { class: 'ev-lvl' }, (e.level || 'info').toUpperCase()),
+            el('span', { class: 'ev-detail' },
+              (e.symbol ? '[' + e.symbol + '] ' : '') +
+              (e.detail || e.error_message || e.url || ''))))),
+  ));
+
+  // 7. Refresh cadence
+  doc.append(el('section', { class: 'section', id: 'refresh' },
+    el('h2', {}, 'How often things refresh'),
+    el('p', {},
+      'Doré is designed for sustained operation. The background thread ' +
+      'keeps the data layer current so user-facing reads can be served ' +
+      'from cache without lying.'),
+    el('table', { class: 'refresh-tbl' },
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Artefact'),
+        el('th', {}, 'Refresh cadence'),
+        el('th', {}, 'Force-refresh path'))),
+      el('tbody', {},
+        el('tr', {},
+          el('td', {}, 'Live on-chain supply'),
+          el('td', {}, '60-second in-process cache; re-read on demand'),
+          el('td', {}, 'Reload the page')),
+        el('tr', {},
+          el('td', {}, 'Attestation URL resolution'),
+          el('td', {}, '25-day store; background gap-sweep every 6 hours'),
+          el('td', {}, '"Refresh analysis" on the analyze surface')),
+        el('tr', {},
+          el('td', {}, 'Attestation PDF + extraction'),
+          el('td', {}, 'Per analysis; cached 6h server-side')),
+        el('tr', {},
+          el('td', {}, 'OFAC SDN list'),
+          el('td', {}, 'Daily fetch; >7 days raises critical guardrail'),
+          el('td', {}, el('code', {}, 'sca refresh'))),
+        el('tr', {},
+          el('td', {}, 'Corpus source health (canary)'),
+          el('td', {}, 'Every 6 hours (SCA_HEALTH_INTERVAL_HOURS)'),
+          el('td', {}, el('code', {}, 'sca canary'))),
+        el('tr', {},
+          el('td', {}, 'Corpus discovery (new sources)'),
+          el('td', {}, 'Daily cron; Brave-augmented'),
+          el('td', {}, el('code', {}, 'sca discover'))),
+        el('tr', {},
+          el('td', {}, 'Address auto-verify'),
+          el('td', {}, 'Background every 6 hours'),
+          el('td', {}, el('code', {}, 'sca verify'))),
+        el('tr', {},
+          el('td', {}, 'Verified facts (audit trail)'),
+          el('td', {}, 'Written on every analysis; never overwritten'),
+          el('td', {}, 'n/a — append-only'))),
+    ),
+    el('p', { class: 'doc-aside' },
+      'Hitting REFRESH on any surface bypasses every cache for that ' +
+      'token. The longer in-app caches exist because the background ' +
+      'thread keeps the underlying data fresh, not to hide staleness.'),
+  ));
+}
+
+let timer = null;
+
+async function tick() {
+  try {
+    const resp = await fetch('/api/compendium');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    render(data);
+  } catch (e) {
+    $('doc').innerHTML =
+      '<div class="loading">Could not load compendium · ' +
+      String(e.message || e) + '</div>';
+  }
+}
+
+$('btn-refresh').addEventListener('click', async (ev) => {
+  ev.target.disabled = true;
+  ev.target.textContent = 'refreshing…';
+  await tick();
+  ev.target.disabled = false;
+  ev.target.textContent = 'REFRESH';
+});
+
+tick();
+timer = setInterval(tick, 30_000);
+</script>
+
+</body>
+</html>

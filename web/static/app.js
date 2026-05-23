@@ -2106,6 +2106,77 @@ function viewMonitor() {
 // ════════════════════════════════════════════════════════════════════
 let pollTimer = null;
 
+// ── dynamic stage sub-narration ──────────────────────────────────────
+// Each stage label gets 3-5 honest one-liners that cycle while the
+// stage is active. Each line corresponds to an actual sub-step the
+// backend performs — no invented chatter. Keyed by substrings of the
+// stage label so server-side STAGES list changes don't break the
+// mapping. Defaults to an empty array (no sub-narration) for unmatched
+// stages.
+function stageSubNarration(stages) {
+  const tables = [
+    { match: /supply|on-chain/i, lines: [
+      'pinning the block number',
+      'reading totalSupply via primary RPC',
+      'cross-checking with the fallback endpoint',
+      'tallying per-chain native and bridged supply',
+      'comparing against last persisted reading',
+    ] },
+    { match: /attestation|locating|downloading/i, lines: [
+      'checking the database for a curator override',
+      'walking the issuer transparency page',
+      'searching the web for a fresh report',
+      'HEAD-checking each candidate PDF',
+      'fetching the winning PDF',
+    ] },
+    { match: /extract|reserves from/i, lines: [
+      'extracting plain text from the PDF',
+      'identifying the as-of date',
+      'parsing the reserves breakdown',
+      'reconciling tokens outstanding',
+      'scoring extraction confidence',
+    ] },
+    { match: /guardrail|check/i, lines: [
+      'reserves positive · tokens positive',
+      'breakdown sums match',
+      'coverage ratio inside the plausible band',
+      'attestation date valid',
+      'every figure traces to a tool output',
+    ] },
+    { match: /sdn|sanctions|screen/i, lines: [
+      'pulling the OFAC SDN list',
+      'verifying SHA-256 of the SDN file',
+      'screening every deployment address',
+      'checking staleness against guardrail bounds',
+    ] },
+    { match: /classify|liquidity|tier/i, lines: [
+      'walking the reserve breakdown',
+      'classifying each line as liquid / moderate / illiquid',
+      'computing liquid coverage',
+      'computing net redemption flow',
+    ] },
+    { match: /corpus|reasoning frame/i, lines: [
+      'retrieving included sources',
+      'ranking passages by relevance',
+      'pulling the top regulatory citations',
+      'gathering recent web-search references',
+    ] },
+    { match: /synth|narrative|brief/i, lines: [
+      'composing the deterministic facts block',
+      'asking the LLM for a cited brief',
+      'verifying every figure traces back',
+      'rejecting any uncited claim',
+      'finalising the editorial headline',
+    ] },
+  ];
+  return (stages || []).map((label) => {
+    for (const t of tables) {
+      if (t.match.test(label)) return t.lines;
+    }
+    return [];
+  });
+}
+
 // ── result freshness ─────────────────────────────────────────────────
 // A compute is "fresh" for six hours — matches the server-side
 // _CACHE_FRESH_S TTL in web/server.py. The background canary refreshes
@@ -2316,10 +2387,14 @@ async function startAnalysis(symbol, mount, refresh = false) {
   const stages = job.stages || [];
   const t0 = Date.now();
   const clockSpan = el('span', { class: 'rs-tk' }, '0s');
+  // Each stage carries one parent label + a wrap for the dynamic
+  // sub-narration that cycles while that stage is active.
   const stageNodes = stages.map((label, i) =>
     el('div', { class: 'rstage', 'data-i': i },
       el('div', { class: 'rs-mark' }),
-      el('div', {}, label),
+      el('div', { class: 'rs-text' },
+        el('div', { class: 'rs-label' }, label),
+        el('div', { class: 'rs-sub' }, '')),
       el('span', { class: 'rs-tk' }, 'S' + pad2(i + 1))));
 
   const progress = panel(null, 'JOB ' + job.job_id.toUpperCase() + ' · ' + symbol, 'i-agent',
@@ -2332,13 +2407,38 @@ async function startAnalysis(symbol, mount, refresh = false) {
   const clockHost = $('.panel-head .rs-tk', progress);
   mount.append(progress);
 
+  // Honest sub-narration for each stage — what actually happens in
+  // that phase, surfaced as a rotating one-liner. Not invented chatter;
+  // each line corresponds to a real step the backend takes.
+  const SUB_NARRATION = stageSubNarration(stages);
+
   let stage = 0;
+  let subIdx = 0;
+  let subTimer = null;
+  const cycleSub = () => {
+    const lines = SUB_NARRATION[stage] || [];
+    if (!lines.length) return;
+    const node = stageNodes[stage] && stageNodes[stage].querySelector('.rs-sub');
+    if (!node) return;
+    node.textContent = lines[subIdx % lines.length];
+    node.classList.remove('rs-sub-tick');
+    void node.offsetWidth;  // restart the CSS fade
+    node.classList.add('rs-sub-tick');
+    subIdx++;
+  };
   const advance = () => {
     stageNodes.forEach((n, i) => {
       n.className = 'rstage' + (i < stage ? ' done' : i === stage ? ' active' : '');
+      // Clear sub-narration on completed and pending stages.
+      const sub = n.querySelector('.rs-sub');
+      if (sub && i !== stage) sub.textContent = '';
     });
+    subIdx = 0;
+    cycleSub();
   };
   advance();
+  if (subTimer) clearInterval(subTimer);
+  subTimer = setInterval(cycleSub, 1700);
   let lastLogged = -1;
   const stageTimer = setInterval(() => {
     if (stage < stages.length - 1) { stage++; advance(); }
@@ -2360,6 +2460,7 @@ async function startAnalysis(symbol, mount, refresh = false) {
   const finish = () => {
     clearInterval(stageTimer); clearInterval(clockTimer);
     clearInterval(pollTimer); pollTimer = null;
+    if (subTimer) { clearInterval(subTimer); subTimer = null; }
   };
 
   pollTimer = setInterval(async () => {
@@ -3370,7 +3471,9 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
   const stageNodes = stages.map((label, i) =>
     el('div', { class: 'rstage', 'data-i': i },
       el('div', { class: 'rs-mark' }),
-      el('div', {}, label),
+      el('div', { class: 'rs-text' },
+        el('div', { class: 'rs-label' }, label),
+        el('div', { class: 'rs-sub' }, '')),
       el('span', { class: 'rs-tk' }, 'S' + pad2(i + 1))));
 
   const progress = panel(null,
@@ -3384,14 +3487,34 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
   const clockHost = $('.panel-head .rs-tk', progress);
   mount.append(progress);
 
+  const SUB_NARRATION = stageSubNarration(stages);
   let stage = 0;
+  let subIdx = 0;
+  let subTimer = null;
+  const cycleSub = () => {
+    const lines = SUB_NARRATION[stage] || [];
+    if (!lines.length) return;
+    const node = stageNodes[stage] && stageNodes[stage].querySelector('.rs-sub');
+    if (!node) return;
+    node.textContent = lines[subIdx % lines.length];
+    node.classList.remove('rs-sub-tick');
+    void node.offsetWidth;
+    node.classList.add('rs-sub-tick');
+    subIdx++;
+  };
   const advance = () => {
     stageNodes.forEach((n, i) => {
       n.className = 'rstage'
         + (i < stage ? ' done' : i === stage ? ' active' : '');
+      const sub = n.querySelector('.rs-sub');
+      if (sub && i !== stage) sub.textContent = '';
     });
+    subIdx = 0;
+    cycleSub();
   };
   advance();
+  if (subTimer) clearInterval(subTimer);
+  subTimer = setInterval(cycleSub, 1700);
   let lastLogged = -1;
   const stageTimer = setInterval(() => {
     if (stage < stages.length - 1) { stage++; advance(); }
@@ -3413,6 +3536,7 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
   const finish = () => {
     clearInterval(stageTimer); clearInterval(clockTimer);
     clearInterval(surfacePollTimer); surfacePollTimer = null;
+    if (subTimer) { clearInterval(subTimer); subTimer = null; }
   };
 
   surfacePollTimer = setInterval(async () => {
@@ -4453,8 +4577,15 @@ let compendiumTimer = null;
 function viewCompendium() {
   app.innerHTML = '';
   if (compendiumTimer) { clearInterval(compendiumTimer); compendiumTimer = null; }
+  // Manual refresh affordance — same canonical control pattern as the
+  // analyze surface. The page auto-refreshes every 30s; clicking
+  // REFRESH triggers an immediate re-fetch (the underlying endpoint is
+  // a fast aggregator over local state, no quota burn).
+  const refreshBtn = el('button', { class: 'btn ghost',
+    title: 'Re-fetch the compendium snapshot now (auto-refreshes every 30s)',
+  }, icon('i-supply'), 'REFRESH');
   app.append(viewHead('F8', 'COMPENDIUM',
-    'data freshness · background threads · discovery log'));
+    'live ledger of the data layer · auto-refreshes', refreshBtn));
   const mount = el('div', { class: 'view-body' });
   app.append(mount);
   mount.append(el('div', { class: 'empty' },
@@ -4473,8 +4604,18 @@ function viewCompendium() {
   };
   tick();
   compendiumTimer = setInterval(tick, 30_000);
+  refreshBtn.addEventListener('click', () => {
+    refreshBtn.disabled = true;
+    refreshBtn.replaceChildren(el('span', { class: 'spinner' }),
+      document.createTextNode(' refreshing'));
+    tick().finally(() => {
+      refreshBtn.disabled = false;
+      refreshBtn.replaceChildren(icon('i-supply'),
+        document.createTextNode('REFRESH'));
+    });
+  });
   logLine('WATCH', 'COMPENDIUM', [seg('engaged', 'lg-val'),
-    seg('30s refresh')]);
+    seg('30s auto-refresh')]);
 }
 
 function _fmtTs(ts) {
@@ -4493,6 +4634,92 @@ function _daysSince(iso) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return null;
   return Math.floor((Date.now() - d.getTime()) / 86_400_000);
+}
+
+function buildFlowSection() {
+  // Inline SVG flow diagram — narrates how a question becomes a
+  // verified answer. Five stations, gold accents on the gates that
+  // matter (HEAD check + content_hash trust gate). Renders at any
+  // viewport because viewBox + preserveAspectRatio.
+  const svg = `
+  <svg viewBox="0 0 900 230" xmlns="http://www.w3.org/2000/svg"
+       role="img" aria-label="How data flows from search to verified fact"
+       class="cp-flow-svg">
+    <!-- background hairline grid -->
+    <defs>
+      <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#D4A24A"/>
+      </marker>
+    </defs>
+    <!-- Stations -->
+    <g font-family="'IBM Plex Mono', monospace" font-size="10"
+       letter-spacing="1.2" fill="#c9b88f">
+      <rect x="20"  y="40" width="140" height="80" fill="rgba(212,162,74,.06)"
+            stroke="rgba(212,162,74,.4)"/>
+      <text x="90" y="68" text-anchor="middle" fill="#d4a24a">SEARCH</text>
+      <text x="90" y="86" text-anchor="middle">Brave + DDG</text>
+      <text x="90" y="104" text-anchor="middle" font-size="9">authoritative-domain rank</text>
+
+      <rect x="200" y="40" width="140" height="80" fill="rgba(212,162,74,.06)"
+            stroke="rgba(212,162,74,.4)"/>
+      <text x="270" y="68" text-anchor="middle" fill="#d4a24a">VALIDATE</text>
+      <text x="270" y="86" text-anchor="middle">HEAD-check PDF</text>
+      <text x="270" y="104" text-anchor="middle" font-size="9">+ schema-grounded extract</text>
+
+      <rect x="380" y="40" width="140" height="80" fill="rgba(212,162,74,.06)"
+            stroke="rgba(212,162,74,.4)"/>
+      <text x="450" y="68" text-anchor="middle" fill="#d4a24a">GUARDRAILS</text>
+      <text x="450" y="86" text-anchor="middle">10 checks</text>
+      <text x="450" y="104" text-anchor="middle" font-size="9">coverage / sums / dates</text>
+
+      <rect x="560" y="40" width="140" height="80" fill="rgba(212,162,74,.10)"
+            stroke="rgba(212,162,74,.6)" stroke-width="1.5"/>
+      <text x="630" y="68" text-anchor="middle" fill="#d4a24a">FACT STORE</text>
+      <text x="630" y="86" text-anchor="middle">append-only</text>
+      <text x="630" y="104" text-anchor="middle" font-size="9">sha256 content-hash</text>
+
+      <rect x="740" y="40" width="140" height="80" fill="rgba(127,224,166,.08)"
+            stroke="rgba(127,224,166,.6)"/>
+      <text x="810" y="68" text-anchor="middle" fill="#7FE0A6">USER VIEW</text>
+      <text x="810" y="86" text-anchor="middle">cited + tiered</text>
+      <text x="810" y="104" text-anchor="middle" font-size="9">never bare n/a</text>
+    </g>
+    <!-- Arrows -->
+    <g stroke="#D4A24A" stroke-width="1.4" fill="none" marker-end="url(#arr)">
+      <line x1="160" y1="80" x2="195" y2="80"/>
+      <line x1="340" y1="80" x2="375" y2="80"/>
+      <line x1="520" y1="80" x2="555" y2="80"/>
+      <line x1="700" y1="80" x2="735" y2="80"/>
+    </g>
+    <!-- Below the line: background canary loop -->
+    <g font-family="'IBM Plex Mono', monospace" font-size="9"
+       letter-spacing="1" fill="#8b7d62">
+      <line x1="90" y1="160" x2="810" y2="160"
+            stroke="rgba(212,162,74,.18)" stroke-dasharray="3,3"/>
+      <text x="450" y="184" text-anchor="middle" font-size="10"
+            fill="#d4a24a" letter-spacing="2">BACKGROUND CANARY · EVERY 6 HOURS</text>
+      <text x="450" y="200" text-anchor="middle">
+        re-resolves URLs · re-checks corpus · auto-verifies contracts ·
+        proposes replacements for broken sources
+      </text>
+    </g>
+  </svg>`;
+  const wrap = el('section', { class: 'cp-doc-section', id: 'flow' },
+    el('h2', {}, 'How the data flows'),
+    el('p', { class: 'cp-doc-para' },
+      'A question lands on Doré, goes through five gates, and returns a ' +
+      'figure tagged with the channel that produced it. Search proposes; ' +
+      'deterministic code disposes. The trust signal is the chain, not the ' +
+      'answer in isolation.'),
+    el('div', { class: 'cp-doc-figure', html: svg }),
+    el('p', { class: 'cp-doc-aside' },
+      'Search results are re-ranked by authoritative-domain trust before ' +
+      'they reach the validate gate — issuer transparency CDNs, regulators, ' +
+      'major auditors, and on-chain explorers surface above generic ' +
+      'content. A search-discovered figure stays at a lower trust tier ' +
+      'until a second source confirms it.'));
+  return wrap;
 }
 
 function renderCompendium(data, mount) {
@@ -4537,6 +4764,8 @@ function renderCompendium(data, mount) {
   doc.append(el('nav', { class: 'cp-doc-toc' },
     el('div', { class: 'cp-toc-head' }, 'ON THIS PAGE'),
     el('ol', {},
+      el('li', {}, el('a', { href: '#flow' },
+        'How the data flows')),
       el('li', {}, el('a', { href: '#attestations' },
         'Attestation URLs')),
       el('li', {}, el('a', { href: '#canary' },
@@ -4573,6 +4802,12 @@ function renderCompendium(data, mount) {
             'Every tracked token has a resolved attestation source.'),
     ),
   ));
+
+  // ── 0. How the data flows ──────────────────────────────────────────
+  // Diagram + prose explainer that opens the page on capability,
+  // before the dense tables. Inline SVG so it ships without external
+  // image assets.
+  doc.append(buildFlowSection());
 
   // ── 1. Attestation URLs ─────────────────────────────────────────────
   const attRows = data.attestations.slice().sort((a, b) => {
@@ -4928,9 +5163,12 @@ function route() {
     refreshInstruments();
     viewAnalyst();
   } else if (view === 'compendium') {
-    STATE.activeSymbol = '';
-    refreshInstruments();
-    viewCompendium();
+    // Compendium now lives as a standalone docs page at /compendium —
+    // opens in a new tab via the sidebar link. If a user lands here
+    // via the in-app hash anyway, redirect them to the standalone page.
+    window.open('/compendium', '_blank', 'noopener');
+    location.hash = '#monitor';
+    viewMonitor();
   } else {
     STATE.activeSymbol = '';
     refreshInstruments();
