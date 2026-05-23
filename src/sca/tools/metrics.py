@@ -13,10 +13,21 @@ from datetime import date, datetime
 from sca.models import Metrics
 
 
-def _as_date(value) -> date:
+def _as_date(value) -> date | None:
+    """Return a date or None. Never raise for empty/blank values — an
+    extractor that couldn't pin down the as-of date is a known soft
+    failure (callers gate the metrics computation on a non-None date)."""
+    if value is None:
+        return None
     if isinstance(value, date):
         return value
-    return datetime.strptime(str(value), "%Y-%m-%d").date()
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except ValueError:
+        return None
 
 
 def compute_metrics(
@@ -35,6 +46,18 @@ def compute_metrics(
     """
     as_of = as_of or date.today()
     att_date = _as_date(attestation_date)
+    # When the extractor couldn't pin the as-of date, staleness is
+    # genuinely unknowable — surface it as 0 with a flagged provenance
+    # bit rather than crashing the whole analysis. Callers should add a
+    # gap explaining the extraction was incomplete.
+    if att_date is None:
+        staleness_days = 0
+        provenance = provenance + (
+            " · extraction omitted attestation date" if provenance
+            else "extraction omitted attestation date"
+        )
+    else:
+        staleness_days = (as_of - att_date).days
     return Metrics(
         # The honest backing ratio — both figures as of the attestation date.
         attested_coverage=(
@@ -44,7 +67,7 @@ def compute_metrics(
         live_coverage=(
             attested_reserves / current_supply if current_supply else None
         ),
-        staleness_days=(as_of - att_date).days,
+        staleness_days=staleness_days,
         supply_drift=(
             (current_supply - attested_tokens) / attested_tokens
             if attested_tokens

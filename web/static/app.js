@@ -2023,24 +2023,31 @@ function friendlyErrorCopy(raw) {
         'cycle; for an immediate refresh, use the button below.',
     };
   }
-  // Generic fallback — keep the original message, but in plain English
-  // framing rather than as a stack-trace header.
+  // Generic fallback — NEVER expose the raw exception text to the user.
+  // Whatever the underlying error was, the same recovery applies: try
+  // again, or wait for the next background sweep. Engineers find the
+  // full trace in the server logs and the Compendium event stream.
   return {
     head: 'Doré couldn\'t finish this run',
-    msg: String(raw || '').split(':').slice(-1)[0].trim().slice(0, 200) ||
-      'No further detail. Try again below; the background canary ' +
-      'retries on its own every six hours.',
+    msg: 'Something went wrong on the server. Try again below — most '
+      + 'failures are transient. The background discovery thread retries '
+      + 'every six hours regardless.',
   };
 }
 
 function errorBox(title, msg, trace, opts) {
-  // Engineers can still see the raw trace via a collapsible disclosure
-  // (Compendium event stream carries the full structured event), but
-  // the user-facing copy is product-quality. `opts.onRetry` adds an
-  // in-line "Try again" button so the friendly copy's "use the button
-  // below" promise is fulfilled regardless of what the view's header
-  // run button happens to be labelled.
+  // Stack traces never appear in user-facing UI. Engineers find the
+  // full picture in server logs + the Compendium event stream. The
+  // friendly copy + retry button are the only surface here.
+  // We do log the raw exception to the operations feed (terminal-style
+  // logLine on F1) at a low level so an operator-mode user still has a
+  // trail without seeing a wall of Python in the middle of the app.
   const friendly = friendlyErrorCopy(msg);
+  if (msg) {
+    logLine('ERR', 'TRACE', [
+      seg(String(msg).split('\n')[0].slice(0, 96), 'd-warn'),
+    ]);
+  }
   const body = el('div', { class: 'error-box fade-in' },
     el('div', { class: 'eb-head' }, friendly.head),
     el('div', { class: 'eb-msg' }, friendly.msg));
@@ -2052,13 +2059,6 @@ function errorBox(title, msg, trace, opts) {
     }, icon('i-supply'),
        document.createTextNode(opts.retryLabel || 'TRY AGAIN'));
     body.append(retry);
-  }
-  if (trace || (msg && String(msg) !== friendly.msg)) {
-    const det = el('details', { class: 'eb-trace' });
-    det.append(el('summary', {}, 'System trace · for an operator'));
-    if (msg) det.append(el('div', { class: 'eb-raw-msg' }, String(msg)));
-    if (trace) det.append(el('pre', {}, String(trace)));
-    body.append(det);
   }
   return body;
 }
