@@ -68,16 +68,30 @@ def test_augment_redemption_prompt_steers_crypto_to_on_chain():
     assert "ON-CHAIN" in user or "on-chain" in user
 
 
-def test_augment_redemption_no_llm_returns_none(monkeypatch):
+def test_augment_redemption_no_llm_returns_deterministic_fallback(monkeypatch):
+    """The user's rule: never a bare n/a. When the LLM is unavailable,
+    we still produce a clearly-tagged deterministic context card composed
+    from what the registry already knows about the token."""
     monkeypatch.setattr(augment, "fallback_llm", lambda: None)
-    assert augment.augment_redemption_gap(_coin(), reason="x") is None
+    ctx = augment.augment_redemption_gap(_coin(), reason="x")
+    assert ctx is not None
+    assert ctx.confidence == "deterministic-fallback"
+    assert ctx.surface == "redemption"
+    assert ctx.text  # non-empty body
+    assert "USDC" in ctx.text or "Test USDC" in ctx.text
+    # The transparency / protocol URLs land in citations so the reader
+    # can verify directly.
+    assert any("example.test" in u for u in ctx.citations)
 
 
 def test_augment_redemption_swallows_llm_exception():
+    """LLM outage still produces a card — just the deterministic
+    fallback shape rather than the LLM's qualitative prose."""
     class Boom:
         def extract_json(self, **_kw):
             raise RuntimeError("simulated LLM outage")
 
-    assert augment.augment_redemption_gap(
-        _coin(), reason="x", llm=Boom(),
-    ) is None
+    ctx = augment.augment_redemption_gap(_coin(), reason="x", llm=Boom())
+    assert ctx is not None
+    assert ctx.confidence == "deterministic-fallback"
+    assert ctx.text

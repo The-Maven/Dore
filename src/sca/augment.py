@@ -61,20 +61,20 @@ def _backing_model_brief(model: str) -> str:
 
 
 def web_search_enabled() -> bool:
-    """Feature flag for web search — off by default, opt in for live runs.
+    """True whenever a search provider is configured.
 
-    Both flags must be set for live news snippets to reach the LLM:
-      - `SCA_AUGMENT_WEB=1` enables this layer
-      - `SCA_WEB_SEARCH_PROVIDER` selects the backend (brave|serper)
+    The previous `SCA_AUGMENT_WEB` opt-in flag has been removed:
+    augmentation NEVER serves a bare 'n/a' to the user, and live news
+    snippets are how the LLM gets current real-world citations. If a
+    provider is configured at all, run it.
     """
-    return os.environ.get("SCA_AUGMENT_WEB", "").strip().lower() in (
-        "1", "true", "on"
-    )
+    return bool(os.environ.get("SCA_WEB_SEARCH_PROVIDER", "").strip())
 
 
 def _live_news_block(coin: Stablecoin, kind: str) -> str:
     """Fetch a few fresh news snippets and format for the augmentation
-    prompt. Empty string when the feature isn't enabled or returns nothing.
+    prompt. Empty string when no provider is configured or the search
+    returns nothing.
 
     The snippets are *factual context*, not figures — the LLM is reminded
     again in the prefix that it must cite URLs from these snippets rather
@@ -110,6 +110,50 @@ def _live_news_block(coin: Stablecoin, kind: str) -> str:
     return "\n".join(lines)
 
 
+def _deterministic_fallback(
+    coin: Stablecoin, surface: str, reason: str,
+) -> AugmentedContext:
+    """Composed-from-facts fallback when the LLM is unavailable.
+
+    The user's rule: **never a bare n/a**. When the LLM call fails — no
+    network, no key, timeout — we still produce a clearly-tagged context
+    card composed from what the deterministic layer already knows about
+    the token (backing model, issuer, transparency / protocol URLs).
+    Returns a low-confidence card the UI surfaces under the 'AI CONTEXT'
+    banner alongside the n/a fields, so the reader gets framing rather
+    than a hole.
+    """
+    backing_brief = _backing_model_brief(coin.backing_model)
+    parts = [
+        f"Doré could not automatically resolve the {surface} source for "
+        f"{coin.symbol} ({coin.name}, issued by {coin.issuer}). "
+        f"Reason: {reason}.",
+        f"Backing model: {backing_brief}",
+    ]
+    citations: list[str] = []
+    if coin.transparency_url:
+        parts.append(
+            f"The issuer's transparency page is at "
+            f"{coin.transparency_url} — open it directly to see the "
+            f"current state."
+        )
+        citations.append(coin.transparency_url)
+    if coin.protocol_url and coin.protocol_url not in citations:
+        parts.append(
+            f"For on-chain backing or protocol mechanics see "
+            f"{coin.protocol_url}."
+        )
+        citations.append(coin.protocol_url)
+    return AugmentedContext(
+        surface=surface,
+        reason=reason,
+        text=" ".join(parts),
+        citations=citations,
+        confidence="deterministic-fallback",
+        backing_model=coin.backing_model,
+    )
+
+
 def _augment_prompt(
     coin: Stablecoin, surface: str, reason: str,
 ) -> tuple[str, str]:
@@ -131,16 +175,22 @@ def _augment_prompt(
         "without the bridge, the UI shows contradictory states — your "
         "context saying 'attestation exists' next to n/a figures with no "
         "explanation.\n"
-        "  3. Be qualitative: describe the backing model, the issuer's "
+        "  3. **The reader can already see the n/a fields. Do not restate "
+        "'no attestation available' as a finding. Instead, name what we "
+        "DO know about this issuer's transparency mechanism, the cadence "
+        "the auditor publishes at, the regulatory regime, and where the "
+        "reader can look directly.** Add value beyond what the bare "
+        "deterministic fields show.\n"
+        "  4. Be qualitative: describe the backing model, the issuer's "
         "attestation cadence, the auditor name (e.g. Withum, BPM, Grant "
         "Thornton), the regulatory regime (NYDFS / MTL / MiCA), and "
         "where live data actually lives. Acknowledge your training-data "
         "cutoff.\n"
-        "  4. Cite specific URLs where the user can verify — the issuer's "
+        "  5. Cite specific URLs where the user can verify — the issuer's "
         "transparency page, a protocol dashboard, a regulator filing.\n"
-        "  5. Be short and useful — 3-6 sentences, plain prose, no headers.\n"
-        "  6. If you genuinely don't know, say so — silence beats invention.\n"
-        "  7. Return strict JSON: "
+        "  6. Be short and useful — 3-6 sentences, plain prose, no headers.\n"
+        "  7. If you genuinely don't know, say so — silence beats invention.\n"
+        "  8. Return strict JSON: "
         "{\"text\": \"...\", \"citations\": [\"url1\", \"url2\"]}\n"
     )
     user = (
@@ -170,12 +220,18 @@ _AUGMENT_SCHEMA = {
 def augment_attestation_gap(
     coin: Stablecoin, reason: str,
     *, llm: LLMClient | None = None,
-) -> AugmentedContext | None:
-    """Augment a missing attestation with LLM context. Returns None on any
-    error (augmentation is best-effort; never breaks the analysis)."""
+) -> AugmentedContext:
+    """Augment a missing attestation with LLM context.
+
+    **Never returns None.** When the LLM is unavailable (no key, no
+    network, timeout) we still return a clearly-tagged deterministic
+    fallback card composed from what the registry already knows about
+    the token — backing model, issuer, transparency / protocol URLs.
+    The user's rule: never a bare n/a.
+    """
     client = llm or fallback_llm()
     if client is None:
-        return None
+        return _deterministic_fallback(coin, "attestation", reason)
     system, user = _augment_prompt(coin, "attestation", reason)
     try:
         with timed("augment.attestation", symbol=coin.symbol,
@@ -187,8 +243,9 @@ def augment_attestation_gap(
         log_event("augment.failed", level="warn",
                   symbol=coin.symbol, surface="attestation",
                   error_class=type(exc).__name__, error_message=str(exc))
-        return None
-    return _build_context(coin, "attestation", reason, raw)
+        return _deterministic_fallback(coin, "attestation", reason)
+    ctx = _build_context(coin, "attestation", reason, raw)
+    return ctx or _deterministic_fallback(coin, "attestation", reason)
 
 
 # ── sanctions augmentation ────────────────────────────────────────────
@@ -246,7 +303,7 @@ def _sanctions_prompt(
 def augment_sanctions_gap(
     coin: Stablecoin, reason: str,
     *, llm: LLMClient | None = None,
-) -> AugmentedContext | None:
+) -> AugmentedContext:
     """Augment a missing or stale OFAC SDN screen with LLM context.
 
     Fires when:
@@ -254,12 +311,11 @@ def augment_sanctions_gap(
       - SDN list is critically stale (>7 days)
       - on-chain supply read failed entirely so no addresses to screen
 
-    Returns None on any error — augmentation is best-effort and never
-    breaks the sanctions surface.
+    Never returns None — falls back to a deterministic context card.
     """
     client = llm or fallback_llm()
     if client is None:
-        return None
+        return _deterministic_fallback(coin, "sanctions", reason)
     system, user = _sanctions_prompt(coin, reason)
     try:
         with timed("augment.sanctions", symbol=coin.symbol,
@@ -271,8 +327,9 @@ def augment_sanctions_gap(
         log_event("augment.failed", level="warn",
                   symbol=coin.symbol, surface="sanctions",
                   error_class=type(exc).__name__, error_message=str(exc))
-        return None
-    return _build_context(coin, "sanctions", reason, raw)
+        return _deterministic_fallback(coin, "sanctions", reason)
+    ctx = _build_context(coin, "sanctions", reason, raw)
+    return ctx or _deterministic_fallback(coin, "sanctions", reason)
 
 
 # ── redemption augmentation ───────────────────────────────────────────
@@ -346,7 +403,7 @@ def _redemption_prompt(
 def augment_redemption_gap(
     coin: Stablecoin, reason: str,
     *, llm: LLMClient | None = None,
-) -> AugmentedContext | None:
+) -> AugmentedContext:
     """Augment a missing redemption-tier breakdown with LLM context.
 
     Fires when:
@@ -354,12 +411,11 @@ def augment_redemption_gap(
       - coin is crypto-collateralized / synthetic / algorithmic — no
         fiat-style tier decomposition makes sense; redemption is on-chain
 
-    Returns None on any error — augmentation is best-effort and never
-    breaks the redemption surface.
+    Never returns None — falls back to a deterministic context card.
     """
     client = llm or fallback_llm()
     if client is None:
-        return None
+        return _deterministic_fallback(coin, "redemption", reason)
     system, user = _redemption_prompt(coin, reason)
     try:
         with timed("augment.redemption", symbol=coin.symbol,
@@ -371,8 +427,9 @@ def augment_redemption_gap(
         log_event("augment.failed", level="warn",
                   symbol=coin.symbol, surface="redemption",
                   error_class=type(exc).__name__, error_message=str(exc))
-        return None
-    return _build_context(coin, "redemption", reason, raw)
+        return _deterministic_fallback(coin, "redemption", reason)
+    ctx = _build_context(coin, "redemption", reason, raw)
+    return ctx or _deterministic_fallback(coin, "redemption", reason)
 
 
 def _build_context(

@@ -87,12 +87,22 @@ def _brief_system_prompt(surface: str) -> str:
         f"reader conclude.\n"
         f"  3. The HEADLINE is a single sentence — the bottom line. "
         f"Plain English, no jargon, no engineer slugs. If something is "
-        f"missing/uncertain, lead with that.\n"
+        f"missing/uncertain, lead with that. **Do NOT simply restate "
+        f"'no attestation available' as the bottom line — that's a "
+        f"deterministic field already shown elsewhere. Instead, name "
+        f"the backing model, the protocol's transparency mechanism, "
+        f"and what a reader should actually look at.** For algorithmic "
+        f"or crypto-collateralized tokens, the headline should describe "
+        f"the on-chain backing mechanism (e.g. 'USDD: algorithmic peg "
+        f"with TRX over-collateralization; reserves visible on the TRON "
+        f"DAO Reserve dashboard rather than via a CPA attestation').\n"
         f"  4. KEY_POINTS are 2-4 short bullets (~12 words each) — the "
         f"figures that matter most for THIS surface, with their "
         f"provenance compressed (e.g. 'Coverage 100.1% from Apr 30 "
         f"attestation' or 'Supply $50B across 6 chains, 4 cross-RPC "
-        f"corroborated').\n"
+        f"corroborated'). For non-fiat-backed tokens, at least one "
+        f"bullet should describe the on-chain redemption / collateral "
+        f"mechanism with a link to the protocol's dashboard.\n"
         f"  5. RELEVANT_NEWS_INDICES: from the news_candidates list, "
         f"return ONLY indices of items genuinely relevant to this "
         f"token, issuer, or surface (e.g. OFAC action against this "
@@ -102,6 +112,63 @@ def _brief_system_prompt(surface: str) -> str:
         f"  7. Headlines and bullets should be plainly readable to "
         f"non-engineers — financial-product copy quality.\n"
     )
+
+
+def _backing_model_brief(model: str) -> str:
+    """Plain-English description of a backing model. Single source of
+    truth shared with `sca.augment._backing_model_brief`."""
+    return {
+        "fiat_reserves":
+            "Backed by off-chain cash, treasuries, or equivalents — an "
+            "issuer publishes periodic attestations by an independent CPA.",
+        "crypto_collateral":
+            "Backed by on-chain collateral managed by a smart-contract "
+            "protocol — backing is visible on-chain, not via a PDF.",
+        "synthetic_delta_neutral":
+            "Backed by delta-neutral positions (e.g. staked ETH + short "
+            "perpetuals) — reserves are dynamic and visible on the issuer's "
+            "live dashboard, not via a periodic PDF.",
+        "algorithmic":
+            "Stabilised by an algorithmic mechanism plus partial "
+            "collateral — backing composition varies; live data on the "
+            "protocol dashboard, not via a CPA attestation.",
+        "new_or_unverified":
+            "Recently launched. No mature published attestation system "
+            "yet; treat any backing claim with caution until an "
+            "independent attestation appears.",
+    }.get(model, "")
+
+
+def _brief_news_block(coin: Stablecoin) -> str:
+    """Live news snippets for the brief — gated on SCA_AUGMENT_WEB and a
+    configured search provider. Empty when off; never raises."""
+    import os
+    if os.environ.get("SCA_AUGMENT_WEB", "").strip().lower() not in (
+        "1", "true", "on",
+    ):
+        return ""
+    try:
+        from sca.web_discovery import recent_news_snippets
+        snippets = recent_news_snippets(
+            coin.symbol, issuer=coin.issuer, kind="general", limit=3,
+        )
+    except Exception:  # noqa: BLE001 - news is best-effort
+        return ""
+    if not snippets:
+        return ""
+    lines = [
+        "",
+        "## Live news snippets (factual context — cite URLs from here, "
+        "never invent them; do NOT state numeric figures from these "
+        "snippets):",
+    ]
+    for i, s in enumerate(snippets, 1):
+        lines.append(
+            f"  [n{i}] {s.get('title', '')} ({s.get('age', '')})\n"
+            f"        {s.get('snippet', '')}\n"
+            f"        URL: {s.get('url', '')}"
+        )
+    return "\n".join(lines)
 
 
 def _format_news_candidates(passages: list[CorpusPassage]) -> str:
@@ -133,15 +200,29 @@ def generate_brief(
         return None
 
     system = _brief_system_prompt(surface)
+    backing_brief = _backing_model_brief(coin.backing_model)
+    is_non_fiat = coin.backing_model != "fiat_reserves"
+    non_fiat_steer = (
+        "\n\nIMPORTANT — this is a NON-FIAT-BACKED token: a CPA-style "
+        "attestation is not the right artefact and 'no attestation' is "
+        "not a finding. Describe the actual backing mechanism (on-chain "
+        "collateral / delta-neutral hedges / algorithmic peg) and point "
+        "the reader at the live transparency surface."
+        if is_non_fiat else ""
+    )
     user = (
         f"Token: {coin.symbol} ({coin.name})\n"
         f"Issuer: {coin.issuer}\n"
-        f"Backing model: {coin.backing_model}\n\n"
+        f"Backing model: {coin.backing_model} — {backing_brief}\n"
+        f"Protocol URL: {coin.protocol_url or '(none)'}\n"
+        f"Transparency URL: {coin.transparency_url or '(none)'}\n"
+        f"{non_fiat_steer}\n\n"
         f"## Deterministic facts (verbatim — never invent figures)\n"
         f"{facts}\n\n"
         f"## news_candidates (corpus passages — recently discovered "
         f"regulatory / industry items)\n"
-        f"{_format_news_candidates(news_candidates)}\n\n"
+        f"{_format_news_candidates(news_candidates)}"
+        f"{_brief_news_block(coin)}\n\n"
         f"Return the editorial brief as strict JSON per the schema."
     )
 

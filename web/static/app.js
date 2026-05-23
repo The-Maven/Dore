@@ -1699,10 +1699,14 @@ async function pollTick() {
     refreshInstruments();
     refreshTicker();
   } catch (e) {
+    // The supply endpoint is cache-dominated server-side; a failure here
+    // is a real outage (server down, network drop) — not RPC flap. The
+    // label reads honestly to the financial audience, with the raw error
+    // shown for ops in the tail segment.
     STATE.supply[sym] = 'error';
-    logLine('ERR', 'SUPPLY', [
+    logLine('WATCH', 'SUPPLY', [
       seg(sym.padEnd(5), 'lg-sym'),
-      seg('RPC-FAIL', 'd-warn'),
+      seg('read deferred', 'd-warn'),
       seg(String(e.message).slice(0, 48)),
     ]);
     refreshGrid();
@@ -2066,14 +2070,21 @@ function freshnessStrip(computedAt, onRefresh) {
   if (stale) {
     strip.append(el('span', { class: 'fresh-flag' },
       'result is over 10 minutes old'));
-    const btn = el('button', {
-      class: 'btn fresh-refresh',
-      title: 'Re-run a full recompute — live RPCs + LLM. The staged '
-        + 'progress plays because this is a genuine recompute.',
-      onclick: onRefresh,
-    }, icon('i-supply'), 'REFRESH');
-    strip.append(btn);
   }
+  // One canonical refresh action, contextual to result age: prominent
+  // when stale, soft-ghost when fresh. Replaces the duplicate header
+  // "FORCE REFRESH" — every surface has the same one button in the
+  // same place.
+  const btn = el('button', {
+    class: 'btn ' + (stale ? 'fresh-refresh' : 'ghost'),
+    title: stale
+      ? 'Re-run a full recompute — live RPCs + LLM. The staged progress '
+        + 'plays because this is a genuine recompute.'
+      : 'Re-run from scratch. The cached result is still served instantly '
+        + 'if you re-open this page.',
+    onclick: onRefresh,
+  }, icon('i-supply'), stale ? 'REFRESH' : 'RE-RUN');
+  strip.append(btn);
   return strip;
 }
 
@@ -2087,15 +2098,12 @@ function viewAnalyze(symbolFromHash) {
     value: symbolFromHash || STATE.activeSymbol || '',
   });
   const runBtn = el('button', { class: 'btn' }, icon('i-agent'), 'RUN');
-  const refreshBtn = el('button', {
-    class: 'btn ghost',
-    title: 'Force a full recompute — bypasses the analysis cache, re-reads '
-      + 'live RPCs and re-runs the LLM. Slow. Plain RUN reuses the cached '
-      + 'result instantly at zero cost.',
-  }, icon('i-supply'), 'FORCE REFRESH');
+  // One canonical refresh action: the freshnessStrip beneath every result
+  // carries a contextual REFRESH that re-runs with refresh=true. Removing
+  // the duplicate "FORCE REFRESH" header button keeps the surface clean.
   app.append(viewHead('F2', 'ANALYZE',
     'reserve attestation reconciled against live on-chain supply',
-    input, runBtn, refreshBtn));
+    input, runBtn));
 
   const mount = el('div', { class: 'view-body', id: 'an-mount' });
   app.append(mount);
@@ -2112,12 +2120,6 @@ function viewAnalyze(symbolFromHash) {
   };
   runBtn.addEventListener('click', run);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
-  refreshBtn.addEventListener('click', () => {
-    const sym = (input.value.trim().toUpperCase()) || symbolFromHash;
-    if (!sym) { flagEmptyInput(input); return; }
-    if (location.hash !== '#analyze/' + sym) location.hash = '#analyze/' + sym;
-    startAnalysis(sym, mount, true);
-  });
 
   if (symbolFromHash) {
     startAnalysis(symbolFromHash, mount);
@@ -2613,12 +2615,9 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
   }
   mount.append(panel('05', 'CONFIDENCE & GAPS', 'i-human', confBody));
 
-  // re-run affordance + cross-surface linkage — jump straight to this
-  // token's sanctions screen and redemption assessment.
+  // Cross-surface linkage — refresh is handled by the freshness strip at
+  // the top of the page, so this row only carries the lateral jumps.
   mount.append(el('div', { style: 'padding:0 14px 24px;display:flex;gap:8px;flex-wrap:wrap' },
-    el('button', { class: 'btn ghost',
-      onclick: () => startAnalysis(a.symbol, mount) },
-      icon('i-agent'), 'RE-RUN ' + a.symbol),
     el('button', { class: 'btn ghost',
       title: 'Screen ' + a.symbol + ' deployment addresses against the OFAC SDN list',
       onclick: () => { location.hash = '#sanctions/' + a.symbol; } },
@@ -3478,9 +3477,6 @@ function renderSanctions(s, elapsed, mount, computedAt, onRefresh) {
 
   mount.append(el('div', { style: 'padding:0 14px 24px;display:flex;gap:8px;flex-wrap:wrap' },
     el('button', { class: 'btn ghost',
-      onclick: () => startSurfaceJob('sanctions', s.symbol, mount) },
-      icon('i-sanction'), 'RE-SCREEN ' + s.symbol),
-    el('button', { class: 'btn ghost',
       onclick: () => { location.hash = '#analyze/' + s.symbol; } },
       icon('i-agent'), 'ANALYZE ' + s.symbol),
     el('button', { class: 'btn ghost',
@@ -3649,9 +3645,6 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
   mount.append(gapsPanel(chainTbl ? '07' : '06', r.gaps));
 
   mount.append(el('div', { style: 'padding:0 14px 24px;display:flex;gap:8px;flex-wrap:wrap' },
-    el('button', { class: 'btn ghost',
-      onclick: () => startSurfaceJob('redemptions', r.symbol, mount) },
-      icon('i-redeem'), 'RE-ASSESS ' + r.symbol),
     el('button', { class: 'btn ghost',
       onclick: () => { location.hash = '#analyze/' + r.symbol; } },
       icon('i-agent'), 'ANALYZE ' + r.symbol),
@@ -4325,109 +4318,251 @@ function renderCompendium(data, mount) {
   const withCache = data.attestations.filter((a) => a.cache_url).length;
   const liveSources = data.sources_health.filter((s) => s.status === 'live').length;
   const brokenSources = data.sources_health.filter((s) => s.status === 'broken').length;
+  const unresolvedAttest = data.attestations.filter(
+    (a) => !a.cache_url && !a.override_url).length;
 
-  mount.append(el('div', { class: 'strip fade-in' },
-    stripCell(attCount, 'TOKENS'),
-    stripCell(withCache + '/' + attCount, 'RESOLVED'),
-    stripCell(withOverride, 'OVERRIDES', withOverride ? 'v-green' : 'v-paper'),
-    stripCell(liveSources, 'LIVE SRC', 'v-green'),
-    stripCell(brokenSources, 'BROKEN SRC',
-      brokenSources ? 'v-rose' : 'v-green'),
-    stripCell(data.discovery_provider || 'off',
-      'DISCOVERY', data.discovery_provider ? 'v-green' : 'v-paper'),
+  // Build a docs-style page: prose sections with live data embedded as
+  // evidence. Goal: a human reads this top to bottom and understands how
+  // Doré's data layer works AND what state it is in right now.
+  const doc = el('article', { class: 'cp-doc fade-in' });
+  mount.append(doc);
+
+  // Header — page title + intro paragraph + meta strip.
+  doc.append(el('header', { class: 'cp-doc-head' },
+    el('div', { class: 'cp-doc-kicker' }, 'COMPENDIUM · DATA LAYER'),
+    el('h1', { class: 'cp-doc-title' },
+      'How Doré keeps its data fresh.'),
+    el('p', { class: 'cp-doc-lede' },
+      'Doré reconciles what stablecoin issuers claim against what the ' +
+      'blockchains actually show. That depends on a small number of ' +
+      'durable, observable systems: a registry of every stablecoin, an ' +
+      'opt-out corpus of regulatory sources, a snapshot store that ' +
+      'archives every external page, a background canary that re-checks ' +
+      'them every six hours, and an immutable audit trail of every ' +
+      'verified fact. This page documents each of them, and shows you ' +
+      'what state they are in right now.'),
+    el('div', { class: 'cp-doc-meta' },
+      el('span', {}, _fmtTs(new Date().toISOString())),
+      el('span', { class: 'cp-doc-meta-sep' }, '·'),
+      el('span', {}, attCount + ' stablecoins tracked'),
+      el('span', { class: 'cp-doc-meta-sep' }, '·'),
+      el('span', {}, data.sources_health.length + ' corpus sources'),
+      el('span', { class: 'cp-doc-meta-sep' }, '·'),
+      el('span', {}, 'Refresh every 30 seconds'),
+    ),
   ));
 
-  // ── Attestation URL provenance ─────────────────────────────────────
+  // Table-of-contents sidebar (sticky on wide viewports, inline on mobile).
+  doc.append(el('nav', { class: 'cp-doc-toc' },
+    el('div', { class: 'cp-toc-head' }, 'ON THIS PAGE'),
+    el('ol', {},
+      el('li', {}, el('a', { href: '#attestations' },
+        'Attestation URLs')),
+      el('li', {}, el('a', { href: '#canary' },
+        'Corpus health (canary)')),
+      el('li', {}, el('a', { href: '#discovery' },
+        'Web discovery')),
+      el('li', {}, el('a', { href: '#facts' },
+        'Verified facts (audit trail)')),
+      el('li', {}, el('a', { href: '#events' },
+        'Background events')),
+      el('li', {}, el('a', { href: '#refresh' },
+        'How often things refresh')),
+    ),
+  ));
+
+  // Quick state summary up top — six small stat blocks, NOT a strip
+  // (which looks dense). Rendered as a paragraph with inline strong
+  // numbers so it scans like a docs page summary.
+  doc.append(el('section', { class: 'cp-doc-summary' },
+    el('p', {},
+      'Right now, ',
+      el('b', {}, withCache + ' of ' + attCount),
+      ' attestation URLs are resolved, ',
+      el('b', { class: withOverride ? 'cp-num-good' : 'cp-num-neutral' },
+        String(withOverride)),
+      ' have a curator-set override stored in the database, ',
+      el('b', { class: 'cp-num-good' }, String(liveSources)),
+      ' of ' + data.sources_health.length + ' corpus sources are live, and ',
+      el('b', {
+        class: brokenSources > 0 ? 'cp-num-bad' : 'cp-num-good',
+      }, String(brokenSources)),
+      ' are broken. Web discovery is ',
+      el('b', { class: data.discovery_provider ? 'cp-num-good'
+        : 'cp-num-neutral' },
+        data.discovery_provider
+          ? ('on via ' + data.discovery_provider)
+          : 'off (set SCA_WEB_SEARCH_PROVIDER to enable)'),
+      '. ',
+      unresolvedAttest > 0
+        ? el('span', {},
+            el('b', { class: 'cp-num-bad' }, String(unresolvedAttest)),
+            ' tokens still have no resolvable attestation URL — listed ',
+            el('a', { href: '#attestations' }, 'below'), '.')
+        : el('span', {}, 'Every tracked token has a resolved attestation source.'),
+    ),
+  ));
+
+  // ── 1. Attestation URLs ─────────────────────────────────────────────
   const attRows = data.attestations.slice().sort((a, b) => {
-    // unresolved first (gaps surface), then by symbol
     const ar = (a.cache_url || a.override_url) ? 1 : 0;
     const br = (b.cache_url || b.override_url) ? 1 : 0;
     if (ar !== br) return ar - br;
     return a.symbol.localeCompare(b.symbol);
   });
-  const attBody = el('div', { class: 'cp-table' },
-    el('div', { class: 'cp-row cp-head' },
-      el('div', { class: 'cp-c1' }, 'TOKEN'),
-      el('div', { class: 'cp-c2' }, 'ISSUER'),
-      el('div', { class: 'cp-c3' }, 'CURRENT URL'),
-      el('div', { class: 'cp-c4' }, 'VIA'),
-      el('div', { class: 'cp-c5' }, 'AGE'),
+  const attSection = el('section', { class: 'cp-doc-section', id: 'attestations' },
+    el('h2', {}, 'Attestation URLs'),
+    el('p', { class: 'cp-doc-para' },
+      'Every fiat-backed stablecoin has a monthly attestation PDF published ' +
+      'by an independent accountant. The URL of that PDF rotates — issuers ' +
+      'change CDN paths, swap auditors, or switch transparency tools. Doré ' +
+      'resolves a fresh URL through a six-step chain, then writes the ' +
+      'winning URL through to the database so a curator-set value survives ' +
+      'a redeploy. The YAML file is only a bootstrap seed.'),
+    el('ol', { class: 'cp-doc-list' },
+      el('li', {},
+        el('b', {}, 'Store override.'),
+        ' A curator (or the background discovery thread) sets a URL via ' +
+        'POST /api/attestations/{symbol}/url. Stored in attestation_url_overrides.'),
+      el('li', {},
+        el('b', {}, 'In-process cache.'),
+        ' attestation_cache.json, valid for 25 days.'),
+      el('li', {},
+        el('b', {}, 'YAML seed.'),
+        ' config/stablecoins.yaml. Bootstrap-only.'),
+      el('li', {},
+        el('b', {}, 'Paxos resolver.'),
+        ' Deterministic WordPress-CDN probes for PYUSD / USDP / USDG.'),
+      el('li', {},
+        el('b', {}, 'Web discovery.'),
+        ' Typed search ("[symbol] reserves attestation [year] filetype:pdf"); ' +
+        'HEAD-check before accepting.'),
+      el('li', {},
+        el('b', {}, 'Locator.'),
+        ' Static / Gatsby / Next.js scrape of the issuer transparency page, ' +
+        'LLM-ranked.')),
+    el('p', { class: 'cp-doc-para' },
+      'Below is every stablecoin Doré tracks. Tokens with no resolvable URL ' +
+      'are listed first; tokens whose source is more than 35 days old are ' +
+      'highlighted as stale (the staleness guardrail will flag those at the ' +
+      'analysis surface too). The ' +
+      el('span', { class: 'cp-via cp-via-store_override' }, 'override'),
+      ' badge means the database is serving the URL; ',
+      el('span', { class: 'cp-via cp-via-seed' }, 'seed'),
+      ' means the YAML bootstrap; ',
+      el('span', { class: 'cp-via cp-via-web_search' }, 'web_search'),
+      ' means the background discovery thread found it.'),
+    el('div', { class: 'cp-table' },
+      el('div', { class: 'cp-row cp-head' },
+        el('div', { class: 'cp-c1' }, 'TOKEN'),
+        el('div', { class: 'cp-c2' }, 'ISSUER'),
+        el('div', { class: 'cp-c3' }, 'CURRENT URL'),
+        el('div', { class: 'cp-c4' }, 'VIA'),
+        el('div', { class: 'cp-c5' }, 'AGE'),
+      ),
+      ...attRows.map((a) => {
+        const url = a.override_url || a.cache_url || a.yaml_seed || '';
+        const via = a.override_url ? (a.override_via || 'override')
+          : (a.cache_via || (a.yaml_seed ? 'seed (unresolved)' : 'none'));
+        const ts = a.override_set_at || a.cache_resolved_at;
+        const days = _daysSince(ts);
+        const cls = !url ? 'cp-warn'
+          : (days !== null && days > 35) ? 'cp-stale' : '';
+        return el('div', { class: 'cp-row ' + cls },
+          el('div', { class: 'cp-c1' }, el('b', {}, a.symbol)),
+          el('div', { class: 'cp-c2' }, a.issuer),
+          el('div', { class: 'cp-c3' },
+            url
+              ? el('a', { href: url, target: '_blank', rel: 'noopener',
+                  title: url }, url.length > 64 ? url.slice(0, 64) + '…' : url)
+              : el('span', { class: 'cp-na' }, 'no URL resolved')),
+          el('div', { class: 'cp-c4' },
+            el('span', { class: 'cp-via cp-via-' + via.split(' ')[0] }, via)),
+          el('div', { class: 'cp-c5' },
+            days === null ? '—' : days + 'd'),
+        );
+      }),
     ),
-    ...attRows.map((a) => {
-      const url = a.override_url || a.cache_url || a.yaml_seed || '';
-      const via = a.override_url ? (a.override_via || 'override')
-        : (a.cache_via || (a.yaml_seed ? 'seed (unresolved)' : 'none'));
-      const ts = a.override_set_at || a.cache_resolved_at;
-      const days = _daysSince(ts);
-      const cls = !url ? 'cp-warn'
-        : (days !== null && days > 35) ? 'cp-stale' : '';
-      return el('div', { class: 'cp-row ' + cls },
-        el('div', { class: 'cp-c1' }, el('b', {}, a.symbol)),
-        el('div', { class: 'cp-c2' }, a.issuer),
-        el('div', { class: 'cp-c3' },
-          url
-            ? el('a', { href: url, target: '_blank', rel: 'noopener',
-                title: url }, url.length > 64 ? url.slice(0, 64) + '…' : url)
-            : el('span', { class: 'cp-na' }, 'n/a — no URL resolved')),
-        el('div', { class: 'cp-c4' },
-          el('span', { class: 'cp-via cp-via-' + via.split(' ')[0] }, via)),
-        el('div', { class: 'cp-c5' },
-          days === null ? '—' : days + 'd'),
-      );
-    }),
   );
-  mount.append(panel('01', 'ATTESTATION URL PROVENANCE — per token',
-    'i-eval', attBody));
+  doc.append(attSection);
 
-  // ── Corpus source health ───────────────────────────────────────────
+  // ── 2. Corpus health (canary) ──────────────────────────────────────
   const broken = data.sources_health.filter((s) => s.status === 'broken');
   const unknown = data.sources_health.filter((s) => s.status === 'unknown');
   const live = data.sources_health.filter((s) => s.status === 'live')
     .sort((a, b) => (a.fetched_at < b.fetched_at ? 1 : -1));
-  const srcBody = el('div', { class: 'cp-table' },
-    el('div', { class: 'cp-row cp-head' },
-      el('div', { class: 'cp-c1' }, 'STATUS'),
-      el('div', { class: 'cp-c2' }, 'SOURCE'),
-      el('div', { class: 'cp-c3' }, 'URL'),
-      el('div', { class: 'cp-c5' }, 'AGE'),
+  const srcSection = el('section', { class: 'cp-doc-section', id: 'canary' },
+    el('h2', {}, 'Corpus health'),
+    el('p', { class: 'cp-doc-para' },
+      'The reasoning corpus is a curated set of regulatory and policy sources ' +
+      'every analysis cites against (GENIUS Act, MiCA Title III, FSB ' +
+      'recommendations, OFAC SDN actions, BIS speeches, Chainalysis posts). ' +
+      'Every source is included by default — opt-out, not opt-in — so a ' +
+      'human only intervenes to exclude a source or mark one explicitly ' +
+      'verified. A background canary thread re-fetches each source every ' +
+      'six hours, archives a snapshot, and emits ' +
+      el('code', {}, 'health.source.flipped'),
+      ' the moment a source transitions live ↔ broken. When a source goes ' +
+      'broken, the UI silently serves the archived copy and flags the gap.'),
+    broken.length > 0
+      ? el('p', { class: 'cp-doc-para cp-doc-alert' },
+          el('b', {}, broken.length + ' source(s) are currently broken.'),
+          ' Listed first below. Doré is serving the archived snapshots ' +
+          'transparently; a maintainer should re-anchor them.')
+      : el('p', { class: 'cp-doc-para' },
+          'All sources are currently live (' + live.length + ' tracked).'),
+    el('div', { class: 'cp-table' },
+      el('div', { class: 'cp-row cp-head' },
+        el('div', { class: 'cp-c1' }, 'STATUS'),
+        el('div', { class: 'cp-c2' }, 'SOURCE'),
+        el('div', { class: 'cp-c3' }, 'URL'),
+        el('div', { class: 'cp-c5' }, 'AGE'),
+      ),
+      ...[...broken, ...unknown, ...live].slice(0, 60).map((s) =>
+        el('div', { class: 'cp-row ' +
+          (s.status === 'broken' ? 'cp-warn'
+            : s.status === 'unknown' ? 'cp-stale' : '') },
+          el('div', { class: 'cp-c1' },
+            el('span', { class: 'cp-via cp-via-' + s.status }, s.status)),
+          el('div', { class: 'cp-c2' }, s.title || s.id),
+          el('div', { class: 'cp-c3' },
+            s.url
+              ? el('a', { href: s.url, target: '_blank', rel: 'noopener',
+                  title: s.url }, s.url.length > 56 ? s.url.slice(0, 56) + '…' : s.url)
+              : el('span', { class: 'cp-na' }, '—')),
+          el('div', { class: 'cp-c5' },
+            s.age_days === null || s.age_days === undefined
+              ? '—' : s.age_days + 'd'),
+        )),
     ),
-    ...[...broken, ...unknown, ...live].slice(0, 60).map((s) =>
-      el('div', { class: 'cp-row ' +
-        (s.status === 'broken' ? 'cp-warn'
-          : s.status === 'unknown' ? 'cp-stale' : '') },
-        el('div', { class: 'cp-c1' },
-          el('span', { class: 'cp-via cp-via-' + s.status }, s.status)),
-        el('div', { class: 'cp-c2' }, s.title || s.id),
-        el('div', { class: 'cp-c3' },
-          s.url
-            ? el('a', { href: s.url, target: '_blank', rel: 'noopener',
-                title: s.url }, s.url.length > 56 ? s.url.slice(0, 56) + '…' : s.url)
-            : el('span', { class: 'cp-na' }, '—')),
-        el('div', { class: 'cp-c5' },
-          s.age_days === null || s.age_days === undefined
-            ? '—' : s.age_days + 'd'),
-      )),
   );
-  mount.append(panel('02', 'CORPUS SOURCE HEALTH — canary observations',
-    'i-eval', srcBody));
+  doc.append(srcSection);
 
-  // ── Web discovery ──────────────────────────────────────────────────
-  const discBody = el('div', {},
-    el('div', { class: 'cp-disc-head' },
-      el('div', {},
-        el('span', { class: 'cp-disc-lbl' }, 'BACKEND'),
-        el('span', { class: 'cp-disc-val' },
-          data.discovery_provider || 'off — set SCA_WEB_SEARCH_PROVIDER + KEY')),
-      el('div', {},
-        el('span', { class: 'cp-disc-lbl' }, 'HITS'),
-        el('span', { class: 'cp-disc-val' },
-          String(data.discoveries.length))),
-    ),
+  // ── 3. Web discovery ───────────────────────────────────────────────
+  const discSection = el('section', { class: 'cp-doc-section', id: 'discovery' },
+    el('h2', {}, 'Web discovery'),
+    el('p', { class: 'cp-doc-para' },
+      'When the locator cannot reach a JS-rendered transparency page, Doré ' +
+      'runs a typed web search for a fresh attestation PDF, HEAD-checks ' +
+      'every candidate, and writes the winner through to the store. The ' +
+      'same rule a researcher uses by hand — "search the issuer name plus ' +
+      'attestation plus the year, look for a /wp-content/ PDF" — automated ' +
+      'and logged. Every discovery is visible below with the query and the ' +
+      'provider that returned it.'),
+    el('p', { class: 'cp-doc-para' },
+      'Backend currently: ',
+      el('b', { class: data.discovery_provider ? 'cp-num-good'
+        : 'cp-num-neutral' },
+        data.discovery_provider
+          ? data.discovery_provider
+          : 'disabled (set SCA_WEB_SEARCH_PROVIDER and SCA_WEB_SEARCH_KEY)'),
+      '. Recent hits: ',
+      el('b', {}, String(data.discoveries.length)), '.'),
     data.discoveries.length === 0
-      ? el('div', { class: 'cp-na pb-pad' },
-          'No discoveries yet. When the resolver hits a gap and a search ' +
-          'backend is configured, hits will appear here with the URL and ' +
-          'the query that found it.')
+      ? el('p', { class: 'cp-doc-para cp-doc-aside' },
+          'No discoveries recorded yet. When the resolver hits a gap and a ' +
+          'search backend is configured, hits appear here with the URL and ' +
+          'the query that found them.')
       : el('div', { class: 'cp-table' },
           el('div', { class: 'cp-row cp-head' },
             el('div', { class: 'cp-c1' }, 'TOKEN'),
@@ -4446,73 +4581,158 @@ function renderCompendium(data, mount) {
           )),
       ),
   );
-  mount.append(panel('03', 'WEB DISCOVERY — gap-closure log', 'i-eval', discBody));
+  doc.append(discSection);
 
-  // ── Verified facts (audit trail) ───────────────────────────────────
+  // ── 4. Verified facts (audit trail) ────────────────────────────────
   const facts = data.verified_facts || [];
-  const factsBody = facts.length === 0
-    ? el('div', { class: 'cp-na pb-pad' },
-        'No verified facts recorded yet in this process. The audit trail ' +
-        'populates on every successful analysis — supply and reserves rows ' +
-        'land here append-only with full provenance.')
-    : el('div', { class: 'cp-table' },
-        el('div', { class: 'cp-row cp-head' },
-          el('div', { class: 'cp-c1' }, 'CLAIM'),
-          el('div', { class: 'cp-c2' }, 'SUBJECT'),
-          el('div', { class: 'cp-c3' }, 'VALUE'),
-          el('div', { class: 'cp-c4' }, 'STATUS'),
-          el('div', { class: 'cp-c5' }, 'OBSERVED'),
-        ),
-        ...facts.map((f) => {
-          const v = f.value || {};
-          let summary = '';
-          if (f.claim_type === 'supply') {
-            summary = (v.supply !== undefined
-              ? Number(v.supply).toLocaleString(undefined,
-                  { maximumFractionDigits: 0 })
-              : '—') + ' on ' + (f.chain || '?');
-          } else if (f.claim_type === 'reserves') {
-            summary = '$' + (v.total_reserves_usd !== undefined
-              ? Number(v.total_reserves_usd).toLocaleString(undefined,
-                  { maximumFractionDigits: 0 })
-              : '—') + ' as of ' + (v.as_of_date || '?');
-          } else {
-            summary = JSON.stringify(v).slice(0, 60);
-          }
-          return el('div', { class: 'cp-row' },
-            el('div', { class: 'cp-c1' },
-              el('span', { class: 'cp-via cp-via-' + f.claim_type },
-                f.claim_type)),
-            el('div', { class: 'cp-c2' }, f.subject),
-            el('div', { class: 'cp-c3' }, summary),
-            el('div', { class: 'cp-c4' },
-              el('span', { class: 'cp-via cp-via-' + f.status }, f.status)),
-            el('div', { class: 'cp-c5' }, _fmtTs(f.observed_at)),
-          );
-        }),
-    );
-  mount.append(panel('04', 'VERIFIED FACTS — immutable audit trail',
-    'i-eval', factsBody));
+  const factsSection = el('section', { class: 'cp-doc-section', id: 'facts' },
+    el('h2', {}, 'Verified facts (audit trail)'),
+    el('p', { class: 'cp-doc-para' },
+      'Every successful analysis writes one or more rows into a separate, ' +
+      'append-only table: supply per chain, reserves per token. Each row ' +
+      'carries the claim type, the subject, the observed value, the sources ' +
+      'reconciled against, the block number, the timestamp, and a ' +
+      'sha256 content hash. Corrections insert a new row and link the prior ' +
+      'one as superseded; nothing is ever updated in place. This is the ' +
+      'audit trail that makes point-in-time replay possible: ask "what did ' +
+      'Doré report for USDC on 2026-04-30?" and the answer is a SQL window ' +
+      'query, not a guess.'),
+    el('p', { class: 'cp-doc-para cp-doc-aside' },
+      'The schema is intentionally generic. The same table will hold the ' +
+      'next claim type (agent payments) without a schema change — only ' +
+      'a new value of ',
+      el('code', {}, 'claim_type'), '.'),
+    facts.length === 0
+      ? el('p', { class: 'cp-doc-para cp-doc-aside' },
+          'No verified facts recorded yet in this process. The audit trail ' +
+          'populates on every successful analysis.')
+      : el('div', { class: 'cp-table' },
+          el('div', { class: 'cp-row cp-head' },
+            el('div', { class: 'cp-c1' }, 'CLAIM'),
+            el('div', { class: 'cp-c2' }, 'SUBJECT'),
+            el('div', { class: 'cp-c3' }, 'VALUE'),
+            el('div', { class: 'cp-c4' }, 'STATUS'),
+            el('div', { class: 'cp-c5' }, 'OBSERVED'),
+          ),
+          ...facts.map((f) => {
+            const v = f.value || {};
+            let summary = '';
+            if (f.claim_type === 'supply') {
+              summary = (v.supply !== undefined
+                ? Number(v.supply).toLocaleString(undefined,
+                    { maximumFractionDigits: 0 })
+                : '—') + ' on ' + (f.chain || '?');
+            } else if (f.claim_type === 'reserves') {
+              summary = '$' + (v.total_reserves_usd !== undefined
+                ? Number(v.total_reserves_usd).toLocaleString(undefined,
+                    { maximumFractionDigits: 0 })
+                : '—') + ' as of ' + (v.as_of_date || '?');
+            } else {
+              summary = JSON.stringify(v).slice(0, 60);
+            }
+            return el('div', { class: 'cp-row' },
+              el('div', { class: 'cp-c1' },
+                el('span', { class: 'cp-via cp-via-' + f.claim_type },
+                  f.claim_type)),
+              el('div', { class: 'cp-c2' }, f.subject),
+              el('div', { class: 'cp-c3' }, summary),
+              el('div', { class: 'cp-c4' },
+                el('span', { class: 'cp-via cp-via-' + f.status }, f.status)),
+              el('div', { class: 'cp-c5' }, _fmtTs(f.observed_at)),
+            );
+          }),
+      ),
+  );
+  doc.append(factsSection);
 
-  // ── Event tail ─────────────────────────────────────────────────────
-  const evBody = data.events.length === 0
-    ? el('div', { class: 'cp-na pb-pad' },
-        'No background events recorded yet in this process. The canary, ' +
-        'discovery thread, and any RPC degradation events will surface here.')
-    : el('div', { class: 'cp-events' },
-        ...data.events.map((e) => el('div', {
-          class: 'cp-event cp-lvl-' + (e.level || 'info'),
-        },
-          el('span', { class: 'cp-ev-ts' }, _fmtTs(
-            new Date((e.ts || 0) * 1000).toISOString())),
-          el('span', { class: 'cp-ev-kind' }, e.kind || ''),
-          el('span', { class: 'cp-ev-lvl' }, (e.level || 'info').toUpperCase()),
-          el('span', { class: 'cp-ev-detail' },
-            (e.symbol ? '[' + e.symbol + '] ' : '') +
-            (e.detail || e.error_message || e.url || '')),
-        )));
-  mount.append(panel('05', 'EVENT STREAM — most recent background work',
-    'i-eval', evBody));
+  // ── 5. Background events ───────────────────────────────────────────
+  const evSection = el('section', { class: 'cp-doc-section', id: 'events' },
+    el('h2', {}, 'Background events'),
+    el('p', { class: 'cp-doc-para' },
+      'Every external call Doré makes — RPC reads, attestation fetches, ' +
+      'OFAC SDN downloads, web-discovery queries, canary sweeps — emits a ' +
+      'structured event through ',
+      el('code', {}, 'sca.observability.log_event'),
+      '. The most recent 500 events live in a ring buffer that this page ' +
+      'reads from. Below is the tail filtered to the kinds that warrant ' +
+      'attention — discovery hits, source flips, RPC consensus degradation, ' +
+      'OFAC fetch failures.'),
+    data.events.length === 0
+      ? el('p', { class: 'cp-doc-para cp-doc-aside' },
+          'No background events recorded yet. The canary and discovery ' +
+          'thread will surface theirs here within the next sweep cycle.')
+      : el('div', { class: 'cp-events' },
+          ...data.events.map((e) => el('div', {
+            class: 'cp-event cp-lvl-' + (e.level || 'info'),
+          },
+            el('span', { class: 'cp-ev-ts' }, _fmtTs(
+              new Date((e.ts || 0) * 1000).toISOString())),
+            el('span', { class: 'cp-ev-kind' }, e.kind || ''),
+            el('span', { class: 'cp-ev-lvl' }, (e.level || 'info').toUpperCase()),
+            el('span', { class: 'cp-ev-detail' },
+              (e.symbol ? '[' + e.symbol + '] ' : '') +
+              (e.detail || e.error_message || e.url || '')),
+          ))),
+  );
+  doc.append(evSection);
+
+  // ── 6. How often things refresh ────────────────────────────────────
+  doc.append(el('section', { class: 'cp-doc-section', id: 'refresh' },
+    el('h2', {}, 'How often things refresh'),
+    el('p', { class: 'cp-doc-para' },
+      'Doré is designed for sustained operation — the background thread ' +
+      'keeps the data layer current so user-facing reads can be served from ' +
+      'cache without lying. Each artefact has its own refresh cadence:'),
+    el('table', { class: 'cp-refresh' },
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Artefact'),
+        el('th', {}, 'How often it refreshes'),
+        el('th', {}, 'Force-refresh path'),
+      )),
+      el('tbody', {},
+        el('tr', {},
+          el('td', {}, 'Live on-chain supply'),
+          el('td', {}, '60-second in-process cache; re-read on demand'),
+          el('td', {}, 'Reload the page'),
+        ),
+        el('tr', {},
+          el('td', {}, 'Attestation URL resolution'),
+          el('td', {}, '25-day store; background gap-sweep every 6 hours'),
+          el('td', {}, '"Refresh analysis" button (analyze surface)'),
+        ),
+        el('tr', {},
+          el('td', {}, 'Attestation PDF + extraction'),
+          el('td', {}, 'Per analysis run; cached 6h server-side'),
+          el('td', {}, '"Refresh analysis" button'),
+        ),
+        el('tr', {},
+          el('td', {}, 'OFAC SDN list'),
+          el('td', {}, 'Daily fetch; >7 days raises critical guardrail'),
+          el('td', {}, el('code', {}, 'sca refresh')),
+        ),
+        el('tr', {},
+          el('td', {}, 'Corpus source health (canary)'),
+          el('td', {}, 'Every 6 hours (SCA_HEALTH_INTERVAL_HOURS)'),
+          el('td', {}, el('code', {}, 'sca canary')),
+        ),
+        el('tr', {},
+          el('td', {}, 'Corpus discovery (new sources)'),
+          el('td', {}, 'Daily cron'),
+          el('td', {}, el('code', {}, 'sca discover')),
+        ),
+        el('tr', {},
+          el('td', {}, 'Verified facts (audit trail)'),
+          el('td', {}, 'Written on every analysis; never overwritten'),
+          el('td', {}, 'n/a — append-only'),
+        ),
+      ),
+    ),
+    el('p', { class: 'cp-doc-aside' },
+      'Anyone wanting an immediate re-read can hit the "refresh" action on ' +
+      'any surface — that bypasses every cache. The longer in-app caches ' +
+      'exist because the background thread keeps the underlying data fresh, ' +
+      'not because we are trying to hide staleness.'),
+  ));
 }
 
 // ════════════════════════════════════════════════════════════════════

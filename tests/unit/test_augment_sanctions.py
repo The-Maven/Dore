@@ -61,21 +61,26 @@ def test_augment_sanctions_prompt_mentions_key_fields():
     assert "sdn-list-critically-stale" in user
 
 
-def test_augment_sanctions_no_llm_returns_none(monkeypatch):
-    """When no LLM client is available, augmentation is a no-op — never
-    raises, never blocks the deterministic screen."""
+def test_augment_sanctions_no_llm_returns_deterministic_fallback(monkeypatch):
+    """The user's rule: never a bare n/a. When no LLM client is
+    available, we still produce a clearly-tagged deterministic context
+    card composed from what the registry knows about the token."""
     monkeypatch.setattr(augment, "fallback_llm", lambda: None)
-    assert augment.augment_sanctions_gap(_coin(), reason="x") is None
+    ctx = augment.augment_sanctions_gap(_coin(), reason="x")
+    assert ctx is not None
+    assert ctx.confidence == "deterministic-fallback"
+    assert ctx.surface == "sanctions"
+    assert ctx.text
 
 
 def test_augment_sanctions_swallows_llm_exception():
-    """Best-effort: any LLM exception drops the augmentation, never
-    propagates. The sanctions surface must keep functioning."""
+    """Best-effort: any LLM exception falls back to the deterministic
+    card rather than propagating or returning None."""
 
     class Boom:
         def extract_json(self, **_kw):
             raise RuntimeError("simulated LLM outage")
 
-    assert augment.augment_sanctions_gap(
-        _coin(), reason="x", llm=Boom(),
-    ) is None
+    ctx = augment.augment_sanctions_gap(_coin(), reason="x", llm=Boom())
+    assert ctx is not None
+    assert ctx.confidence == "deterministic-fallback"

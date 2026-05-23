@@ -575,14 +575,17 @@ def vote_source(
 
 
 @app.get("/api/supply/{symbol}")
-def supply(
-    symbol: str,
-    _rate: None = Depends(rate_limit_enforce),
-) -> dict[str, Any]:
+def supply(symbol: str) -> dict[str, Any]:
     """Live on-chain supply only — fast, no LLM, no attestation.
 
-    Rate-limited: a supply read still hits live RPCs and could be used to
-    burn a free-tier RPC budget if uncapped.
+    Intentionally NOT rate-limited at the HTTP layer: this endpoint is the
+    target of the F1 monitor's live poll loop (one read per token per
+    cycle) AND every analyze/sanctions/redemption job triggers an internal
+    supply read. The upstream RPC reads are already bounded by the
+    `_onchain._cache` (60s TTL) — re-reads inside that window are
+    in-process memory hits with no network cost. A per-IP HTTP bucket
+    here just makes the monitor flap "RPC-FAIL" for the user when their
+    own analyses race against the poll loop on the same IP.
     """
     try:
         # Canonicalize via the case-insensitive lookup so USDe / USDf / crvUSD
