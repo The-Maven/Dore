@@ -140,21 +140,15 @@ def _parse_ts(raw: Any) -> datetime | None:
 
 
 def _fresh_cached(surface: str, symbol: str) -> dict[str, Any] | None:
-    """Most recent completed analysis for a token, if computed < 10min ago.
+    """Most recent completed analysis for a token, if computed < 6h ago.
 
     Returns the instant-serve payload (status done, result, cached flag,
     computed_at) or None when there is nothing fresh to serve. Shared across
     all callers — the lookup is intentionally not scoped by user. Never
     raises: a store hiccup just falls through to running a real job.
     """
-    try:
-        rows = get_store().list_analyses(surface=surface, symbol=symbol, limit=1)
-    except Exception:  # noqa: BLE001 - never break on a store hiccup
-        return None
-    if not rows:
-        return None
-    row = rows[0]
-    if row.get("status") != "done" or not row.get("result"):
+    row = _latest_completed(surface, symbol)
+    if row is None:
         return None
     ts = _parse_ts(row.get("created_at"))
     if ts is None:
@@ -168,6 +162,25 @@ def _fresh_cached(surface: str, symbol: str) -> dict[str, Any] | None:
         "cached": True,
         "computed_at": row.get("created_at"),
     }
+
+
+def _latest_completed(surface: str, symbol: str) -> dict[str, Any] | None:
+    """Most recent completed analysis for (surface, symbol) regardless of
+    age. Used by the GET /api/cached endpoint so the frontend can render
+    yesterday's analysis instantly on page load while the freshness strip
+    tells the user the result is stale and offers a one-click refresh."""
+    try:
+        rows = get_store().list_analyses(
+            surface=surface, symbol=symbol, limit=1,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    if row.get("status") != "done" or not row.get("result"):
+        return None
+    return row
 
 
 # ── async analysis jobs ───────────────────────────────────────────────
@@ -297,6 +310,43 @@ def start_analysis(
         }
     _submit_job(job_id, _run_job, job_id, symbol, refresh, _uid(user), tier)
     return {"job_id": job_id, "symbol": symbol, "stages": _STAGES}
+
+
+_CACHED_SURFACES = {"attestation", "sanctions", "redemption"}
+
+
+@app.get("/api/cached/{surface}/{symbol}")
+def cached_result(surface: str, symbol: str) -> dict[str, Any]:
+    """Instant-render endpoint: return the most recent completed analysis
+    for (surface, symbol) regardless of age. The freshness strip on the
+    client decides whether to flag it as stale and prompt for refresh.
+
+    Lets every view render its last state on initial page load before
+    any RUN button is pressed — server restarts don't lose the picture
+    because the lookup is Store-backed, not in-memory."""
+    if surface not in _CACHED_SURFACES:
+        raise HTTPException(404, f"unknown surface: {surface}")
+    try:
+        canonical = config.get_stablecoin(symbol.upper()).symbol
+    except ValueError:
+        raise HTTPException(404, f"unknown stablecoin: {symbol}")
+    row = _latest_completed(surface, canonical)
+    if row is None:
+        return {"cached": False, "symbol": canonical, "surface": surface}
+    ts = _parse_ts(row.get("created_at"))
+    age_s = None
+    if ts is not None:
+        age_s = (datetime.now(timezone.utc) - ts).total_seconds()
+    return {
+        "cached": True,
+        "status": "done",
+        "result": row["result"],
+        "computed_at": row.get("created_at"),
+        "age_s": age_s,
+        "stale": age_s is not None and age_s > _CACHE_FRESH_S,
+        "symbol": canonical,
+        "surface": surface,
+    }
 
 
 @app.get("/api/analyze/{job_id}")

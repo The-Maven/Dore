@@ -2283,7 +2283,14 @@ function viewAnalyze(symbolFromHash) {
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
 
   if (symbolFromHash) {
-    startAnalysis(symbolFromHash, mount);
+    // Snappy on-load: try the Store-backed cache FIRST. If a result
+    // exists at any age, render it instantly without the job round-trip.
+    // For stale results we still render immediately; the freshness strip
+    // tells the user it's old and offers REFRESH. Only a true cache miss
+    // (or an explicit refresh later) triggers the staged job flow.
+    renderCachedOrRun('attestation', symbolFromHash, mount,
+                      () => startAnalysis(symbolFromHash, mount, true),
+                      (sym, m) => startAnalysis(sym, m));
   } else {
     mount.append(el('div', { class: 'empty' },
       icon('i-agent'),
@@ -2295,6 +2302,54 @@ function viewAnalyze(symbolFromHash) {
     // invitation to sign in so future runs are kept.
     renderHistory(mount);
   }
+}
+
+// Generic cached-first loader for analyze / sanctions / redemption.
+// surface is the server-side key ("attestation"/"sanctions"/"redemption");
+// onRefresh is what RUNs when the user hits REFRESH on a stale result;
+// onMiss is what RUNs on a true cache miss (no row at all yet).
+async function renderCachedOrRun(surface, symbol, mount, onRefresh, onMiss) {
+  STATE.activeSymbol = symbol;
+  setAnalyzeHeaderMark(symbol);
+  refreshInstruments();
+  // Briefly show a quiet placeholder so the surface never flashes empty
+  // even if the cache lookup itself takes a beat.
+  mount.innerHTML = '';
+  const placeholder = el('div', { class: 'empty' },
+    icon('i-agent'),
+    el('b', {}, 'Loading ' + symbol + '…'));
+  mount.append(placeholder);
+  let payload;
+  try {
+    payload = await api('/cached/' + surface + '/' + symbol);
+  } catch (e) {
+    mount.removeChild(placeholder);
+    onMiss(symbol, mount);
+    return;
+  }
+  if (!payload || !payload.cached) {
+    mount.removeChild(placeholder);
+    onMiss(symbol, mount);
+    return;
+  }
+  mount.removeChild(placeholder);
+  const result = payload.result;
+  const renderer = ({
+    attestation: renderAnalysis,
+    sanctions: renderSanctions,
+    redemption: renderRedemption,
+  })[surface];
+  if (!renderer) {
+    onMiss(symbol, mount);
+    return;
+  }
+  // Cached hit: render instantly. The freshness strip carries the
+  // computed_at + REFRESH; for stale rows it pulses prominently.
+  renderer(result, null, mount, payload.computed_at, onRefresh);
+  logLine('OK', surface.toUpperCase().slice(0, 8), [
+    seg(symbol.padEnd(5), 'lg-sym'),
+    seg(payload.stale ? 'stale cache' : 'fresh cache', payload.stale ? 'd-warn' : 'd-up'),
+  ]);
 }
 
 // ── analysis history — the saved-runs ledger, signed-in users only ──
@@ -3375,7 +3430,13 @@ function viewSurface(kind, symbolFromHash) {
   // screened). Either way the surface runs straight away — no dead-end.
   const symbol = symbolFromHash || STATE.activeSymbol || '';
   if (symbol) {
-    startSurfaceJob(kind, symbol, mount);
+    // Cached-first load: render the last completed result instantly if
+    // the Store has one, regardless of age. Only on a true miss do we
+    // start the job spinner.
+    const surfaceKey = (kind === 'sanctions') ? 'sanctions' : 'redemption';
+    renderCachedOrRun(surfaceKey, symbol, mount,
+                      () => startSurfaceJob(kind, symbol, mount, true),
+                      (sym, m) => startSurfaceJob(kind, sym, m));
   } else {
     // genuinely no token in context — render an in-view instrument picker
     // instead of a terse error. Picking a row runs the surface in place.
