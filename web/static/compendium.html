@@ -584,18 +584,22 @@ function render(data) {
     el('p', {},
       'Every fiat-backed stablecoin has a monthly attestation PDF ' +
       'published by an independent accountant. Issuers rotate URLs ' +
-      'frequently. Doré resolves a working URL through a six-step chain, ' +
-      'then writes the winner through to the database so a curator-set ' +
-      'value survives a redeploy. The YAML registry is only a seed.'),
+      'frequently; an attestation found this morning may have moved by ' +
+      'tomorrow. Doré resolves a working URL on every analysis through ' +
+      'a five-step chain — database override, in-memory cache, Paxos ' +
+      'pattern probe, web search, then transparency-page locator — ' +
+      'and writes the winner back to the database so the next read is ' +
+      'instant.'),
     el('p', {},
       'Below: every stablecoin Doré tracks. Tokens with no resolvable ' +
       'URL are listed first. The ',
       el('span', { class: 'via via-override' }, 'override'),
-      ' badge means the database is serving the URL; ',
-      el('span', { class: 'via via-seed' }, 'seed'),
-      ' means the YAML bootstrap; ',
+      ' badge means a curator (or a previous canary run) wrote the URL ' +
+      'to the database; ',
       el('span', { class: 'via via-web_search' }, 'web_search'),
-      ' means the background discovery thread found it.'),
+      ' means the background discovery thread found it via Brave; ',
+      el('span', { class: 'via via-locator' }, 'locator'),
+      ' means the static transparency-page scrape found it.'),
     el('div', { class: 'tbl' },
       el('div', { class: 'tbl-row tbl-head tbl-att' },
         el('div', {}, 'Token'),

@@ -34,6 +34,28 @@ agent never invents a figure. The opt-out flip changes the corpus
 Weight `primary` and `standard` first. For attestation analysis the
 examiner reasons from the rules, not from commentary.
 
+## How candidate sources arrive
+
+Two paths:
+
+1. **Curator hand-add** — a human writes the entry into `sources.yaml`
+   directly and stages the text. The classical path; still the right
+   choice for foundational documents (laws, accounting standards) the
+   curator already has on disk.
+2. **Agent-proposed via discovery** — the 6-hourly background thread
+   issues six typed Brave-augmented queries (regulator news,
+   attestation-standard updates, supervisory speeches, enforcement
+   actions, accounting guidance, BIS / IMF research) and surfaces
+   candidates a curator can promote or reject from the F3 Corpus view.
+   Discovery proposes; the curator disposes. Nothing enters the corpus,
+   citable or otherwise, until a human has reviewed it.
+
+The Brave layer is a *lead source* — it shortens the curator's research
+loop, it does not replace their judgement. See
+`src/sca/discovery_brave.py` for the query set; see
+`src/sca/web_discovery.py` for the origin-filter and authoritative-
+domain ranking that protects against drive-by S3 PDFs.
+
 ## Ingestion
 
 A source only contributes citable text once that text is staged at
