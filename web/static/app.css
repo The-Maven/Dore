@@ -1665,7 +1665,17 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .rstage.done .rs-mark { border-color: var(--green); background: var(--green); }
 .rstage .rs-tk { font-size: 9px; letter-spacing: .1em; color: var(--muted-2); }
 .scanbar {
-  height: 2px; overflow: hidden; position: relative; background: var(--line-2);
+  height: 3px; overflow: hidden; position: relative; background: var(--line-2);
+  --scan-pct: 0%;
+}
+/* Real progress fill driven by elapsed/expected ratio — sits underneath
+   the animated sweep so the user sees both "the system is alive"
+   (sweep) and "you're 60% of the typical time" (fill). */
+.scanbar::before {
+  content: ""; position: absolute; inset: 0;
+  width: var(--scan-pct);
+  background: linear-gradient(90deg, rgba(212,162,74,.45), rgba(212,162,74,.18));
+  transition: width .25s linear;
 }
 .scanbar::after {
   content: ""; position: absolute; inset: 0; width: 32%;
@@ -1673,6 +1683,29 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   animation: scan 1.3s linear infinite;
 }
 @keyframes scan { from { left: -34%; } to { left: 102%; } }
+
+/* Wait-hint row under the stages: "About 22 seconds typically" with a
+   small diamond mark in the gold accent so it reads as deliberate
+   metadata rather than a status flag. Amber when the run is overshooting,
+   rose when it's materially slow. */
+.rs-wait {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px 9px;
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  font-size: 10.5px; color: var(--muted-2); letter-spacing: .03em;
+  border-top: 1px solid var(--line-2);
+}
+.rs-wait-mark { color: var(--gold); font-size: 9px; }
+.rs-wait-txt { min-width: 0; }
+.rs-wait.rs-wait-over { color: var(--amber); }
+.rs-wait.rs-wait-over .rs-wait-mark { color: var(--amber); }
+.rs-wait.rs-wait-slow { color: var(--amber); background: rgba(247,185,85,.05); }
+.rs-wait.rs-wait-slow .rs-wait-mark { color: var(--amber); }
+
+/* Clock overrun styling: amber once we're past the typical time,
+   amber-bold once we're materially over. Mirrors the wait-hint state. */
+.rs-tk.rs-tk-overrun { color: var(--amber); }
+.rs-tk.rs-tk-slow    { color: var(--amber); font-weight: 600; }
 
 .empty {
   display: flex; flex-direction: column; align-items: center; gap: 8px;

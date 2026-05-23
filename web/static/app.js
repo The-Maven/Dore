@@ -1890,7 +1890,7 @@ function refreshTicker() {
   const track = $('#ticker-track');
   if (!track) return;
   if (!STATE.tokens.length) {
-    track.innerHTML = '<span class="tick-empty">awaiting on-chain reads…</span>';
+    track.innerHTML = '<span class="tick-empty">Loading on-chain reads…</span>';
     return;
   }
   track.innerHTML = '';
@@ -2227,6 +2227,52 @@ function fmtAgo(ms) {
   return Math.round(h / 24) + 'd ago';
 }
 
+// ── per-(surface,symbol) latency memory ─────────────────────────────
+// We keep the last few real run durations in localStorage so the user
+// can be told what to expect before the next run completes. The
+// average drives the "~Xs typical" hint beside the live clock, the
+// expected-vs-actual styling on the scanbar, and a "last run: Ns"
+// tooltip on the RE-RUN button. Fall-back defaults cover first-time
+// visitors who have no samples yet — typical real-world figures from
+// production runs, deliberately conservative so the user is pleasantly
+// surprised when a run is faster.
+const _LAT_KEY = (sf, sym) => 'rs.lat.' + sf + '.' + sym;
+const _LAT_MAX = 8;
+const _LAT_DEFAULT = { attestation: 28, sanctions: 14, redemption: 26, evals: 65 };
+
+function recordLatency(surface, symbol, seconds) {
+  if (!surface || !symbol || !seconds || seconds < 0.5) return;
+  try {
+    const arr = JSON.parse(localStorage.getItem(_LAT_KEY(surface, symbol)) || '[]');
+    arr.push(Math.round(seconds * 10) / 10);
+    while (arr.length > _LAT_MAX) arr.shift();
+    localStorage.setItem(_LAT_KEY(surface, symbol), JSON.stringify(arr));
+  } catch { /* private mode / quota — silent */ }
+}
+
+function expectedLatency(surface, symbol) {
+  try {
+    const arr = JSON.parse(localStorage.getItem(_LAT_KEY(surface, symbol)) || '[]');
+    if (arr.length) {
+      const sum = arr.reduce((a, b) => a + b, 0);
+      return { seconds: Math.round(sum / arr.length), source: 'measured', n: arr.length };
+    }
+  } catch { /* fall through */ }
+  return { seconds: _LAT_DEFAULT[surface] || 25, source: 'default', n: 0 };
+}
+
+// Plain-English wait hint shown beside the live clock + on the
+// RE-RUN tooltip. "~22s typical (last 5 runs)" or "~25s expected
+// (first run)" — never just a bare number with no context.
+function latencyHint(surface, symbol) {
+  const e = expectedLatency(surface, symbol);
+  if (e.source === 'measured') {
+    return '~' + e.seconds + 's typical (last ' + e.n + ' run' +
+      (e.n === 1 ? '' : 's') + ')';
+  }
+  return '~' + e.seconds + 's expected (first run for ' + symbol + ')';
+}
+
 // the quiet "computed Nm ago" line shown on every rendered result. Once
 // the result is older than ten minutes it grows a prominent REFRESH
 // element; clicking it re-runs with refresh:true (a real recompute, so
@@ -2245,16 +2291,29 @@ function freshnessStrip(computedAt, onRefresh) {
       'result is over six hours old'));
   }
   // One canonical refresh action, contextual to result age: prominent
-  // when stale, soft-ghost when fresh. Replaces the duplicate header
-  // "FORCE REFRESH" — every surface has the same one button in the
-  // same place.
+  // when stale, soft-ghost when fresh. Tooltip includes the
+  // last-N-runs average so the user knows what to expect before they
+  // commit to waiting through a recompute. Surface + symbol are
+  // resolved from STATE so this helper stays generic across F2/F5/F6.
+  const surface = ({
+    analyze: 'attestation', sanctions: 'sanctions', redemptions: 'redemption',
+  })[(location.hash || '').replace(/^#/, '').split('/')[0]] || 'attestation';
+  const sym = STATE.activeSymbol;
+  const lat = sym ? expectedLatency(surface, sym) : null;
+  const latLine = lat
+    ? ' A recompute typically takes about ' + lat.seconds + ' seconds'
+      + (lat.source === 'measured'
+          ? ' (averaged over your last ' + lat.n + ' run'
+            + (lat.n === 1 ? '' : 's') + ').'
+          : '.')
+    : '';
   const btn = el('button', {
     class: 'btn ' + (stale ? 'fresh-refresh' : 'ghost'),
     title: stale
       ? 'Re-run a full recompute — live RPCs + LLM. The staged progress '
-        + 'plays because this is a genuine recompute.'
+        + 'plays because this is a genuine recompute.' + latLine
       : 'Re-run from scratch. The cached result is still served instantly '
-        + 'if you re-open this page.',
+        + 'if you re-open this page.' + latLine,
     onclick: onRefresh,
   }, icon('i-supply'), stale ? 'REFRESH' : 'RE-RUN');
   strip.append(btn);
@@ -2478,10 +2537,19 @@ async function startAnalysis(symbol, mount, refresh = false) {
         el('div', { class: 'rs-sub' }, '')),
       el('span', { class: 'rs-tk' }, 'S' + pad2(i + 1))));
 
+  // Expected-wait hint: drives the live clock styling + the friendly
+  // "About 22 seconds typically" line beneath the stages so the user
+  // knows roughly how long this should take.
+  const expected = expectedLatency('attestation', symbol);
+  const waitHint = el('div', { class: 'rs-wait' },
+    el('span', { class: 'rs-wait-mark' }, '◇'),
+    el('span', { class: 'rs-wait-txt' }, latencyHint('attestation', symbol)));
+  const scanbar = el('div', { class: 'scanbar' });
   const progress = panel(null, 'JOB ' + job.job_id.toUpperCase() + ' · ' + symbol, 'i-agent',
     el('div', {},
       el('div', { class: 'run-stages' }, ...stageNodes),
-      el('div', { class: 'scanbar' })));
+      scanbar,
+      waitHint));
   // clock into the panel head
   $('.panel-head', progress).insertBefore(
     el('span', { class: 'rs-tk', style: 'margin-left:auto' }, ''), $('.panel-ic', progress));
@@ -2525,14 +2593,40 @@ async function startAnalysis(symbol, mount, refresh = false) {
     if (stage < stages.length - 1) { stage++; advance(); }
   }, 5200);
   const clockTimer = setInterval(() => {
-    const s = Math.round((Date.now() - t0) / 1000) + 's';
-    clockHost.textContent = s;
+    const elapsedS = Math.round((Date.now() - t0) / 1000);
+    // "8s / ~22s" while we're inside the expected window; once we've
+    // overshot, drop the divisor and flip the colour so the user knows
+    // this run is unusually slow rather than wondering if it stalled.
+    const over = elapsedS > expected.seconds * 1.5;
+    const wayOver = elapsedS > expected.seconds * 2.5;
+    clockHost.textContent = over
+      ? elapsedS + 's'
+      : elapsedS + 's / ~' + expected.seconds + 's';
+    clockHost.className = 'rs-tk' + (wayOver ? ' rs-tk-slow' :
+      over ? ' rs-tk-overrun' : '');
+    // Switch the friendly wait line to a reassuring "still working"
+    // message once we're materially past the typical time, rather than
+    // leaving the original "~Ns typical" up when it's clearly wrong.
+    if (wayOver) {
+      waitHint.classList.add('rs-wait-slow');
+      waitHint.querySelector('.rs-wait-txt').textContent =
+        'Taking longer than usual. The issuer page or LLM is slow today; '
+        + 'still working.';
+    } else if (over) {
+      waitHint.classList.add('rs-wait-over');
+      waitHint.querySelector('.rs-wait-txt').textContent =
+        'A little past the typical ' + expected.seconds + 's, still on track.';
+    }
+    // Scanbar fill mirrors the elapsed/expected ratio so the user sees
+    // material progress; clamps at 96% so it never falsely shows "done".
+    const pct = Math.min(96, Math.round((elapsedS / expected.seconds) * 100));
+    scanbar.style.setProperty('--scan-pct', pct + '%');
     if (stage !== lastLogged) {
       lastLogged = stage;
       logLine('WORK', 'ANALYZE', [
         seg(symbol.padEnd(5), 'lg-sym'),
         seg('stage ' + (stage + 1) + '/' + stages.length, 'lg-val'),
-        seg(s.padStart(4)),
+        seg((elapsedS + 's').padStart(4)),
         seg(stages[stage]),
       ]);
     }
@@ -2576,6 +2670,8 @@ async function startAnalysis(symbol, mount, refresh = false) {
     } else {
       const m = st.result.metrics;
       const gaps = (st.result.gaps || []).length;
+      // Record so future runs of this token get a tighter "~Ns typical" hint.
+      recordLatency('attestation', symbol, st.elapsed);
       logLine('OK', 'ANALYZE', [
         seg(symbol.padEnd(5), 'lg-sym'),
         seg('done ' + st.elapsed + 's', 'lg-val'),
@@ -3583,11 +3679,18 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
         el('div', { class: 'rs-sub' }, '')),
       el('span', { class: 'rs-tk' }, 'S' + pad2(i + 1))));
 
+  const surfaceKey = (kind === 'sanctions') ? 'sanctions' : 'redemption';
+  const expected = expectedLatency(surfaceKey, symbol);
+  const waitHint = el('div', { class: 'rs-wait' },
+    el('span', { class: 'rs-wait-mark' }, '◇'),
+    el('span', { class: 'rs-wait-txt' }, latencyHint(surfaceKey, symbol)));
+  const scanbar = el('div', { class: 'scanbar' });
   const progress = panel(null,
     'JOB ' + job.job_id.toUpperCase() + ' · ' + symbol, cfg.icon,
     el('div', {},
       el('div', { class: 'run-stages' }, ...stageNodes),
-      el('div', { class: 'scanbar' })));
+      scanbar,
+      waitHint));
   $('.panel-head', progress).insertBefore(
     el('span', { class: 'rs-tk', style: 'margin-left:auto' }, ''),
     $('.panel-ic', progress));
@@ -3627,8 +3730,27 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
     if (stage < stages.length - 1) { stage++; advance(); }
   }, 5200);
   const clockTimer = setInterval(() => {
-    const s = Math.round((Date.now() - t0) / 1000) + 's';
-    clockHost.textContent = s;
+    const elapsedS = Math.round((Date.now() - t0) / 1000);
+    const over = elapsedS > expected.seconds * 1.5;
+    const wayOver = elapsedS > expected.seconds * 2.5;
+    clockHost.textContent = over
+      ? elapsedS + 's'
+      : elapsedS + 's / ~' + expected.seconds + 's';
+    clockHost.className = 'rs-tk' + (wayOver ? ' rs-tk-slow' :
+      over ? ' rs-tk-overrun' : '');
+    if (wayOver) {
+      waitHint.classList.add('rs-wait-slow');
+      waitHint.querySelector('.rs-wait-txt').textContent =
+        'Taking longer than usual. Still working — most often a slow '
+        + 'issuer page or LLM response.';
+    } else if (over) {
+      waitHint.classList.add('rs-wait-over');
+      waitHint.querySelector('.rs-wait-txt').textContent =
+        'A little past the typical ' + expected.seconds + 's, still on track.';
+    }
+    const pct = Math.min(96, Math.round((elapsedS / expected.seconds) * 100));
+    scanbar.style.setProperty('--scan-pct', pct + '%');
+    const s = elapsedS + 's';
     if (stage !== lastLogged) {
       lastLogged = stage;
       logLine('WORK', cfg.logTag, [
@@ -3677,6 +3799,8 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
         { onRetry: () => startSurfaceJob(kind, symbol, mount, true),
           retryLabel: 'TRY AGAIN' }));
     } else {
+      const sk = (kind === 'sanctions') ? 'sanctions' : 'redemption';
+      recordLatency(sk, symbol, st.elapsed);
       cfg.render(st.result, st.elapsed, mount,
         new Date().toISOString(),
         () => startSurfaceJob(kind, symbol, mount, true));
