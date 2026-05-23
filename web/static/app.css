@@ -1490,14 +1490,14 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
    a verified figure. Designed to be the first thing the eye lands on. */
 .brief-hero {
   margin: 0 14px 12px;
-  padding: 14px 18px 16px;
+  padding: 16px 20px 18px;
   background: linear-gradient(
-    180deg, rgba(212,162,74,.07) 0%, rgba(212,162,74,.025) 100%
+    180deg, rgba(212,162,74,.035) 0%, rgba(212,162,74,.012) 100%
   );
-  border: 1px solid rgba(212,162,74,.4);
-  border-left: 4px solid var(--gold);
+  border: 1px solid rgba(212,162,74,.22);
+  border-left: 3px solid rgba(212,162,74,.65);
   border-radius: 2px;
-  display: flex; flex-direction: column; gap: 10px;
+  display: flex; flex-direction: column; gap: 12px;
 }
 .brief-kick-row {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -1521,9 +1521,9 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 .brief-headline {
   font-family: 'Bodoni Moda', 'Inter Tight', serif;
-  font-size: 22px; line-height: 1.3; font-weight: 600;
+  font-size: 23px; line-height: 1.42; font-weight: 600;
   color: var(--paper);
-  letter-spacing: -.01em;
+  letter-spacing: -.005em;
 }
 .brief-points {
   margin: 0; padding-left: 18px;
@@ -1533,7 +1533,7 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .brief-point {
   position: relative;
   font-family: 'Inter Tight', sans-serif;
-  font-size: 13px; line-height: 1.5;
+  font-size: 13.5px; line-height: 1.6;
   color: var(--paper);
   padding-left: 12px;
 }

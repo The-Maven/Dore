@@ -5257,9 +5257,14 @@ async function boot() {
     if (e.key === '/' && document.activeElement !== ci) { e.preventDefault(); ci.focus(); }
   });
 
-  // sidebar nav links
+  // sidebar nav links — let target="_blank" or modifier-clicked links
+  // through to the browser; only intercept same-tab hash routes.
   document.querySelectorAll('.side-row').forEach((l) => {
     l.addEventListener('click', (e) => {
+      if (l.target === '_blank' || e.metaKey || e.ctrlKey ||
+          e.shiftKey || e.button !== 0) {
+        return;
+      }
       e.preventDefault();
       location.hash = '#' + l.dataset.route;
     });
