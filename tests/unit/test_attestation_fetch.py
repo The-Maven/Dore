@@ -17,18 +17,36 @@ def test_fresh_cache_url_is_reused(monkeypatch, tmp_path):
     }
 
 
+def _with_seed(monkeypatch, symbol: str, seed_url: str):
+    """YAML seeds were removed in favour of DB-backed overrides; tests
+    that need to exercise the seed-step branch monkeypatch a replacement
+    Stablecoin object onto the registry (the dataclass is frozen, so we
+    rebuild it with the seed field set)."""
+    import dataclasses
+    from sca import config
+    coin = config.get_stablecoin(symbol)
+    seeded = dataclasses.replace(coin, latest_attestation_url=seed_url)
+    coins = dict(config.stablecoins())
+    coins[symbol] = seeded
+    monkeypatch.setattr(config, "stablecoins", lambda: coins)
+    monkeypatch.setattr(config, "get_stablecoin",
+                        lambda s: coins.get(s.upper(), seeded))
+
+
 def test_stale_cache_is_re_resolved(monkeypatch, tmp_path):
     monkeypatch.setattr(af, "_CACHE", tmp_path / "c.json")
     af._save_cache({"USDC": {"url": "https://x.com/old.pdf",
                              "resolved_at": "2020-01-01"}})
     monkeypatch.setattr(af, "_head_ok", lambda url, **k: True)
-    # Stale entry -> cache skipped -> seed used (USDC has a seed URL).
+    # Stale entry -> cache skipped -> seed used (test injects a seed).
+    _with_seed(monkeypatch, "USDC", "https://x.com/seed.pdf")
     assert resolve_url("USDC")["via"] == "seed"
 
 
 def test_seed_used_when_no_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(af, "_CACHE", tmp_path / "c.json")
     monkeypatch.setattr(af, "_head_ok", lambda url, **k: True)
+    _with_seed(monkeypatch, "USDC", "https://x.com/seed.pdf")
     assert resolve_url("USDC")["via"] == "seed"
 
 

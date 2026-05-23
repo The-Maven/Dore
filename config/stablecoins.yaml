@@ -69,7 +69,6 @@ stablecoins:
     name: USD Coin
     issuer: Circle
     transparency_url: https://www.circle.com/transparency
-    latest_attestation_url: "https://6778953.fs1.hubspotusercontent-na1.net/hubfs/6778953/USDCAttestationReports/2026/2026%20USDC_Examination%20Report%20March%2026.pdf"
     deployments:
       - {chain: ethereum, contract: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", verified: true}
       - {chain: base, contract: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", verified: false}
@@ -86,7 +85,6 @@ stablecoins:
     # This is the most recent reachable PDF (Oct 31 2025). The background
     # thread discovers later quarters when SCA_WEB_SEARCH_PROVIDER is set;
     # the staleness guardrail flags age honestly in the interim.
-    latest_attestation_url: "https://tether.io/wp-content/uploads/2025/10/ISAE-3000R-Opinion-Tether-International-Financial-Figure-31-10-2025-RC187322025BD0440-Fascicolo.pdf"
     deployments:
       - {chain: ethereum, contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7", verified: true}
       - {chain: tron, contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", verified: false}
@@ -109,7 +107,6 @@ stablecoins:
     name: PayPal USD
     issuer: Paxos
     transparency_url: https://www.paxos.com/pyusd-transparency
-    latest_attestation_url: ""
     deployments:
       - {chain: ethereum, contract: "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8", verified: false}
       # Source: PayPal/Paxos Solana whitepaper — SPL Token-2022 mint.
@@ -121,7 +118,6 @@ stablecoins:
     name: Pax Dollar
     issuer: Paxos
     transparency_url: https://www.paxos.com/usdp-transparency
-    latest_attestation_url: ""
     deployments:
       - {chain: ethereum, contract: "0x8E870D67F660D95d5be530380D0eC0bd388289E1", verified: false}
 
@@ -129,7 +125,6 @@ stablecoins:
     name: Global Dollar
     issuer: Paxos
     transparency_url: https://www.paxos.com/usdg-transparency
-    latest_attestation_url: ""
     deployments:
       - {chain: ethereum, contract: "0xe343167631d89B6Ffc58B88d6b7fB0228795491D", verified: false}
 
@@ -147,7 +142,6 @@ stablecoins:
     # via the Chainlink feed.
     transparency_url: https://tusd.io/transparency
     protocol_url: https://data.chain.link/feeds/ethereum/mainnet/tusd-por
-    latest_attestation_url: "https://protos-media.s3.eu-west-2.amazonaws.com/wp-content/uploads/2025/01/09173311/trueusd-attestation-2025-01-09.pdf"
     deployments:
       - {chain: ethereum, contract: "0x0000000000085d4780B73119b644AE5ecd22b376", verified: false}
 
@@ -159,7 +153,6 @@ stablecoins:
     # sit on Next.js/Contentful infra the locator can't reach yet; the
     # staleness guardrail flags the age, and `sca refresh` updates it when a
     # reachable newer source exists.
-    latest_attestation_url: "https://assets.ctfassets.net/jg6lo9a2ukvr/44zQHA7FLzJFkk7d4e9bDS/abbf4cd6c4a295f991d9674d874d6271/Gemini_Trust_Company__LLC_-_GUSD_Reserves_Report_July_2025.pdf"
     deployments:
       - {chain: ethereum, contract: "0x056Fd409E1d7A124BD7017459dFEa2F387b6d5Cd", verified: false}
 
@@ -167,7 +160,6 @@ stablecoins:
     name: First Digital USD
     issuer: First Digital
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       - {chain: ethereum, contract: "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409", verified: false}
 
@@ -176,7 +168,6 @@ stablecoins:
     issuer: Circle
     peg: EUR
     transparency_url: https://www.circle.com/transparency
-    latest_attestation_url: "https://6778953.fs1.hubspotusercontent-na1.net/hubfs/6778953/EURC%20Attestations/2026%20EURC_Examination%20Report%20March%2026.pdf"
     deployments:
       - {chain: ethereum, contract: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c", verified: false}
 
@@ -191,7 +182,6 @@ stablecoins:
     backing_model: crypto_collateral
     protocol_url: https://makerburn.com
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       # Source: etherscan.io / Maker Protocol docs (docs.makerdao.com)
       - {chain: ethereum, contract: "0x6B175474E89094C44Da98b954EedeAC495271d0F", verified: false}
@@ -207,7 +197,6 @@ stablecoins:
     backing_model: crypto_collateral
     protocol_url: https://sky.money
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       # Source: etherscan.io (Sky: USDS Token) / basescan.org
       - {chain: ethereum, contract: "0xdC035D45d973E3EC169d2276DDab16f1e407384F", verified: false}
@@ -219,7 +208,6 @@ stablecoins:
     backing_model: synthetic_delta_neutral
     protocol_url: https://app.ethena.fi/dashboards/transparency
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       # Source: Ethena docs (docs.ethena.fi/solution-design/key-addresses)
       - {chain: ethereum, contract: "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3", verified: false}
@@ -237,7 +225,6 @@ stablecoins:
     backing_model: fiat_reserves
     protocol_url: https://docs.worldlibertyfinancial.com/usd1-token/attestation-reports
     transparency_url: https://www.bitgo.com/usd1/attestations/
-    latest_attestation_url: "https://landing.bitgo.com/rs/552-OGK-141/images/USD1_Reserve_Attestation_Report_January_2026.pdf?version=0"
     deployments:
       # Source: WLFI docs (docs.worldlibertyfinancial.com/usd1-token/contract-addresses)
       - {chain: ethereum, contract: "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d", verified: false}
@@ -251,7 +238,6 @@ stablecoins:
     backing_model: crypto_collateral
     protocol_url: https://app.frax.finance/dashboard
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       # Source: Frax docs (docs.frax.finance) / etherscan.io
       - {chain: ethereum, contract: "0x853d955aCEf822Db058eb8505911ED77F175b99e", verified: false}
@@ -262,7 +248,6 @@ stablecoins:
     backing_model: crypto_collateral
     protocol_url: https://crvusd.curve.fi
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       # Source: etherscan.io (Curve: crvUSD Token) / basescan.org
       - {chain: ethereum, contract: "0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E", verified: false}
@@ -274,7 +259,6 @@ stablecoins:
     backing_model: crypto_collateral
     protocol_url: https://aave.com/docs/developers/gho
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       # Source: Aave docs (aave.com/docs/developers/gho)
       - {chain: ethereum, contract: "0x40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f", verified: false}
@@ -286,7 +270,6 @@ stablecoins:
     name: Ripple USD
     issuer: Ripple
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       # Source: Ripple docs / etherscan.io. RLUSD is also native on the XRP
       # Ledger, which the registry has no chain entry for — XRPL deployment
@@ -299,7 +282,6 @@ stablecoins:
     backing_model: algorithmic
     protocol_url: https://usdd.io
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       # Source: etherscan.io (USDD: USDD Token) / tronscan.org
       - {chain: ethereum, contract: "0x373ddd78391aB3452B31503D6Aa6b47C41697e0a", verified: false}
@@ -313,7 +295,6 @@ stablecoins:
     # Liquity is immutable / governance-free; backing is ETH on-chain — no
     # fiat reserve attestation by design.
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       # Source: etherscan.io (LUSDToken, verified) / docs.liquity.org
       - {chain: ethereum, contract: "0x5f98805A4E8be255a32880FDeC7F6728C6568bA0", verified: false}
@@ -329,7 +310,6 @@ stablecoins:
     protocol_url: https://abracadabra.money
     # Crypto-collateralised via interest-bearing tokens; no fiat reserve.
     transparency_url: ""
-    latest_attestation_url: ""
     deployments:
       # Source: etherscan.io / docs.abracadabra.money
       - {chain: ethereum, contract: "0x99D8a9C45b2ecA8864373A26D1459e3Dff1e17F3", verified: false}
@@ -342,7 +322,6 @@ stablecoins:
     name: Agora Dollar
     issuer: Agora
     transparency_url: https://www.agora.finance/
-    latest_attestation_url: ""
     deployments:
       # Source: docs.agora.finance/developer/contract-deployments — same
       # zero-vanity address across all native EVM chains; distinct Solana mint.
@@ -368,7 +347,6 @@ stablecoins:
     backing_model: crypto_collateral
     transparency_url: https://docs.mountainprotocol.com/wind-down-documentation/ongoing-proof-of-reserves
     protocol_url: https://mountainprotocol.com/
-    latest_attestation_url: ""
     deployments:
       # Source: docs.mountainprotocol.com — canonical address across most chains.
       - {chain: ethereum, contract: "0x59D9356E565Ab3A36dD77763Fc0d87fEaf85508C", verified: false}
@@ -384,7 +362,6 @@ stablecoins:
     peg: EUR
     # MiCA-compliant EMT issued by Banking Circle S.A.; EY attestations.
     transparency_url: https://eurite.com/
-    latest_attestation_url: ""
     deployments:
       # Source: etherscan.io (EURITE token, verified contract); same address on BSC.
       - {chain: ethereum, contract: "0x9d1A7A3191102e9f900FAa10540837ba84dcbae7", verified: false}
@@ -394,8 +371,9 @@ stablecoins:
     name: Anchored Coins EUR
     issuer: Anchored Coins
     peg: EUR
-    transparency_url: https://www.anchoredcoins.com/
-    latest_attestation_url: ""
+    # The marketing homepage is not a transparency page; the actual
+    # transparency section lives on the per-token landing page.
+    transparency_url: https://www.anchoredcoins.com/en/landing/aeur
     deployments:
       # Source: etherscan.io (Anchored Coins EUR token page).
       - {chain: ethereum, contract: "0xA40640458FBc27b6EefEdeA1E9C9E17d4ceE7a21", verified: false}
@@ -408,7 +386,6 @@ stablecoins:
     # Overcollateralised synthetic dollar; backing is on-chain collateral
     # plus delta-neutral hedges — no fiat reserve attestation.
     transparency_url: https://falcon.finance/
-    latest_attestation_url: ""
     deployments:
       # Source: etherscan.io (Falcon USD token, verified) / falcon.finance
       - {chain: ethereum, contract: "0xFa2B947eEc368f42195f24F36d2aF29f7c24CeC2", verified: false}

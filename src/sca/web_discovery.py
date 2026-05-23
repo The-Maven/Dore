@@ -166,14 +166,132 @@ def _head_is_pdf(url: str) -> bool:
     return "pdf" in ct or url.lower().endswith(".pdf")
 
 
+def _is_acceptable_origin(url: str, known_domain: str, symbol: str) -> bool:
+    """Reject PDFs hosted on origins we can't relate to the issuer.
+
+    A HEAD-200 PDF response is necessary but not sufficient. Search
+    backends sometimes return PDFs from completely unrelated S3 buckets
+    or content farms that happen to have the symbol in their filename.
+    A PDF we'd display as "the issuer's attestation" needs at minimum:
+      - the issuer's own domain, OR
+      - a known authoritative-domain cluster (issuer CDNs, regulators,
+        auditors, Protos / news mirrors that re-host real attestations).
+    Hosts in neither bucket are rejected — "search is a lead, never a
+    fact" enforced at the URL boundary.
+    """
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    if not host:
+        return False
+    # Strip leading www. for matching.
+    bare = host[4:] if host.startswith("www.") else host
+    # Always accept the registry-known issuer domain (and its subdomains).
+    if known_domain:
+        kd = known_domain.lower()
+        if kd.startswith("www."):
+            kd = kd[4:]
+        if bare == kd or bare.endswith("." + kd):
+            return True
+    # Always accept any authoritative-domain match (issuer CDNs already
+    # in the trust list, regulators, auditors, Chainlink PoR).
+    if _domain_trust_rank(url) <= 1:
+        return True
+    # Accept known re-hosters for archived issuer attestations.
+    REHOSTERS = (
+        "protos-media.s3.eu-west-2.amazonaws.com",  # Protos mirror
+        "cdn.prod.website-files.com",  # Webflow CDN — used by issuers
+        "cdn.sanity.io",  # Sanity CDN — Ripple/RLUSD
+        "files.buildwithfern.com",  # Fern docs — Agora/AUSD
+        "assets.ctfassets.net",  # Contentful — Gemini/USDT
+        "landing.bitgo.com",  # BitGo — USD1 mailings
+        "ctfassets.net",
+        "hubspotusercontent-na1.net",  # HubSpot — Circle
+    )
+    if any(rh in bare for rh in REHOSTERS):
+        return True
+    # Otherwise reject — symbol-in-filename on an unknown S3 bucket is
+    # exactly the SEO spam / impersonation surface we don't trust.
+    log_event(
+        "web_discovery.rejected_unknown_origin", level="info",
+        symbol=symbol, host=host, url=url,
+    )
+    return False
+
+
+def _head_is_pdf_from_trusted(
+    url: str, known_domain: str, symbol: str,
+) -> bool:
+    """Two-gate check: real PDF AND from an origin we can relate to the
+    issuer. Used everywhere a search candidate would otherwise become
+    the displayed attestation source."""
+    return _head_is_pdf(url) and _is_acceptable_origin(
+        url, known_domain, symbol,
+    )
+
+
 # ── search backends ───────────────────────────────────────────────────
+# Transient retry policy: Brave's free tier rate-limits at 1 query / 1s.
+# DuckDuckGo's HTML endpoint occasionally returns CAPTCHA HTML when
+# scraped too fast. Both deserve a short exponential backoff before we
+# give up — a single 429 or read-timeout shouldn't blank a discovery
+# cycle that the canary won't retry for 6h.
+_RETRY_DELAYS = (1.2, 3.5, 7.0)  # ~12s total, well under HTTP_TIMEOUT
+_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
+
+def _retryable_get(method: str, *args, **kwargs):
+    """requests.{get,post} with exponential backoff on transient failures.
+
+    Returns the final Response (or raises). Retries on:
+      - connection errors / read timeouts
+      - HTTP 408 / 425 / 429 / 500–504
+    Other 4xx are returned as-is so the caller can decide.
+    """
+    import time as _t
+    fn = getattr(requests, method)
+    last_exc: Exception | None = None
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        try:
+            resp = fn(*args, **kwargs)
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt == len(_RETRY_DELAYS):
+                raise
+            log_event(
+                "web_discovery.retry", level="info",
+                method=method, attempt=attempt + 1,
+                error_class=type(exc).__name__,
+            )
+            _t.sleep(_RETRY_DELAYS[attempt])
+            continue
+        if resp.status_code in _RETRYABLE_STATUS \
+                and attempt < len(_RETRY_DELAYS):
+            log_event(
+                "web_discovery.retry", level="info",
+                method=method, attempt=attempt + 1,
+                status_code=resp.status_code,
+            )
+            _t.sleep(_RETRY_DELAYS[attempt])
+            continue
+        return resp
+    if last_exc:
+        raise last_exc
+    return resp  # last response after final retry — caller checks status
+
+
 def _search_brave(query: str) -> list[str]:
-    """Brave Search API — JSON results, freemium."""
+    """Brave Search API — JSON results, freemium. Retries transient
+    failures (429 / timeouts) so a momentary rate-limit doesn't blank
+    the discovery cycle."""
     key = _api_key()
     if not key:
         return []
     try:
-        resp = requests.get(
+        resp = _retryable_get(
+            "get",
             "https://api.search.brave.com/res/v1/web/search",
             params={"q": query, "count": _MAX_RESULTS},
             headers={**_UA, "Accept": "application/json",
@@ -315,7 +433,8 @@ def _search_duckduckgo(query: str) -> list[str]:
     import re as _re
     from urllib.parse import unquote as _unquote
     try:
-        resp = requests.post(
+        resp = _retryable_get(
+            "post",
             "https://html.duckduckgo.com/html/",
             data={"q": query},  # `kl` locale filter empties the response set
             headers={**_UA, "Accept": "text/html"},
@@ -470,11 +589,18 @@ def _log_disabled_once() -> None:
 
 def discover_attestation_url(
     symbol: str, issuer: str = "", *, refresh: bool = False,
+    known_domain: str = "",
 ) -> str | None:
     """Find a fresh attestation PDF URL for `symbol` via web search.
 
     Returns a HEAD-checked PDF URL or None. Cached per-symbol for the
     attestation cadence so we don't reburn the search quota.
+
+    `known_domain` is the issuer's authoritative domain (typically
+    derived by the caller from `token.transparency_url`). When supplied
+    it becomes the FIRST third-hop `site:` query — preventing the
+    discovery from drifting onto an unrelated issuer's pages when
+    Brave's first round doesn't surface the real issuer site.
     """
     provider = _provider()
     if not provider or provider == "off":
@@ -522,11 +648,13 @@ def discover_attestation_url(
     if not candidates:
         return None
 
-    # Filter to PDF-looking URLs first (cheap), then HEAD-check.
+    # Filter to PDF-looking URLs first (cheap), then HEAD-check + origin
+    # check. Origin check rejects PDFs from unknown S3 buckets etc. that
+    # happen to have the symbol in the filename — see _is_acceptable_origin.
     pdf_like = [u for u in candidates if u.lower().endswith(".pdf")
                 or "/wp-content/" in u.lower()]
     for url in pdf_like or candidates:
-        if _head_is_pdf(url):
+        if _head_is_pdf_from_trusted(url, known_domain, symbol):
             cache[symbol] = {
                 "url": url,
                 "via": "web_search",
@@ -567,7 +695,7 @@ def discover_attestation_url(
     for page_url in locator_candidates:
         try:
             found = _locate(page_url, symbol=symbol)
-        except (LocatorUnavailable, requests.RequestException) as exc:
+        except Exception as exc:  # noqa: BLE001 - any locator failure
             log_event(
                 "web_discovery.second_hop_failed", level="info",
                 symbol=symbol, page_url=page_url,
@@ -575,7 +703,8 @@ def discover_attestation_url(
             )
             continue
         pdf_url = found.get("url") if isinstance(found, dict) else None
-        if pdf_url and _head_is_pdf(pdf_url):
+        if pdf_url and _head_is_pdf_from_trusted(
+                pdf_url, known_domain, symbol):
             cache[symbol] = {
                 "url": pdf_url,
                 "via": "web_search+locator",
@@ -591,6 +720,127 @@ def discover_attestation_url(
                 source_page=page_url,
             )
             return pdf_url
+
+    # Third hop: domain-scoped follow-up search. When the top candidates
+    # were SPAs the locator couldn't scrape (Anchored Coins, Paxos,
+    # Mountain Protocol style), ask Brave again with a `site:` operator
+    # constrained to the issuer's domain. Brave indexes per-token landing
+    # pages that the static scraper can't reach.
+    #
+    # The KNOWN issuer domain (passed in from the registry's
+    # transparency_url) is always queried first — first-round search
+    # results sometimes don't surface the real issuer at all (a Circle
+    # blog about USDC ranking #1 for an AEUR query, etc), and trusting
+    # the search-ranked top would drift onto the wrong issuer's pages.
+    from urllib.parse import urlparse as _urlparse
+    seen_domains: set[str] = set()
+    issuer_domains: list[str] = []
+
+    def _push_domain(host: str) -> None:
+        if not host or host in seen_domains:
+            return
+        seen_domains.add(host)
+        if any(skip in host for skip in (
+            "coinmarketcap.", "coingecko.", "messari.", "mexc.",
+            "binance.", "coinbase.", "kraken.", "tokeninsight.",
+            "stableregistry.", "coinlaw.", "stablecoininsider.",
+            "defillama.", "eco.com", "bpm.com",
+        )):
+            return
+        issuer_domains.append(host)
+
+    # 1. Known issuer domain from the registry — most trusted.
+    if known_domain:
+        kd = known_domain.lower()
+        if kd.startswith("www."):
+            kd = kd[4:]
+        _push_domain(kd)
+
+    # 2. Top search-ranked domains as fallback.
+    for u in candidates[:6]:
+        if len(issuer_domains) >= 3:
+            break
+        try:
+            host = (_urlparse(u).hostname or "").lower()
+            if host.startswith("www."):
+                host = host[4:]
+        except Exception:  # noqa: BLE001
+            continue
+        _push_domain(host)
+    for domain in issuer_domains:
+        follow_query = (
+            f"site:{domain} {symbol} attestation report OR reserves PDF"
+        )
+        log_event(
+            "web_discovery.third_hop.start", level="info",
+            symbol=symbol, query=follow_query,
+        )
+        try:
+            domain_results = backend(follow_query)
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                "web_discovery.third_hop.error", level="warn",
+                symbol=symbol, domain=domain,
+                error_class=type(exc).__name__,
+            )
+            continue
+        log_event(
+            "web_discovery.third_hop.results", level="info",
+            symbol=symbol, domain=domain, count=len(domain_results),
+        )
+        # Same accept-PDF discipline + origin check.
+        for url in domain_results:
+            if _head_is_pdf_from_trusted(url, known_domain, symbol):
+                cache[symbol] = {
+                    "url": url,
+                    "via": "web_search+domain_scoped",
+                    "provider": provider,
+                    "resolved_at": date.today().isoformat(),
+                    "query": follow_query,
+                    "source_domain": domain,
+                }
+                _save_cache(cache)
+                log_event(
+                    "web_discovery.hit", level="info",
+                    symbol=symbol, provider=provider, url=url,
+                    source_domain=domain, via="domain_scoped",
+                )
+                return url
+        # No direct PDF — try the locator on the top non-PDF result
+        # from this domain-scoped query.
+        for page_url in domain_results[:2]:
+            if page_url.lower().endswith(".pdf"):
+                continue
+            try:
+                from sca.tools.attestation_locator import (
+                    LocatorUnavailable, resolve_attestation_url as _locate,
+                )
+                found = _locate(page_url, symbol=symbol)
+            except (LocatorUnavailable, requests.RequestException, Exception) as exc:  # noqa: BLE001
+                log_event(
+                    "web_discovery.third_hop.locator_failed", level="info",
+                    symbol=symbol, page_url=page_url,
+                    error_class=type(exc).__name__,
+                )
+                continue
+            pdf_url = found.get("url") if isinstance(found, dict) else None
+            if pdf_url and _head_is_pdf_from_trusted(
+                    pdf_url, known_domain, symbol):
+                cache[symbol] = {
+                    "url": pdf_url,
+                    "via": "web_search+domain_scoped+locator",
+                    "provider": provider,
+                    "resolved_at": date.today().isoformat(),
+                    "query": follow_query,
+                    "source_page": page_url,
+                }
+                _save_cache(cache)
+                log_event(
+                    "web_discovery.hit", level="info",
+                    symbol=symbol, provider=provider, url=pdf_url,
+                    source_page=page_url, via="domain_scoped+locator",
+                )
+                return pdf_url
 
     log_event(
         "web_discovery.no_pdf", level="warn",

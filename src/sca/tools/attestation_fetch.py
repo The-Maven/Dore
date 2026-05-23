@@ -168,7 +168,21 @@ def resolve_url(symbol: str, *, refresh: bool = False) -> dict:
     # surfaces the gap rather than silently swallowing it.
     try:
         from sca.web_discovery import discover_attestation_url
-        web_url = discover_attestation_url(symbol, token.issuer)
+        # Derive the issuer's known domain from transparency_url so the
+        # domain-scoped third hop searches the right site even when the
+        # first-round results miss the issuer entirely.
+        known_domain = ""
+        if token.transparency_url:
+            try:
+                from urllib.parse import urlparse
+                known_domain = (
+                    urlparse(token.transparency_url).hostname or ""
+                ).lower().removeprefix("www.")
+            except Exception:  # noqa: BLE001
+                pass
+        web_url = discover_attestation_url(
+            symbol, token.issuer, known_domain=known_domain,
+        )
     except Exception as exc:  # noqa: BLE001 - discovery is best-effort
         from sca.observability import log_event
         log_event(

@@ -52,10 +52,25 @@ def test_override_last_write_wins(monkeypatch, tmp_path):
     assert out["via"] == "store_override"
 
 
+def _with_seed(monkeypatch, symbol: str, seed_url: str):
+    """YAML seeds were removed in favour of DB-backed overrides; tests
+    that need to exercise the seed-step branch monkeypatch a replacement
+    Stablecoin object onto the registry (the dataclass is frozen)."""
+    import dataclasses
+    from sca import config
+    coin = config.get_stablecoin(symbol)
+    seeded = dataclasses.replace(coin, latest_attestation_url=seed_url)
+    coins = dict(config.stablecoins())
+    coins[symbol] = seeded
+    monkeypatch.setattr(config, "stablecoins", lambda: coins)
+    monkeypatch.setattr(config, "get_stablecoin",
+                        lambda s: coins.get(s.upper(), seeded))
+
+
 def test_broken_override_falls_through_to_seed(monkeypatch, tmp_path):
     """If the override URL HEAD-fails, the resolver tries the next path."""
     monkeypatch.setattr(af, "_CACHE", tmp_path / "c.json")
-    # HEAD passes only for the YAML seed (USDC's seed), not for the override.
+    _with_seed(monkeypatch, "USDC", "https://x.com/seed.pdf")
     get_store().set_attestation_url_override(
         "USDC", "https://dead.example/404.pdf",
     )
@@ -65,7 +80,7 @@ def test_broken_override_falls_through_to_seed(monkeypatch, tmp_path):
 
     monkeypatch.setattr(af, "_head_ok", head)
     out = resolve_url("USDC")
-    # Falls through to the YAML seed.
+    # Falls through to the (injected) seed.
     assert out["via"] == "seed"
 
 
@@ -74,6 +89,7 @@ def test_seed_write_through_persists_to_store(monkeypatch, tmp_path):
     short-circuits at the store-override step."""
     monkeypatch.setattr(af, "_CACHE", tmp_path / "c.json")
     monkeypatch.setattr(af, "_head_ok", lambda url, **k: True)
+    _with_seed(monkeypatch, "USDC", "https://x.com/seed.pdf")
     # No override pre-set; first call falls through to seed and writes back.
     first = resolve_url("USDC")
     assert first["via"] == "seed"
@@ -81,7 +97,7 @@ def test_seed_write_through_persists_to_store(monkeypatch, tmp_path):
     rec = get_store().get_attestation_url_override("USDC")
     assert rec is not None
     assert rec["via"] == "seed"
-    assert rec["url"]  # the YAML seed value for USDC
+    assert rec["url"]  # the injected seed value
 
 
 def test_list_overrides_returns_latest_per_symbol(tmp_path):
