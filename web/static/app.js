@@ -2031,10 +2031,13 @@ function viewMonitor() {
 let pollTimer = null;
 
 // ── result freshness ─────────────────────────────────────────────────
-// A compute is "fresh" for ten minutes. Inside that window a revisit is
-// served instantly from the cache (no motions); past it the result is
-// still shown instantly but flagged with a prominent REFRESH affordance.
-const FRESH_MS = 10 * 60 * 1000;
+// A compute is "fresh" for six hours — matches the server-side
+// _CACHE_FRESH_S TTL in web/server.py. The background canary refreshes
+// every artefact every 6h, so any cache miss after that window is
+// genuinely a re-compute opportunity. Inside the window a revisit is
+// served instantly from cache (no motions); past it the result is
+// still shown instantly but the freshness strip prompts for refresh.
+const FRESH_MS = 6 * 60 * 60 * 1000;
 
 // human "computed 3m ago" from a UTC ISO timestamp (or null when unknown)
 function freshnessAge(computedAt) {
@@ -2069,7 +2072,7 @@ function freshnessStrip(computedAt, onRefresh) {
     'computed ' + fmtAgo(ms)));
   if (stale) {
     strip.append(el('span', { class: 'fresh-flag' },
-      'result is over 10 minutes old'));
+      'result is over six hours old'));
   }
   // One canonical refresh action, contextual to result age: prominent
   // when stale, soft-ghost when fresh. Replaces the duplicate header

@@ -337,12 +337,39 @@ def _search_llm(query: str) -> list[str]:
     return urls[:_MAX_RESULTS]
 
 
+def _search_combo(query: str) -> list[str]:
+    """Brave first (better relevance, paid free-tier-friendly), fall back
+    to DuckDuckGo if Brave returns nothing or errors.
+
+    Why this order: Brave's results are typically more useful for our
+    typed-attestation-PDF queries, and the free 2k/month is plenty given
+    our discovery thread caches every hit for 25 days. DDG is the safety
+    net for the queries Brave misses (less common but happens for
+    obscure tokens) or for the day a Brave outage or quota exhaustion
+    would otherwise blank the page.
+    """
+    results = _search_brave(query)
+    if results:
+        log_event(
+            "web_discovery.combo.brave_hit", level="info",
+            query=query, count=len(results),
+        )
+        return results
+    results = _search_duckduckgo(query)
+    log_event(
+        "web_discovery.combo.ddg_fallback", level="info",
+        query=query, count=len(results),
+    )
+    return results
+
+
 _BACKENDS = {
     "duckduckgo": _search_duckduckgo,
     "brave": _search_brave,
     "serper": _search_serper,
     "anthropic": _search_anthropic,
     "llm": _search_llm,
+    "combo": _search_combo,
 }
 
 
@@ -436,6 +463,57 @@ def discover_attestation_url(
             )
             return url
 
+    # Second hop: many issuer attestations live one click below an
+    # index page (Mountain Protocol, Curve, Aave style — docs subsites
+    # that link the PDF). When no direct PDF lands in search results,
+    # walk the top transparency-looking candidates through the
+    # attestation_locator (static HTML scrape + LLM rank) which knows
+    # how to find PDF anchors inside a docs page.
+    transparency_signals = (
+        "transparency", "attestation", "reserves", "proof-of-reserves",
+        "audit", "report", "/docs/", "docs.",
+    )
+    locator_candidates = [
+        u for u in candidates
+        if any(sig in u.lower() for sig in transparency_signals)
+        and not u.lower().endswith(".pdf")
+    ][:3]  # top 3 transparency-looking pages
+    if locator_candidates:
+        try:
+            from sca.tools.attestation_locator import (
+                LocatorUnavailable,
+                resolve_attestation_url as _locate,
+            )
+        except Exception:  # noqa: BLE001
+            locator_candidates = []
+    for page_url in locator_candidates:
+        try:
+            found = _locate(page_url, symbol=symbol)
+        except (LocatorUnavailable, requests.RequestException) as exc:
+            log_event(
+                "web_discovery.second_hop_failed", level="info",
+                symbol=symbol, page_url=page_url,
+                error_class=type(exc).__name__,
+            )
+            continue
+        pdf_url = found.get("url") if isinstance(found, dict) else None
+        if pdf_url and _head_is_pdf(pdf_url):
+            cache[symbol] = {
+                "url": pdf_url,
+                "via": "web_search+locator",
+                "provider": provider,
+                "resolved_at": date.today().isoformat(),
+                "query": query,
+                "source_page": page_url,
+            }
+            _save_cache(cache)
+            log_event(
+                "web_discovery.hit", level="info",
+                symbol=symbol, provider=provider, url=pdf_url,
+                source_page=page_url,
+            )
+            return pdf_url
+
     log_event(
         "web_discovery.no_pdf", level="warn",
         symbol=symbol, provider=provider,
@@ -450,6 +528,109 @@ def recent_discoveries(limit: int = 50) -> list[dict]:
     rows = [{"symbol": k, **v} for k, v in cache.items()]
     rows.sort(key=lambda r: r.get("resolved_at", ""), reverse=True)
     return rows[:limit]
+
+
+# ── Issuer status Q&A — for the brief + augmentation prompts ──────────
+# Same Brave/DDG combo backend, but asks broader open-ended questions
+# about the issuer (wind-down? recent regulatory action? depeg events?
+# leadership changes? auditor swap?) so the LLM can fold richer context
+# into the brief. Generic across every token — same plumbing for USDM
+# (winding down), TUSD (Justin Sun controversy), FDUSD (Sun fraud
+# accusation), and any future issuer. No token-specific code.
+
+_ISSUER_QA_CACHE = config.DATA_DIR / "issuer_qa_cache.json"
+_ISSUER_QA_TTL_DAYS = 7  # status context is more volatile than URLs
+
+
+def _load_qa_cache() -> dict:
+    if _ISSUER_QA_CACHE.exists():
+        try:
+            return json.loads(_ISSUER_QA_CACHE.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _save_qa_cache(cache: dict) -> None:
+    from sca.persist import atomic_write_json
+    atomic_write_json(_ISSUER_QA_CACHE, cache, sort_keys=False)
+
+
+def _qa_fresh(entry: dict) -> bool:
+    when = entry.get("resolved_at", "")
+    if not when:
+        return False
+    try:
+        d = date.fromisoformat(when)
+    except ValueError:
+        return False
+    return (date.today() - d).days <= _ISSUER_QA_TTL_DAYS
+
+
+def issuer_status_context(
+    symbol: str, issuer: str = "", *, refresh: bool = False, limit: int = 4,
+) -> list[dict]:
+    """Search-backed status snippets for `(symbol, issuer)`.
+
+    Asks open-ended questions specifically designed to surface the
+    "is this issuer healthy" signal — wind-down announcements,
+    regulatory action, depeg events, leadership changes. Returns up
+    to `limit` snippets in the same {title, url, snippet, age} shape
+    as recent_news_snippets, suitable for direct inclusion in an LLM
+    prompt.
+
+    Cached per (symbol) for 7 days (shorter than the attestation URL
+    cache because issuer status is more volatile). Shared across all
+    users — only refresh / re-run triggers a fresh search per the
+    standing cache discipline.
+
+    No-op when no search provider is configured, so the pipeline
+    keeps working unchanged.
+    """
+    if not _provider() or _provider() == "off":
+        return []
+    cache = _load_qa_cache()
+    if not refresh:
+        entry = cache.get(symbol)
+        if entry and _qa_fresh(entry):
+            return entry.get("snippets", [])[:limit]
+
+    issuer_term = f' "{issuer}"' if issuer else ""
+    queries = [
+        f'"{symbol}" stablecoin{issuer_term} wind down OR shutdown OR depeg OR sanctions OR audit OR investigation',
+        f'"{symbol}" stablecoin{issuer_term} status 2026 reserves',
+    ]
+    seen_urls: set[str] = set()
+    snippets: list[dict] = []
+    for query in queries:
+        try:
+            from sca.web_discovery import recent_news_snippets as _news
+            for s in _news(symbol, issuer=issuer, kind="general", limit=4):
+                if s.get("url") and s["url"] not in seen_urls:
+                    seen_urls.add(s["url"])
+                    snippets.append(s)
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                "issuer_status.failed", level="warn",
+                symbol=symbol, error_class=type(exc).__name__,
+            )
+            continue
+        # Once we have enough, stop spending search quota.
+        if len(snippets) >= limit * 2:
+            break
+
+    snippets = snippets[:limit]
+    cache[symbol] = {
+        "snippets": snippets,
+        "resolved_at": date.today().isoformat(),
+        "issuer": issuer,
+    }
+    _save_qa_cache(cache)
+    log_event(
+        "issuer_status.refreshed", level="info",
+        symbol=symbol, count=len(snippets),
+    )
+    return snippets
 
 
 # ── live news snippets — augmentation context ──────────────────────────

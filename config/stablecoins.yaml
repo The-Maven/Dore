@@ -353,10 +353,18 @@ stablecoins:
 
   - symbol: USDM
     name: Mountain Protocol USD
-    issuer: Mountain Protocol
-    # Yield-bearing rebasing token, regulated by Bermuda Monetary Authority;
-    # reserves are tokenised US T-bills.
-    transparency_url: https://mountainprotocol.com/transparency
+    issuer: Mountain Protocol (winding down)
+    # Yield-bearing rebasing token, was regulated by Bermuda Monetary
+    # Authority. Mountain Protocol entered wind-down in 2025: as of
+    # Aug 2025 the remaining reserves were moved on-chain, and the
+    # Oct 2025 attestation was published as the final 3rd-party report.
+    # Ongoing reserve verification now relies on direct blockchain
+    # reads of the on-chain reserve wallet rather than monthly CPA
+    # attestations. Backing model reflects that the issuer's current
+    # transparency posture is on-chain visibility.
+    backing_model: crypto_collateral
+    transparency_url: https://docs.mountainprotocol.com/wind-down-documentation/ongoing-proof-of-reserves
+    protocol_url: https://mountainprotocol.com/
     latest_attestation_url: ""
     deployments:
       # Source: docs.mountainprotocol.com — canonical address across most chains.

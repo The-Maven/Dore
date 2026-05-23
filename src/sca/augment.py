@@ -72,18 +72,26 @@ def web_search_enabled() -> bool:
 
 
 def _live_news_block(coin: Stablecoin, kind: str) -> str:
-    """Fetch a few fresh news snippets and format for the augmentation
-    prompt. Empty string when no provider is configured or the search
-    returns nothing.
+    """Fetch issuer status + fresh news snippets for the augmentation
+    prompt. Empty string when no provider is configured.
 
-    The snippets are *factual context*, not figures — the LLM is reminded
-    again in the prefix that it must cite URLs from these snippets rather
-    than inventing them, and must NEVER state numeric figures.
+    Per the "search-augment everywhere" + "never bare n/a" rules: the
+    augmentation card is product-facing, so we always enrich it with
+    live web context when a search provider is available. Two pulls:
+    issuer status (wind-down / regulatory / depeg signals, cached 7
+    days) and recent news (kind-filtered, past month).
     """
     if not web_search_enabled():
         return ""
+    status: list[dict] = []
+    snippets: list[dict] = []
     try:
-        from sca.web_discovery import recent_news_snippets
+        from sca.web_discovery import (
+            issuer_status_context, recent_news_snippets,
+        )
+        status = issuer_status_context(
+            coin.symbol, issuer=coin.issuer, limit=3,
+        )
         snippets = recent_news_snippets(
             coin.symbol, issuer=coin.issuer, kind=kind, limit=3,
         )
@@ -94,19 +102,33 @@ def _live_news_block(coin: Stablecoin, kind: str) -> str:
             error_class=type(exc).__name__, error_message=str(exc),
         )
         return ""
-    if not snippets:
+    if not status and not snippets:
         return ""
-    lines = [
-        "",
-        "## Recent news context (factual material — cite URLs from here, "
-        "never invent them; do NOT state numeric figures from these snippets):",
-    ]
-    for i, s in enumerate(snippets, 1):
+    lines = [""]
+    if status:
         lines.append(
-            f"  [{i}] {s.get('title', '')} ({s.get('age', '')})\n"
-            f"      {s.get('snippet', '')}\n"
-            f"      URL: {s.get('url', '')}"
+            "## Issuer status (recent web findings — cite URLs from here, "
+            "use to add a sentence about wind-down / regulatory action / "
+            "leadership change if material; never invent):"
         )
+        for i, s in enumerate(status, 1):
+            lines.append(
+                f"  [s{i}] {s.get('title', '')}\n"
+                f"        {s.get('snippet', '')}\n"
+                f"        URL: {s.get('url', '')}"
+            )
+        lines.append("")
+    if snippets:
+        lines.append(
+            "## Recent news context (factual material — cite URLs from "
+            "here, never invent; do NOT state numeric figures):"
+        )
+        for i, s in enumerate(snippets, 1):
+            lines.append(
+                f"  [{i}] {s.get('title', '')} ({s.get('age', '')})\n"
+                f"      {s.get('snippet', '')}\n"
+                f"      URL: {s.get('url', '')}"
+            )
     return "\n".join(lines)
 
 

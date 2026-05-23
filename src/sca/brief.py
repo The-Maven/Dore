@@ -140,34 +140,69 @@ def _backing_model_brief(model: str) -> str:
 
 
 def _brief_news_block(coin: Stablecoin) -> str:
-    """Live news snippets for the brief — gated on SCA_AUGMENT_WEB and a
-    configured search provider. Empty when off; never raises."""
+    """Live news snippets + issuer-status context for the brief.
+
+    The SCA_AUGMENT_WEB flag is no longer required — if a search
+    provider is configured (SCA_WEB_SEARCH_PROVIDER) the brief always
+    gets enriched context. Per the "never bare n/a" + "search-augment
+    everywhere" rules, this is now load-bearing for product quality.
+
+    Two parallel pulls:
+      1. `issuer_status_context` — open-ended status query (wind-down,
+         depeg, sanctions, regulatory action, leadership). Cached 7
+         days per issuer. Surfaces facts like Mountain Protocol's
+         wind-down or TUSD's Justin Sun controversy that aren't in
+         the registry.
+      2. `recent_news_snippets` — past-month general news (depegs,
+         partnerships). Cached per call.
+
+    Empty when no provider is configured. Never raises.
+    """
     import os
-    if os.environ.get("SCA_AUGMENT_WEB", "").strip().lower() not in (
-        "1", "true", "on",
-    ):
+    if not os.environ.get("SCA_WEB_SEARCH_PROVIDER", "").strip():
         return ""
+    status: list[dict] = []
+    news: list[dict] = []
     try:
-        from sca.web_discovery import recent_news_snippets
-        snippets = recent_news_snippets(
+        from sca.web_discovery import (
+            issuer_status_context, recent_news_snippets,
+        )
+        status = issuer_status_context(
+            coin.symbol, issuer=coin.issuer, limit=3,
+        )
+        news = recent_news_snippets(
             coin.symbol, issuer=coin.issuer, kind="general", limit=3,
         )
-    except Exception:  # noqa: BLE001 - news is best-effort
+    except Exception:  # noqa: BLE001 - augmentation is best-effort
+        pass
+    if not status and not news:
         return ""
-    if not snippets:
-        return ""
-    lines = [
-        "",
-        "## Live news snippets (factual context — cite URLs from here, "
-        "never invent them; do NOT state numeric figures from these "
-        "snippets):",
-    ]
-    for i, s in enumerate(snippets, 1):
+    lines = [""]
+    if status:
         lines.append(
-            f"  [n{i}] {s.get('title', '')} ({s.get('age', '')})\n"
-            f"        {s.get('snippet', '')}\n"
-            f"        URL: {s.get('url', '')}"
+            "## Issuer status context (recent web findings — cite URLs "
+            "from here, never invent. Use this to add a sentence about "
+            "the issuer's current operational state if material — "
+            "wind-down, regulatory action, leadership change, etc.):"
         )
+        for i, s in enumerate(status, 1):
+            lines.append(
+                f"  [s{i}] {s.get('title', '')}\n"
+                f"        {s.get('snippet', '')}\n"
+                f"        URL: {s.get('url', '')}"
+            )
+        lines.append("")
+    if news:
+        lines.append(
+            "## Recent news snippets (past month, factual material — "
+            "cite URLs, never invent figures from these snippets):"
+        )
+        for i, s in enumerate(news, 1):
+            lines.append(
+                f"  [n{i}] {s.get('title', '')} ({s.get('age', '')})\n"
+                f"        {s.get('snippet', '')}\n"
+                f"        URL: {s.get('url', '')}"
+            )
     return "\n".join(lines)
 
 
