@@ -422,15 +422,16 @@ def discover_attestation_url(
             )
             return cached
 
-    # Build a typed query that targets reserve-attestation PDFs.
-    # DuckDuckGo's HTML endpoint sometimes returns empty for the
-    # `filetype:pdf` operator, so we leave it off and let the HEAD-check
-    # below filter for PDFs. Other providers (Brave / Serper) accept it
-    # but it costs us nothing to omit.
+    # Build a natural-language query — Brave's relevance is much
+    # stronger on conversational phrasing than on keyword soup. We
+    # leave the `filetype:pdf` operator off because DDG sometimes
+    # empties the result set for it; the downstream HEAD-check is
+    # the actual PDF filter.
     year = date.today().year
-    issuer_term = f' {issuer}' if issuer else ""
+    issuer_term = f' issued by {issuer}' if issuer else ""
     query = (
-        f'{symbol} reserves attestation{issuer_term} {year} report'
+        f"What is the most recent reserve attestation report for "
+        f"{symbol} stablecoin{issuer_term}? Looking for the {year} PDF."
     )
     log_event(
         "web_discovery.search.start", level="info",
@@ -653,10 +654,20 @@ def issuer_status_context(
         if entry and _qa_fresh(entry):
             return entry.get("snippets", [])[:limit]
 
-    issuer_term = f' "{issuer}"' if issuer else ""
+    # Natural-language queries — Brave's AI-summary mode picks up
+    # conversational phrasing much better than keyword strings.
+    # Three angles: notable events, current operational status, and
+    # any recent regulatory action.
+    issuer_term = f' issued by {issuer}' if issuer else ""
     queries = [
-        f'"{symbol}" stablecoin{issuer_term} wind down OR shutdown OR depeg OR sanctions OR audit OR investigation',
-        f'"{symbol}" stablecoin{issuer_term} status 2026 reserves',
+        f"What is notable about {symbol} stablecoin{issuer_term} "
+        f"right now? Wind-down, depeg, regulatory action, or auditor "
+        f"changes?",
+        f"What is the current operational status of {symbol} "
+        f"stablecoin{issuer_term} as of {date.today().year}? Reserves, "
+        f"issuance, redemption?",
+        f"Has there been recent enforcement action, sanctions, or "
+        f"legal news related to {symbol}{issuer_term}?",
     ]
     seen_urls: set[str] = set()
     snippets: list[dict] = []
