@@ -518,12 +518,13 @@ function render(data) {
       el('div', { class: 'doc-kicker' }, 'Compendium'),
       el('h1', { class: 'doc-title' }, 'The data behind every Doré answer.'),
       el('p', { class: 'doc-lede' },
-        'Doré reconciles what stablecoin issuers say against what the ' +
-        'blockchains show. This page is the live ledger of that work: ' +
-        'where each attestation source comes from, which regulatory ' +
-        'sources are reachable right now, what the background threads ' +
-        'have done in the last cycle, and the immutable audit trail of ' +
-        'every verified fact.'),
+        'Issuers publish claims. Chains carry truth. Doré reconciles ' +
+        'one against the other every six hours and surfaces a figure a ' +
+        'reader can trace back to its source. ',
+        el('b', {}, 'This page is the ledger of that work'),
+        ' — every attestation URL with the channel that found it, every ' +
+        'regulatory source with its health, every verified fact with its ' +
+        'provenance hash. Updated every thirty seconds.'),
       el('div', { class: 'doc-meta' },
         el('span', {}, att.length + ' stablecoins'),
         el('span', { class: 'meta-sep' }, '·'),
@@ -533,19 +534,25 @@ function render(data) {
     ),
   );
 
-  // Summary
+  // Summary — read the current state out loud.
   doc.append(el('section', { class: 'doc-summary' },
     el('p', { style: 'margin:0' },
-      'Right now, ',
       el('b', {}, withCache + ' of ' + att.length),
-      ' tracked stablecoins have a resolved attestation source. ',
+      ' tracked stablecoins have a resolved attestation source right now. ',
       el('b', { class: 'num-good' }, String(liveSources)),
-      ' of ' + sources.length + ' regulatory sources are live. ',
+      ' of ' + sources.length + ' regulatory sources answer cleanly. ',
+      brokenSources > 0
+        ? el('span', {},
+            el('b', { class: 'num-bad' }, String(brokenSources)),
+            ' source(s) are broken; the canary is searching for ' +
+            'replacements. ')
+        : null,
       unresolved > 0
         ? el('span', {},
             el('b', { class: 'num-neutral' }, String(unresolved)),
-            ' tokens are still seeking a fresh attestation URL — ' +
-            'the background thread tries to close each one every six hours.')
+            ' tokens are still seeking a fresh attestation URL — most ' +
+            'are issuers whose transparency pages render via JavaScript. ' +
+            'The background thread retries every six hours.')
         : el('span', {}, 'Every tracked token has a resolved attestation source.'),
     ),
   ));
