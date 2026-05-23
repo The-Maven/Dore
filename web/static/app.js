@@ -2429,43 +2429,47 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
       'i-metric', m && m.supply_drift != null ? tip.drift : tip.na.drift),
   );
 
-  const snapBody = el('div', {}, cov, mgrid);
+  const snapBody = el('div', {});
 
-  // Backing model badge — sits above everything so the reader knows the
-  // lineage before looking at any number.
-  snapBody.prepend(backingModelStrip(a));
-  // Multi-chain DATA LINEAGE banner — prominent (not buried in a stamp)
-  // so the user sees at a glance that the headline came from N chains
-  // with M corroborated. This is the trust artefact of the whole system.
-  snapBody.prepend(dataLineageBanner(supply, m));
+  // Backing model badge + lineage banner — sit above everything so the
+  // reader knows the lineage before looking at any number.
+  snapBody.append(backingModelStrip(a));
+  snapBody.append(dataLineageBanner(supply, m));
 
-  // when no attestation could be resolved, the n/a fields above all trace to
-  // the same cause — surface it once, plainly, as honest transparency. If
-  // we ALSO have AI context filling the gap, point to it explicitly so the
-  // user understands "n/a" and "AI says attestation exists" are coherent.
-  if (!att) {
-    const hasAug = (a.augmentations || []).length > 0;
-    snapBody.append(el('div', { class: 'prov-note na-prov' },
-      icon('i-info'),
-      el('div', {},
-        el('b', {}, 'Why these fields read n/a · issuer-transparency limit. '),
-        'No current reserve attestation could be machine-resolved for this ' +
-        'issuer — the document may sit behind a JavaScript-rendered page with ' +
-        'no reachable source, the issuer may have no transparency source ' +
-        'configured, or a shared issuer page may carry no token-specific ' +
-        'report. The tool reports what it can honestly reach. ',
-        el('b', {}, 'The on-chain supply figures are unaffected'),
-        ' — they are direct chain reads, independent of any attestation.',
-        hasAug ? el('div', { class: 'na-bridge' },
-          icon('i-info'),
-          el('span', {},
-            el('b', {}, 'Coherence note: '),
-            'the AI context below describes the attestation the issuer ' +
-            'publishes (and where to find it manually). That context is ' +
-            'qualitative — Doré refuses to invent the numeric figures, ' +
-            'which is why the cells above stay ',
-            el('code', {}, 'n/a'),
-            '.')) : null)));
+  // ── When the deterministic pipeline could not resolve an attestation,
+  // the LLM augmentation card becomes the PRIMARY content. The bare
+  // n/a fields move into a collapsed disclosure. Same pattern as the
+  // redemption surface — never let bare n/a sit front and centre when
+  // we have ANY contextual answer to give.
+  const augCards = a.augmentations || [];
+  if (!att && augCards.length > 0) {
+    augCards.forEach((ctx) => snapBody.append(augmentationCard(ctx)));
+    // On-chain supply IS verified — show it on its own row.
+    snapBody.append(el('div', { class: 'mgrid' },
+      mcell('ON-CHAIN SUPPLY · NATIVE', fmtNum(supply.total_supply, 0),
+        'v-paper',
+        `${(supply.per_chain || []).length} deployment(s) · excludes bridged`,
+        'i-supply'),
+    ));
+    // n/a fields under a clearly-labelled disclosure.
+    const naDetails = el('details', { class: 'na-disclosure' });
+    naDetails.append(el('summary', {},
+      el('span', { class: 'na-disc-glyph' }, '⊕'),
+      el('b', {}, 'Open the detailed reserve fields '),
+      el('span', { class: 'na-disc-hint' },
+        '(coverage ratios, reserve composition, staleness — populated ' +
+        'when a CPA attestation resolves)')));
+    const inner = el('div', { class: 'na-disc-body' });
+    inner.append(cov);
+    inner.append(mgrid);
+    naDetails.append(inner);
+    snapBody.append(naDetails);
+  } else {
+    // Normal path: attestation resolved (or it's a crypto/synthetic/algo
+    // token where the cov row already shows the by-design ∞/—).
+    snapBody.append(cov);
+    snapBody.append(mgrid);
+    augCards.forEach((ctx) => snapBody.append(augmentationCard(ctx)));
   }
 
   // supply provenance
@@ -3520,74 +3524,123 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
   // surface before any number. Lets the reader see at a glance that a
   // crypto-collateralized token has no fiat tier breakdown by design.
   snapBody.append(backingModelStrip(r));
-  snapBody.append(el('div', { class: 'cov-row' },
-    el('div', { class: 'cov-cell has-tip', title: tip.liquidCoverage },
-      el('div', { class: 'cov-kick' }, 'LIQUID COVERAGE — FAST REDEMPTION CAPACITY'),
-      el('div', { class: 'cov-big ' + covClass(r.liquid_coverage) },
-        naLiq ? 'n/a' : fmtPct(r.liquid_coverage)),
-      el('div', { class: 'cov-desc' }, naLiq
-        ? naFieldNote('No current attestation could be resolved — see GAPS '
-            + 'below. On-chain supply is unaffected.')
-        : 'Liquid reserves ÷ current on-chain supply. The share of '
-          + 'circulating supply redeemable using only fast-access assets.')),
-    el('div', { class: 'cov-cell has-tip',
-      title: m ? tip.live : tip.na.coverage },
-      el('div', { class: 'cov-kick' }, 'LIVE COVERAGE — TOTAL RESERVES'),
-      el('div', { class: 'cov-big ' + covClass(m && m.live_coverage) },
-        m ? fmtPct(m.live_coverage) : 'n/a'),
-      el('div', { class: 'cov-desc' }, m
-        ? 'Total attested reserves ÷ current on-chain supply — all tiers, '
-          + 'not just the liquid ones.'
-        : naFieldNote('No current attestation could be resolved — see GAPS '
-            + 'below.'))),
-  ));
 
-  snapBody.append(el('div', { class: 'mgrid' },
-    mcell('ON-CHAIN SUPPLY · NATIVE', fmtNum(supply.total_supply, 0),
-      'v-paper',
-      `${(supply.per_chain || []).length} deployment(s) · excludes bridged`,
-      'i-supply'),
-    mcell('ATTESTED RESERVES', att ? fmtUSD(att.total_reserves) : 'n/a',
-      'v-gold',
-      att ? 'from the latest attestation'
-          : naFieldNote('no attestation resolved — hover'),
-      'i-doc', att ? null : tip.na.reserves),
-    mcell('LIQUID RESERVES', fmtUSD(r.liquid_reserves),
-      r.liquid_reserves > 0 ? 'v-green' : 'v-muted',
-      'reserves redeemable fast', 'i-metric', tip.liquidReserves),
-    mcell('NET REDEMPTION FLOW',
-      flow != null ? fmtUSD(flow) : 'n/a',
-      flow == null ? 'v-paper' : flow < 0 ? 'v-rose' : 'v-green',
-      flow != null ? 'on-chain supply minus attested tokens outstanding'
-                   : naFieldNote('no attestation baseline — hover'),
-      'i-metric', flow != null ? tip.netRedemptionFlow : tip.na.drift),
-    mcell('STALENESS', m && att ? m.staleness_days + ' days' : 'n/a',
-      m && att && m.staleness_days > 35 ? 'v-amber' : 'v-paper',
-      m && att ? 'age of the attestation'
-               : naFieldNote('no attestation date — hover'),
-      'i-gate', m && att ? tip.staleness : tip.na.staleness),
-  ));
+  // ── When the deterministic pipeline could not resolve an attestation,
+  // the LLM augmentation card becomes the PRIMARY content. The bare
+  // n/a fields move into a collapsed disclosure for trace-readers; the
+  // user-facing answer is what the augmentation provides (with
+  // citations). This implements the standing rule: never let bare n/a
+  // sit front and centre when we have ANY contextual answer to give.
+  const augCards = r.augmentations || [];
+  if (!att && augCards.length > 0) {
+    augCards.forEach((ctx) => snapBody.append(augmentationCard(ctx)));
+    // Always-on supply (on-chain) stays visible — it's the one figure
+    // the deterministic pipeline DID verify.
+    snapBody.append(el('div', { class: 'mgrid' },
+      mcell('ON-CHAIN SUPPLY · NATIVE', fmtNum(supply.total_supply, 0),
+        'v-paper',
+        `${(supply.per_chain || []).length} deployment(s) · excludes bridged`,
+        'i-supply'),
+    ));
+    // n/a fields under a clearly-labelled disclosure.
+    const naDetails = el('details', { class: 'na-disclosure' });
+    naDetails.append(el('summary', {},
+      el('span', { class: 'na-disc-glyph' }, '⊕'),
+      el('b', {}, 'Open the detailed reserve fields '),
+      el('span', { class: 'na-disc-hint' },
+        '(coverage ratios, reserve breakdown, staleness — populated when ' +
+        'a CPA attestation resolves)')));
+    const inner = el('div', { class: 'na-disc-body' });
+    inner.append(el('div', { class: 'cov-row' },
+      el('div', { class: 'cov-cell' },
+        el('div', { class: 'cov-kick' },
+          'LIQUID COVERAGE — FAST REDEMPTION CAPACITY'),
+        el('div', { class: 'cov-big v-paper' }, 'n/a'),
+        el('div', { class: 'cov-desc' },
+          'Liquid reserves ÷ current on-chain supply. Populated when an ' +
+          'attestation with a reserve breakdown is available.')),
+      el('div', { class: 'cov-cell' },
+        el('div', { class: 'cov-kick' }, 'LIVE COVERAGE — TOTAL RESERVES'),
+        el('div', { class: 'cov-big v-paper' }, 'n/a'),
+        el('div', { class: 'cov-desc' },
+          'Total attested reserves ÷ current on-chain supply. Populated ' +
+          'when an attestation resolves.')),
+    ));
+    inner.append(el('div', { class: 'mgrid' },
+      mcell('ATTESTED RESERVES', 'n/a', 'v-paper',
+        'populated when the CPA report resolves', 'i-doc'),
+      mcell('LIQUID RESERVES', '$0.00', 'v-muted',
+        'reserves redeemable fast — from the attestation breakdown',
+        'i-metric'),
+      mcell('NET REDEMPTION FLOW', 'n/a', 'v-paper',
+        'on-chain supply minus attested tokens outstanding', 'i-metric'),
+      mcell('STALENESS', 'n/a', 'v-paper',
+        'age of the attestation', 'i-gate'),
+    ));
+    naDetails.append(inner);
+    snapBody.append(naDetails);
+  } else {
+    // Normal path: attestation resolved (or backing-model-by-design n/a).
+    snapBody.append(el('div', { class: 'cov-row' },
+      el('div', { class: 'cov-cell has-tip', title: tip.liquidCoverage },
+        el('div', { class: 'cov-kick' },
+          'LIQUID COVERAGE — FAST REDEMPTION CAPACITY'),
+        el('div', { class: 'cov-big ' + covClass(r.liquid_coverage) },
+          naLiq ? 'n/a' : fmtPct(r.liquid_coverage)),
+        el('div', { class: 'cov-desc' }, naLiq
+          ? naFieldNote('No current attestation could be resolved — see GAPS '
+              + 'below. On-chain supply is unaffected.')
+          : 'Liquid reserves ÷ current on-chain supply. The share of '
+            + 'circulating supply redeemable using only fast-access assets.')),
+      el('div', { class: 'cov-cell has-tip',
+        title: m ? tip.live : tip.na.coverage },
+        el('div', { class: 'cov-kick' }, 'LIVE COVERAGE — TOTAL RESERVES'),
+        el('div', { class: 'cov-big ' + covClass(m && m.live_coverage) },
+          m ? fmtPct(m.live_coverage) : 'n/a'),
+        el('div', { class: 'cov-desc' }, m
+          ? 'Total attested reserves ÷ current on-chain supply — all tiers, '
+            + 'not just the liquid ones.'
+          : naFieldNote('No current attestation could be resolved — see GAPS '
+              + 'below.'))),
+    ));
 
-  if (!att) {
-    snapBody.append(el('div', { class: 'prov-note na-prov' },
-      icon('i-info'),
-      el('div', {},
-        el('b', {}, 'Why these fields read n/a · issuer-transparency limit. '),
-        'No current reserve attestation could be machine-resolved for this '
-        + 'issuer. Liquidity tiers and coverage are attestation-derived. ',
-        el('b', {}, 'The on-chain supply figures are unaffected'),
-        ' — they are direct chain reads.')));
+    snapBody.append(el('div', { class: 'mgrid' },
+      mcell('ON-CHAIN SUPPLY · NATIVE', fmtNum(supply.total_supply, 0),
+        'v-paper',
+        `${(supply.per_chain || []).length} deployment(s) · excludes bridged`,
+        'i-supply'),
+      mcell('ATTESTED RESERVES', att ? fmtUSD(att.total_reserves) : 'n/a',
+        'v-gold',
+        att ? 'from the latest attestation'
+            : naFieldNote('no attestation resolved — hover'),
+        'i-doc', att ? null : tip.na.reserves),
+      mcell('LIQUID RESERVES', fmtUSD(r.liquid_reserves),
+        r.liquid_reserves > 0 ? 'v-green' : 'v-muted',
+        'reserves redeemable fast', 'i-metric', tip.liquidReserves),
+      mcell('NET REDEMPTION FLOW',
+        flow != null ? fmtUSD(flow) : 'n/a',
+        flow == null ? 'v-paper' : flow < 0 ? 'v-rose' : 'v-green',
+        flow != null ? 'on-chain supply minus attested tokens outstanding'
+                     : naFieldNote('no attestation baseline — hover'),
+        'i-metric', flow != null ? tip.netRedemptionFlow : tip.na.drift),
+      mcell('STALENESS', m && att ? m.staleness_days + ' days' : 'n/a',
+        m && att && m.staleness_days > 35 ? 'v-amber' : 'v-paper',
+        m && att ? 'age of the attestation'
+                 : naFieldNote('no attestation date — hover'),
+        'i-gate', m && att ? tip.staleness : tip.na.staleness),
+    ));
+
+    // Augmentation cards still render in normal path too (for crypto/
+    // synthetic backing-model framing); they sit BELOW the deterministic
+    // figures since those figures actually resolved.
+    augCards.forEach((ctx) => snapBody.append(augmentationCard(ctx)));
   }
+
   if (supply.read_at) {
     snapBody.append(el('div', { class: 'prov-stamp' },
       el('span', { class: 'glyph' }, '§'),
       'on-chain reads taken at ' + supply.read_at));
   }
-  // AI-context cards — fired when there's no attestation to tier OR the
-  // backing model isn't fiat (crypto / synthetic / algorithmic). Tagged
-  // 'AI CONTEXT' and clearly distinct from the deterministic tiers.
-  (r.augmentations || []).forEach((ctx) =>
-    snapBody.append(augmentationCard(ctx)));
   mount.append(panel('01', 'REDEMPTION SNAPSHOT', 'i-facts', snapBody));
 
   // ── 02 RESERVE LIQUIDITY BREAKDOWN ──
@@ -4327,28 +4380,25 @@ function renderCompendium(data, mount) {
   const doc = el('article', { class: 'cp-doc fade-in' });
   mount.append(doc);
 
-  // Header — page title + intro paragraph + meta strip.
+  // Header — written as a product page would be. Lead with what the
+  // data layer DOES for the reader, not with engineering anatomy.
   doc.append(el('header', { class: 'cp-doc-head' },
-    el('div', { class: 'cp-doc-kicker' }, 'COMPENDIUM · DATA LAYER'),
+    el('div', { class: 'cp-doc-kicker' }, 'Compendium'),
     el('h1', { class: 'cp-doc-title' },
-      'How Doré keeps its data fresh.'),
+      'The data behind every Doré answer.'),
     el('p', { class: 'cp-doc-lede' },
-      'Doré reconciles what stablecoin issuers claim against what the ' +
-      'blockchains actually show. That depends on a small number of ' +
-      'durable, observable systems: a registry of every stablecoin, an ' +
-      'opt-out corpus of regulatory sources, a snapshot store that ' +
-      'archives every external page, a background canary that re-checks ' +
-      'them every six hours, and an immutable audit trail of every ' +
-      'verified fact. This page documents each of them, and shows you ' +
-      'what state they are in right now.'),
+      'Doré reconciles what stablecoin issuers say against what the ' +
+      'blockchains show. This page is the live ledger of that work: ' +
+      'where each attestation URL comes from, which regulatory sources ' +
+      'are reachable right now, what the background threads have ' +
+      'discovered, and the immutable audit trail of every verified ' +
+      'fact. Updated every thirty seconds.'),
     el('div', { class: 'cp-doc-meta' },
       el('span', {}, _fmtTs(new Date().toISOString())),
       el('span', { class: 'cp-doc-meta-sep' }, '·'),
       el('span', {}, attCount + ' stablecoins tracked'),
       el('span', { class: 'cp-doc-meta-sep' }, '·'),
-      el('span', {}, data.sources_health.length + ' corpus sources'),
-      el('span', { class: 'cp-doc-meta-sep' }, '·'),
-      el('span', {}, 'Refresh every 30 seconds'),
+      el('span', {}, data.sources_health.length + ' regulatory sources'),
     ),
   ));
 
@@ -4371,35 +4421,25 @@ function renderCompendium(data, mount) {
     ),
   ));
 
-  // Quick state summary up top — six small stat blocks, NOT a strip
-  // (which looks dense). Rendered as a paragraph with inline strong
-  // numbers so it scans like a docs page summary.
+  // Short product-page-style paragraph with the figures inline. Scans
+  // as a natural opening line rather than a six-cell dashboard.
   doc.append(el('section', { class: 'cp-doc-summary' },
     el('p', {},
       'Right now, ',
       el('b', {}, withCache + ' of ' + attCount),
-      ' attestation URLs are resolved, ',
-      el('b', { class: withOverride ? 'cp-num-good' : 'cp-num-neutral' },
-        String(withOverride)),
-      ' have a curator-set override stored in the database, ',
+      ' tracked stablecoins have a resolved attestation source. ',
       el('b', { class: 'cp-num-good' }, String(liveSources)),
-      ' of ' + data.sources_health.length + ' corpus sources are live, and ',
-      el('b', {
-        class: brokenSources > 0 ? 'cp-num-bad' : 'cp-num-good',
-      }, String(brokenSources)),
-      ' are broken. Web discovery is ',
-      el('b', { class: data.discovery_provider ? 'cp-num-good'
-        : 'cp-num-neutral' },
-        data.discovery_provider
-          ? ('on via ' + data.discovery_provider)
-          : 'off (set SCA_WEB_SEARCH_PROVIDER to enable)'),
-      '. ',
+      ' of ' + data.sources_health.length + ' regulatory sources are live. ',
       unresolvedAttest > 0
         ? el('span', {},
-            el('b', { class: 'cp-num-bad' }, String(unresolvedAttest)),
-            ' tokens still have no resolvable attestation URL — listed ',
-            el('a', { href: '#attestations' }, 'below'), '.')
-        : el('span', {}, 'Every tracked token has a resolved attestation source.'),
+            el('b', { class: 'cp-num-neutral' }, String(unresolvedAttest)),
+            ' tokens are still seeking a fresh attestation URL — those ' +
+            'are listed in ',
+            el('a', { href: '#attestations' }, 'Attestation URLs'),
+            ' below, and the background thread tries to close each one ' +
+            'every six hours.')
+        : el('span', {},
+            'Every tracked token has a resolved attestation source.'),
     ),
   ));
 

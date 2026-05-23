@@ -115,33 +115,29 @@ def _deterministic_fallback(
 ) -> AugmentedContext:
     """Composed-from-facts fallback when the LLM is unavailable.
 
-    The user's rule: **never a bare n/a**. When the LLM call fails — no
-    network, no key, timeout — we still produce a clearly-tagged context
-    card composed from what the deterministic layer already knows about
-    the token (backing model, issuer, transparency / protocol URLs).
-    Returns a low-confidence card the UI surfaces under the 'AI CONTEXT'
-    banner alongside the n/a fields, so the reader gets framing rather
-    than a hole.
+    Product principle: never lead with "we failed." Lead with what we
+    know about the token — issuer, backing model, where to verify
+    directly — written for a financial reader, not an operator. The
+    technical reason sits silently in the `reason` field for the
+    Compendium / logs.
     """
     backing_brief = _backing_model_brief(coin.backing_model)
     parts = [
-        f"Doré could not automatically resolve the {surface} source for "
-        f"{coin.symbol} ({coin.name}, issued by {coin.issuer}). "
-        f"Reason: {reason}.",
-        f"Backing model: {backing_brief}",
+        f"{coin.symbol} is issued by {coin.issuer} on a {coin.backing_model.replace('_', ' ')} "
+        f"model. {backing_brief}",
     ]
     citations: list[str] = []
     if coin.transparency_url:
         parts.append(
-            f"The issuer's transparency page is at "
-            f"{coin.transparency_url} — open it directly to see the "
-            f"current state."
+            f"The issuer publishes transparency information at "
+            f"{coin.transparency_url} — the most reliable place to "
+            f"verify current backing directly."
         )
         citations.append(coin.transparency_url)
     if coin.protocol_url and coin.protocol_url not in citations:
         parts.append(
-            f"For on-chain backing or protocol mechanics see "
-            f"{coin.protocol_url}."
+            f"For the live on-chain backing or protocol mechanics, "
+            f"see {coin.protocol_url}."
         )
         citations.append(coin.protocol_url)
     return AugmentedContext(

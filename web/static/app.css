@@ -2598,50 +2598,61 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   F8 · COMPENDIUM — docs-style typography. Reads top-to-bottom as
-   documentation rather than as a dashboard; prose paragraphs explain
-   each section, with live data tables embedded as evidence. Sticky TOC
-   on wide viewports.
+   F8 · COMPENDIUM — reads like a product page from the marketing site
+   (rayleighstark.com/products): generous whitespace, Bodoni Moda
+   serif headings, narrower measure for prose, gold accent restrained.
+   Goal: a financial reader scans this and finds it warm and helpful,
+   not a dashboard of failure modes.
    ──────────────────────────────────────────────────────────────────── */
 .cp-doc {
-  max-width: 900px;
+  max-width: 780px;
   margin: 0 auto;
-  padding: 40px 36px 80px;
-  font-family: var(--serif, 'Inter', system-ui, sans-serif);
+  padding: 64px 40px 96px;
+  font-family: 'Inter', system-ui, sans-serif;
   color: var(--text, #e4d8b5);
-  line-height: 1.65;
+  line-height: 1.7;
   position: relative;
 }
 
 .cp-doc-head {
-  border-bottom: 1px solid rgba(212, 162, 74, 0.18);
-  padding-bottom: 28px;
-  margin-bottom: 32px;
+  border-bottom: 1px solid rgba(212, 162, 74, 0.14);
+  padding-bottom: 36px;
+  margin-bottom: 48px;
 }
 .cp-doc-kicker {
-  font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.22em;
   color: var(--gold, #d4a24a);
   text-transform: uppercase;
-  margin-bottom: 14px;
+  margin-bottom: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+.cp-doc-kicker::after {
+  content: '';
+  width: 36px;
+  height: 1px;
+  background: var(--gold, #d4a24a);
+  opacity: 0.7;
 }
 .cp-doc-title {
   font-family: 'Bodoni Moda', 'Times New Roman', serif;
   font-weight: 500;
-  font-size: 34px;
-  line-height: 1.1;
-  letter-spacing: -0.01em;
+  font-size: 44px;
+  line-height: 1.05;
+  letter-spacing: -0.015em;
   color: var(--paper, #efeae0);
-  margin: 0 0 18px;
-  max-width: 22ch;
+  margin: 0 0 26px;
+  max-width: 20ch;
 }
 .cp-doc-lede {
-  font-size: 16.5px;
-  line-height: 1.65;
+  font-size: 17px;
+  line-height: 1.7;
   color: var(--muted-1, #c9b88f);
-  max-width: 62ch;
-  margin: 0 0 18px;
+  max-width: 60ch;
+  margin: 0 0 26px;
 }
 .cp-doc-meta {
   font-family: var(--mono, ui-monospace, SFMono-Regular, monospace);
@@ -2698,41 +2709,47 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 
 .cp-doc-summary {
-  background: rgba(212, 162, 74, 0.04);
   border-left: 2px solid var(--gold, #d4a24a);
-  padding: 18px 22px;
-  margin: 0 0 40px;
-  font-size: 15px;
-  line-height: 1.6;
+  padding: 22px 26px;
+  margin: 0 0 56px;
+  font-size: 15.5px;
+  line-height: 1.7;
+  background: linear-gradient(90deg,
+    rgba(212, 162, 74, 0.05),
+    rgba(212, 162, 74, 0.01) 70%, transparent);
 }
 .cp-doc-summary p { margin: 0; color: var(--muted-1, #c9b88f); }
 .cp-doc-summary b { color: var(--paper, #efeae0); font-weight: 500; }
-.cp-num-good { color: #b9d8a1; }
-.cp-num-bad  { color: #e6918e; }
-.cp-num-neutral { color: var(--gold, #d4a24a); }
+.cp-num-good { color: #b9d8a1; font-weight: 600; }
+.cp-num-bad  { color: #e6918e; font-weight: 600; }
+.cp-num-neutral { color: var(--gold, #d4a24a); font-weight: 600; }
 
 .cp-doc-section {
-  padding-top: 42px;
-  margin-top: 28px;
-  border-top: 1px solid rgba(212, 162, 74, 0.12);
+  padding-top: 56px;
+  margin-top: 40px;
+  border-top: 1px solid rgba(212, 162, 74, 0.10);
   scroll-margin-top: 80px;
 }
-.cp-doc-section:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.cp-doc-section:first-of-type {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
+}
 .cp-doc-section h2 {
   font-family: 'Bodoni Moda', 'Times New Roman', serif;
   font-weight: 500;
-  font-size: 24px;
-  letter-spacing: -0.005em;
+  font-size: 30px;
+  letter-spacing: -0.01em;
   color: var(--paper, #efeae0);
-  margin: 0 0 16px;
-  line-height: 1.2;
+  margin: 0 0 22px;
+  line-height: 1.15;
 }
 .cp-doc-para {
-  font-size: 15px;
-  line-height: 1.7;
+  font-size: 15.5px;
+  line-height: 1.75;
   color: var(--muted-1, #c9b88f);
-  max-width: 64ch;
-  margin: 0 0 18px;
+  max-width: 62ch;
+  margin: 0 0 22px;
 }
 .cp-doc-para b { color: var(--paper, #efeae0); font-weight: 500; }
 .cp-doc-para code {
