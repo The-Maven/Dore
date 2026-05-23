@@ -1,8 +1,8 @@
 """Agent orchestration: OFAC sanctions screen for a stablecoin.
 
 Screens the token's on-chain contract addresses against the OFAC SDN list,
-applies deterministic guardrails, retrieves the approved corpus, and
-synthesises a cited analysis — the same shape as attestation analysis.
+applies deterministic guardrails, retrieves the corpus reasoning frame,
+and synthesises a cited analysis — the same shape as attestation analysis.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from sca import config
 from sca.agent.synthesis import synthesize_surface
 from sca.corpus import retrieve
 from sca.llm import LLMClient
-from sca.models import Gap, SanctionsScreen
+from sca.models import AugmentedContext, Gap, SanctionsScreen
 from sca.tools import get_onchain_supply
 from sca.tools.sanctions import SanctionsUnavailable, load_sdn, screen
 from sca.validation import (
@@ -18,6 +18,11 @@ from sca.validation import (
     validate_supply,
     verify_citations,
 )
+
+# Past one week the OFAC SDN list is no longer reliable evidence — see
+# validate_sanctions(). When we cross that threshold, augment with the
+# qualitative context for the operator (where to fetch, what to do next).
+_SDN_CRITICAL_STALENESS_DAYS = 7
 
 
 def _facts(result: SanctionsScreen) -> str:
@@ -68,13 +73,55 @@ def screen_token(
     screened = [d.contract for d in coin.deployments]
     hits = []
     sdn = None
+    sdn_failure_reason: str | None = None
     try:
         sdn = load_sdn(refresh=refresh)
         hits = screen(screened)
     except SanctionsUnavailable as exc:
+        sdn_failure_reason = f"sdn-list-unavailable: {exc}"
         gaps.append(Gap("warn", "data", f"OFAC screening unavailable: {exc}"))
     except Exception as exc:  # noqa: BLE001 - report, never crash
+        sdn_failure_reason = f"sdn-screen-failed: {exc}"
         gaps.append(Gap("warn", "data", f"sanctions screen failed: {exc}"))
+
+    # Augmentation — qualitative context whenever the deterministic
+    # screen couldn't run cleanly. Bounded to non-numeric, never claims
+    # the token is/isn't sanctioned. Tagged in the UI as 'AI context'.
+    #
+    # Gap surfaces that trigger augmentation:
+    #   - SDN list could not be loaded / parsed at all
+    #   - SDN list is critically stale (>7 days) — screening unreliable
+    #   - on-chain supply read failed entirely so no addresses to screen
+    augmentations: list[AugmentedContext] = []
+    aug_reason: str | None = None
+    if sdn_failure_reason is not None:
+        aug_reason = sdn_failure_reason
+    elif (
+        sdn is not None
+        and sdn.staleness_days is not None
+        and sdn.staleness_days > _SDN_CRITICAL_STALENESS_DAYS
+    ):
+        aug_reason = (
+            f"sdn-list-critically-stale: published "
+            f"{sdn.publish_date} ({sdn.staleness_days} days old)"
+        )
+    elif not screened:
+        aug_reason = "no-deployment-addresses-to-screen"
+    if aug_reason is not None:
+        try:
+            from sca import augment
+
+            ctx = augment.augment_sanctions_gap(coin, aug_reason, llm=llm)
+            if ctx is not None:
+                augmentations.append(ctx)
+        except Exception as exc:  # noqa: BLE001 - never break the screen
+            from sca.observability import log_event
+            log_event(
+                "augment.sanctions.dispatch_failed", level="warn",
+                symbol=symbol,
+                error_class=type(exc).__name__,
+                error_message=str(exc),
+            )
 
     result = SanctionsScreen(
         symbol=symbol,
@@ -84,6 +131,9 @@ def screen_token(
         sdn_publish_date=sdn.publish_date if sdn else "",
         sdn_staleness_days=sdn.staleness_days if sdn else None,
         sdn_address_count=len(sdn.addresses) if sdn else 0,
+        augmentations=augmentations,
+        backing_model=coin.backing_model,
+        protocol_url=coin.protocol_url,
     )
 
     checks = list(validate_supply(supply))
@@ -96,8 +146,9 @@ def screen_token(
     if not passages:
         gaps.append(Gap(
             "warn", "corpus",
-            "corpus has no approved + ingested sources — sanctions-posture "
-            "judgements remain unsupported until a human approves sources",
+            "corpus has no ingested source text — sanctions-posture "
+            "judgements remain unsupported until source text is staged "
+            "and ingested",
         ))
 
     narrative = ""
@@ -123,7 +174,20 @@ def screen_token(
     result.passages = passages
     result.narrative = narrative
     result.gaps = gaps
+
+    # AI Brief — editorial top-of-view synthesis. Best-effort.
     if synthesize_narrative:
+        try:
+            from sca.brief import generate_brief
+            from dataclasses import asdict as _asdict
+            brief_obj = generate_brief(
+                surface="sanctions", coin=coin, facts=_facts(result),
+                news_candidates=passages, llm=llm,
+            )
+            if brief_obj is not None:
+                result.brief = _asdict(brief_obj)
+        except Exception:  # noqa: BLE001 - brief is optional
+            pass
         _persist_screen(symbol, result, user_id)
     return result
 

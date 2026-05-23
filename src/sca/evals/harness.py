@@ -17,7 +17,7 @@ import yaml
 
 from sca import config
 from sca.agent import analyze
-from sca.corpus.sources import approved_sources
+from sca.corpus.sources import included_sources
 from sca.models import Analysis, EvalCaseResult, EvalPointResult
 
 _BANNED_ADVICE = ("you should buy", "you should sell", "safe to hold",
@@ -44,11 +44,11 @@ def _check(kind: str, spec: dict, analysis: Analysis) -> tuple[bool, str]:
         low = analysis.narrative.lower()
         hits = [w for w in _BANNED_ADVICE if w in low]
         return not hits, f"hits={hits}"
-    if kind == "passages_approved_only":
-        approved = {s.id for s in approved_sources()}
+    if kind == "passages_included_only":
+        included = {s.id for s in included_sources()}
         bad = [p.source_id for p in analysis.passages
-               if p.source_id not in approved]
-        return not bad, f"non_approved={bad}"
+               if p.source_id not in included]
+        return not bad, f"excluded_cited={bad}"
     if kind == "attestation_confidence_min":
         if analysis.attestation is None:
             return False, "no attestation"

@@ -28,14 +28,14 @@ def store(tmp_path):
                         "id": "genius-act",
                         "title": "GENIUS Act",
                         "tier": "primary",
-                        "status": "proposed",
+                        "status": "included",
                         "url": "https://example.gov/genius",
                     },
                     {
                         "id": "mica-title-iii",
                         "title": "MiCA Title III",
                         "tier": "primary",
-                        "status": "approved",
+                        "status": "included",
                     },
                 ]
             }
@@ -121,7 +121,7 @@ def test_list_sources(store):
     rows = store.list_sources()
     assert {r["id"] for r in rows} == {"genius-act", "mica-title-iii"}
     genius = next(r for r in rows if r["id"] == "genius-act")
-    assert genius["status"] == "proposed"
+    assert genius["status"] == "included"
     assert genius["url"] == "https://example.gov/genius"
 
 
@@ -173,26 +173,33 @@ def test_get_passages_unknown_source(store):
 
 # ── curation ──────────────────────────────────────────────────────────
 def test_source_decision_latest_wins(store):
-    store.record_source_decision("genius-act", "rejected")
-    store.record_source_decision("genius-act", "approved")
-    store.record_source_decision("mica-title-iii", "approved")
+    store.record_source_decision("genius-act", "excluded")
+    store.record_source_decision("genius-act", "included")
+    store.record_source_decision("mica-title-iii", "excluded")
     overrides = store.source_status_overrides()
-    assert overrides == {"genius-act": "approved", "mica-title-iii": "approved"}
+    assert overrides == {"genius-act": "included", "mica-title-iii": "excluded"}
+
+
+def test_verified_decision_keeps_source_included(store):
+    # A 'verified' vote is a quality signal — it never excludes.
+    store.record_source_decision("genius-act", "verified")
+    assert store.source_status_overrides() == {"genius-act": "included"}
+    assert store.source_verified_overrides() == {"genius-act": True}
 
 
 def test_source_decision_persists_to_votes_yaml(store):
-    store.record_source_decision("genius-act", "approved", user_id="u9")
+    store.record_source_decision("genius-act", "excluded", user_id="u9")
     data = yaml.safe_load(store._votes_path.read_text())
     entry = data["source_decisions"][0]
     assert entry["id"] == "genius-act"
-    assert entry["decision"] == "approved"
+    assert entry["decision"] == "excluded"
     assert entry["at"] == str(date.today())
     assert entry["decided_by"] == "u9"
 
 
 def test_invalid_source_decision_raises(store):
     with pytest.raises(ValueError):
-        store.record_source_decision("genius-act", "maybe")
+        store.record_source_decision("genius-act", "approved")
 
 
 def test_address_decision_latest_wins(store):
@@ -210,6 +217,7 @@ def test_invalid_address_decision_raises(store):
 
 def test_overrides_empty_when_no_votes(store):
     assert store.source_status_overrides() == {}
+    assert store.source_verified_overrides() == {}
     assert store.address_verified_overrides() == {}
 
 

@@ -104,9 +104,11 @@ def run_redemption_assessment(symbol: str) -> dict:
 
 @mcp.tool()
 def search_corpus(query: str) -> list[dict]:
-    """Search Doré's regulatory corpus — the reasoning frame. Returns ONLY
-    passages from human-approved sources; unapproved material is never
-    returned. Use this to ground a judgement in cited regulation."""
+    """Search Doré's regulatory corpus — the reasoning frame. Returns
+    passages from every included source; a source a human has explicitly
+    excluded is omitted. Use this to ground a judgement in cited regulation.
+    Each passage carries `source_verified` — True when a human has
+    explicitly reviewed the source (a quality signal, not a gate)."""
     _audit("search_corpus", query=query)
     return [_plain(p) for p in retrieve(query)]
 
@@ -114,8 +116,9 @@ def search_corpus(query: str) -> list[dict]:
 @mcp.tool()
 def list_corpus_sources() -> list[dict]:
     """List the corpus source registry — each source's id, title, tier,
-    status (proposed / approved / rejected) and summary. Only `approved`
-    sources are citable."""
+    status (`included` by default / `excluded` if a human opted it out),
+    `verified` (human-reviewed signal) and summary. Every included source
+    is citable."""
     _audit("list_corpus_sources")
     return [
         {
@@ -123,6 +126,7 @@ def list_corpus_sources() -> list[dict]:
             "title": s.title,
             "tier": s.tier,
             "status": s.status,
+            "verified": s.verified,
             "summary": s.summary,
         }
         for s in all_sources()

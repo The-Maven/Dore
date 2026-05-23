@@ -5,6 +5,7 @@ structured extraction / link selection — never for interpretation.)
 """
 from __future__ import annotations
 
+from .address_verify import verify_address
 from .attestation_extract import extract_attestation, extract_pdf_text
 from .attestation_fetch import (
     AttestationUnavailable,
@@ -25,4 +26,5 @@ __all__ = [
     "resolve_attestation_url",
     "extract_attestation",
     "extract_pdf_text",
+    "verify_address",
 ]

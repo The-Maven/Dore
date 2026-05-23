@@ -23,6 +23,10 @@ from sca.tools.attestation_locator import (
     LocatorUnavailable,
     resolve_attestation_url,
 )
+from sca.tools.paxos_resolver import (
+    PAXOS_TOKENS,
+    resolve_paxos_attestation_url,
+)
 
 _CACHE = config.DATA_DIR / "attestation_cache.json"
 # Attestations publish monthly — a cached resolution older than this is
@@ -44,8 +48,8 @@ def _load_cache() -> dict:
 
 
 def _save_cache(cache: dict) -> None:
-    _CACHE.parent.mkdir(parents=True, exist_ok=True)
-    _CACHE.write_text(json.dumps(cache, indent=2))
+    from sca.persist import atomic_write_json
+    atomic_write_json(_CACHE, cache, sort_keys=False)
 
 
 def _head_ok(url: str, timeout: float = 20.0) -> bool:
@@ -97,7 +101,23 @@ def resolve_url(symbol: str, *, refresh: bool = False) -> dict:
         _save_cache(cache)
         return {"url": seed, "via": "seed"}
 
-    # 3. locator — re-resolve from the durable transparency page
+    # 3. Paxos URL pattern probe — paxos.com transparency pages are JS-
+    # rendered so the HTML locator can't see the link, but the WP CDN
+    # publishes at a predictable shape we can probe directly. Try this
+    # BEFORE the LLM-driven locator: it's cheap, deterministic, and avoids
+    # spending an LLM call on a known-broken page.
+    if symbol.upper() in PAXOS_TOKENS:
+        paxos_url = resolve_paxos_attestation_url(symbol)
+        if paxos_url and _head_ok(paxos_url):
+            cache[symbol] = {
+                "url": paxos_url,
+                "via": "paxos_resolver",
+                "resolved_at": date.today().isoformat(),
+            }
+            _save_cache(cache)
+            return {"url": paxos_url, "via": "paxos_resolver"}
+
+    # 4. locator — re-resolve from the durable transparency page
     if not token.transparency_url:
         raise AttestationUnavailable(
             f"{symbol}: no working attestation URL and no transparency_url "

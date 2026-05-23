@@ -4,11 +4,20 @@ from __future__ import annotations
 import pytest
 import requests
 
+import importlib
+
+# `sca.corpus.retrieve` resolves to the re-exported function via __init__.py;
+# load the submodule explicitly so we can reset its once-per-process flag.
+_retrieve_mod = importlib.import_module("sca.corpus.retrieve")
+
 from sca import config
+from sca.corpus import ingest as _ingest_mod
 from sca.corpus import sources as sources_mod
+from sca.store import FileStore as _FileStore
 from sca.tools import attestation_fetch as _afetch
 from sca.tools import attestation_locator as _locator
 from sca.tools import onchain_supply as _onchain
+from sca.tools import paxos_resolver as _paxos
 
 _FIFTY_M = 50_000_000
 
@@ -23,6 +32,8 @@ def _reset_caches() -> None:
         clear = getattr(fn, "cache_clear", None)
         if clear is not None:
             clear()
+    # Reset the once-per-process auto-ingest guard so each test starts cold.
+    _retrieve_mod.reset_auto_ingest()
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +44,7 @@ def _isolate_state(monkeypatch, tmp_path):
     neutralised so get_store() always resolves to the file backend; no test
     ever touches the live database.
     """
-    from sca import votes
+    from sca import auto_verify, snapshots, supply_history, votes
     from sca.store import reset_store
 
     monkeypatch.setattr(config, "SUPABASE_URL", "")
@@ -41,6 +52,64 @@ def _isolate_state(monkeypatch, tmp_path):
     reset_store()
     monkeypatch.setattr(votes, "VOTES_PATH", tmp_path / "votes.yaml")
     monkeypatch.setattr(_afetch, "_CACHE", tmp_path / "attestation_cache.json")
+    monkeypatch.setattr(
+        _paxos, "_CACHE_PATH", tmp_path / "paxos_resolved.json",
+    )
+    monkeypatch.setattr(
+        auto_verify, "AUTO_VERIFICATIONS_PATH",
+        tmp_path / "auto_verifications.json",
+    )
+    monkeypatch.setattr(
+        supply_history, "HISTORY_PATH", tmp_path / "supply_history.json",
+    )
+    monkeypatch.setattr(
+        snapshots, "SNAPSHOTS_DIR", tmp_path / "source_snapshots",
+    )
+    # Isolate the FileStore's corpus passage directory and the staging
+    # auto-ingest from real on-disk state: each test starts with an empty
+    # corpus, and only what the test stages is ever ingested.
+    import sca.store as _store_mod
+
+    monkeypatch.setattr(
+        _store_mod, "FileStore",
+        lambda **kw: _FileStore(corpus_dir=tmp_path / "corpus_data", **kw),
+    )
+    monkeypatch.setattr(_ingest_mod, "STAGING_DIR", tmp_path / "staging")
+    monkeypatch.setattr(
+        _ingest_mod, "INGEST_STATE_PATH",
+        tmp_path / "corpus_ingest_state.json",
+    )
+    # Discovery ledger lives in DATA_DIR by default; isolate it so no test
+    # ever writes to data/discovered_sources.json on the real disk.
+    try:
+        from sca import discovery as _discovery_mod
+    except Exception:  # noqa: BLE001 - module may not exist in older trees
+        _discovery_mod = None
+    if _discovery_mod is not None:
+        monkeypatch.setattr(
+            _discovery_mod, "DISCOVERED_PATH",
+            tmp_path / "discovered_sources.json",
+        )
+    # Health-thread state file lives in DATA_DIR too — isolate the same
+    # way so flip-detection tests don't poison subsequent runs.
+    try:
+        from sca import health_thread as _health_mod
+    except Exception:  # noqa: BLE001 - module may not exist in older trees
+        _health_mod = None
+    if _health_mod is not None:
+        monkeypatch.setattr(
+            _health_mod, "HEALTH_STATE_PATH",
+            tmp_path / "health_state.json",
+        )
+        # Leader-election lockfile: isolate so the test suite never races
+        # against a real lockfile in data/, and so each test starts
+        # without an existing leader.
+        if hasattr(_health_mod, "LEADER_LOCKFILE"):
+            monkeypatch.setattr(
+                _health_mod, "LEADER_LOCKFILE",
+                tmp_path / "health_thread.leader",
+            )
+        _health_mod._reset_for_tests()
     _reset_caches()
     yield
     reset_store()
@@ -69,7 +138,7 @@ def fake_rpc(monkeypatch):
     read resolves to 50,000,000 tokens."""
     raw_hex = hex(_FIFTY_M * 10**6)
 
-    def fake_post(url, json=None, timeout=None):  # noqa: A002
+    def fake_post(url, json=None, timeout=None, headers=None):  # noqa: A002
         body = json or {}
         method = body.get("method")
         if method == "eth_call":
@@ -84,6 +153,18 @@ def fake_rpc(monkeypatch):
                 {"result": {"value": {"amount": str(_FIFTY_M * 10**6),
                                       "decimals": 6}}}
             )
+        if method == "getAccountInfo":
+            # Solana SPL mint shape — what address_verify._read_solana
+            # consumes. Owner = SPL Token Program; data.parsed.info has
+            # decimals matching the registry's 6-decimal default.
+            return FakeResponse({"result": {"value": {
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "data": {"parsed": {
+                    "type": "mint",
+                    "info": {"decimals": 6, "supply": str(_FIFTY_M * 10**6)},
+                }, "program": "spl-token"},
+                "lamports": 1, "executable": False, "rentEpoch": 0,
+            }}})
         if "triggerconstantcontract" in url:
             selector = body.get("function_selector", "")
             value = raw_hex if "totalSupply" in selector else hex(6)
@@ -97,4 +178,6 @@ def fake_rpc(monkeypatch):
     monkeypatch.setattr(_afetch.requests, "head", blocked)
     monkeypatch.setattr(_afetch.requests, "get", blocked)
     monkeypatch.setattr(_locator.requests, "get", blocked)
+    monkeypatch.setattr(_paxos.requests, "head", blocked)
+    monkeypatch.setattr(_paxos.requests, "get", blocked)
     return fake_post

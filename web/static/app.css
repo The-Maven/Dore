@@ -5,6 +5,7 @@
    ════════════════════════════════════════════════════════════════════ */
 
 :root {
+  /* Default = dark theme. Toggle via [data-theme="light"] on <html>. */
   --ink:      #0A0B0E;
   --ink-2:    #111317;
   --ink-3:    #16181d;
@@ -23,7 +24,34 @@
   --side-w:   232px;
   --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --brand: 'Inter Tight', 'Inter', system-ui, sans-serif;
+  /* Compatibility: legacy code uses var(--bg) as the body background. */
+  --bg: var(--ink);
 }
+
+/* Light theme — inverted backgrounds + accents adjusted for AA contrast
+   on cream. Gold darkens to a richer brass so it reads as the same brand
+   accent rather than a wash. Greens/amber/rose pulled darker so the
+   PASS/WATCH/ALERT semantics remain legible. */
+:root[data-theme="light"] {
+  --ink:      #F5F1E8;  /* warm cream — primary surface */
+  --ink-2:    #ECE6D6;  /* secondary surface */
+  --ink-3:    #E2DBC6;  /* tertiary / table-stripe */
+  --paper:    #1C1A14;  /* primary ink — near-black with warmth */
+  --gold:     #8B6720;  /* richer brass for contrast on cream */
+  --green:    #2E7D5B;  /* AA on cream */
+  --amber:    #B26A12;  /* darker amber for warnings */
+  --rose:     #B43E3E;  /* darker rose for errors */
+  --muted:    #5A5648;
+  --muted-2:  #7C7868;
+  --line:     #C9C2AC;
+  --line-2:   #D9D2BD;
+  --bg: var(--ink);
+}
+
+/* Suppress the scanline + grid overlays in light mode — they only read
+   correctly on dark backgrounds. */
+:root[data-theme="light"] body::before,
+:root[data-theme="light"] body::after { display: none; }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -692,14 +720,17 @@ a.addr-link:hover .addr-ext { opacity: 1; }
   border-left: 2px solid transparent;
 }
 .corpus-card:last-child { border-bottom: none; }
-.corpus-card.src-proposed { border-left-color: var(--amber); }
-.corpus-card.src-approved { border-left-color: var(--green); }
-.corpus-card.src-rejected {
+.corpus-card.src-included { border-left-color: var(--green); }
+.corpus-card.src-excluded {
   border-left-color: var(--rose);
-  opacity: .72;
+  opacity: .66;
 }
 .corpus-top {
   display: flex; align-items: center; gap: 12px;
+}
+.corpus-tags {
+  margin-left: auto; flex: none;
+  display: flex; align-items: center; gap: 6px;
 }
 .corpus-id {
   display: flex; align-items: baseline; gap: 9px; min-width: 0;
@@ -713,7 +744,7 @@ a.addr-link:hover .addr-ext { opacity: 1; }
   color: var(--gold); border: 1px solid rgba(212,162,74,.35);
   padding: 1px 5px;
 }
-.corpus-top .stag { margin-left: auto; flex: none; }
+.corpus-top .corpus-tags .stag { flex: none; }
 .corpus-summary {
   color: var(--muted); font-size: 10.5px; line-height: 1.55;
   margin-top: 5px;
@@ -840,17 +871,155 @@ a.addr-link:hover .addr-ext { opacity: 1; }
 .sev-warn { color: var(--amber); border-color: rgba(247,185,85,.4); }
 .sev-critical { color: var(--rose); border-color: rgba(248,113,113,.4); }
 
-/* passages */
-.passage { padding: 8px 12px; border-bottom: 1px solid var(--line-2); }
-.passage-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.passage-head svg { width: 14px; height: 14px; }
-.passage-heading { font-weight: 600; color: var(--paper); }
-.passage-section { color: var(--muted-2); font-size: 9.5px; letter-spacing: .06em; }
-.score {
-  margin-left: auto; color: var(--gold); font-size: 9px;
-  border: 1px solid rgba(212,162,74,.35); padding: 1px 5px; letter-spacing: .06em;
+/* ── REASONING FRAME passage cards ───────────────────────────────────
+   One cited passage = one card. Source title + section heading + a short
+   summary + a "view source" link + an expand affordance. The raw
+   relevance score is never shown (it has no audience meaning); ordering
+   alone communicates relative weight, with a subtle gold accent on the
+   top-ranked card. */
+.passage-list {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 10px 14px 14px;
+  /* Cap the reasoning frame so it doesn't dominate the screen. Internal
+     scroll keeps surrounding context visible (facts, gaps, narrative). */
+  max-height: 420px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(212,162,74,.3) transparent;
 }
-.passage-text { color: var(--muted); font-size: 10.5px; line-height: 1.6; margin: 5px 0; }
+.passage-list::-webkit-scrollbar { width: 6px; }
+.passage-list::-webkit-scrollbar-track { background: transparent; }
+.passage-list::-webkit-scrollbar-thumb {
+  background: rgba(212,162,74,.3);
+  border-radius: 3px;
+}
+.passage-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(212,162,74,.5);
+}
+.passage {
+  position: relative;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 11px 13px 10px 16px;
+  background: rgba(212,162,74,.025);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-2);
+  transition: border-color .12s ease, background .12s ease;
+}
+.passage.passage-clickable { cursor: pointer; }
+.passage.passage-clickable:hover {
+  border-color: rgba(212,162,74,.35);
+  background: rgba(212,162,74,.045);
+}
+.passage.passage-top {
+  border-left-color: var(--gold);
+  background: rgba(212,162,74,.05);
+}
+.passage.passage-open {
+  border-color: rgba(212,162,74,.4);
+  background: rgba(212,162,74,.05);
+}
+
+/* header strip — rank · source title + heading + section · badge */
+.passage-head {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: baseline; gap: 10px;
+}
+.passage-rank {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; font-weight: 600; color: var(--muted-2);
+  letter-spacing: .04em; line-height: 1.1;
+  text-align: right; padding-top: 1px;
+}
+.passage-top .passage-rank { color: var(--gold); }
+.passage-id {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.passage-source {
+  font-family: 'Inter Tight', 'IBM Plex Mono', monospace;
+  font-size: 12px; font-weight: 600; color: var(--paper);
+  letter-spacing: .005em; line-height: 1.25;
+}
+.passage-heading {
+  font-size: 10.5px; color: var(--muted);
+  line-height: 1.4; font-weight: 500;
+}
+.passage-section {
+  font-size: 9px; color: var(--muted-2);
+  letter-spacing: .08em; text-transform: uppercase;
+  line-height: 1.3;
+}
+
+/* source-verified / auto-included quality badge — preserved from the
+   corpus opt-out work; lives in the header's right column. */
+.src-verified, .src-auto {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 8.5px; letter-spacing: .1em; font-weight: 600;
+  text-transform: uppercase; padding: 1px 5px; border: 1px solid;
+  white-space: nowrap;
+}
+.src-verified { color: var(--green); border-color: rgba(127,224,166,.4); }
+.src-verified svg { width: 10px; height: 10px; }
+.src-auto { color: var(--muted-2); border-color: var(--line); }
+
+/* short summary — deterministic first-sentence / 160-char excerpt */
+.passage-summary {
+  font-size: 11.5px; line-height: 1.55; color: var(--muted);
+  padding-left: 32px;
+}
+.passage-summary.passage-empty { color: var(--muted-2); font-style: italic; }
+
+/* full text — hidden by default, revealed by click/expand */
+.passage-full {
+  margin-top: 2px; padding: 9px 12px 10px;
+  margin-left: 32px;
+  border-left: 2px solid rgba(212,162,74,.35);
+  background: rgba(0,0,0,.18);
+}
+.passage-full-cap {
+  font-size: 8.5px; letter-spacing: .12em; font-weight: 600;
+  color: var(--gold); text-transform: uppercase; margin-bottom: 6px;
+}
+.passage-full-text {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; line-height: 1.6; color: var(--muted);
+  white-space: pre-wrap;
+}
+
+/* footer — view-source link + expand toggle */
+.passage-foot {
+  display: flex; align-items: center; gap: 10px;
+  padding-left: 32px; margin-top: 1px;
+}
+.passage-link, .passage-link-empty {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 9.5px; letter-spacing: .08em; font-weight: 600;
+  text-transform: uppercase; padding: 2px 7px;
+  color: var(--muted-2); border: 1px solid var(--line);
+}
+.passage-link { color: var(--gold); border-color: rgba(212,162,74,.35); }
+.passage-link:hover {
+  color: var(--paper); border-color: var(--gold);
+  background: rgba(212,162,74,.08);
+}
+.passage-link .glyph { color: var(--gold); margin-left: 1px; }
+.passage-link-empty { font-style: italic; }
+.passage-toggle {
+  margin-left: auto;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px; letter-spacing: .12em; font-weight: 600;
+  text-transform: uppercase; padding: 2px 7px;
+  color: var(--muted-2); background: transparent;
+  border: 1px solid var(--line); cursor: pointer;
+}
+.passage-toggle:hover {
+  color: var(--gold); border-color: rgba(212,162,74,.4);
+}
+.passage-toggle .glyph {
+  font-family: 'IBM Plex Mono', monospace; font-weight: 600;
+  color: var(--gold); width: 10px; text-align: center;
+}
 
 /* citations */
 .cite-row { margin-top: 4px; }
@@ -1011,6 +1180,317 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .vmark-ok { color: var(--green); }
 .vmark-no { color: var(--amber); }
 
+/* Multi-RPC consensus badge — surfaces per-chain corroboration so the
+   user can see (and trust) the reliability of each figure. */
+.consensus {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 9.5px;
+  font-family: 'IBM Plex Mono', monospace;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  white-space: nowrap;
+  cursor: help;
+}
+.consensus-ok   { color: var(--green); border-color: rgba(127,224,166,.4); }
+.consensus-warn { color: var(--amber); border-color: rgba(247,185,85,.4); }
+.consensus-bad  { color: var(--rose);  border-color: rgba(255,120,120,.55);
+                  background: rgba(255,120,120,.06); }
+.consensus-mute { color: var(--muted); border-color: rgba(255,255,255,.08); }
+
+/* Source health — a small dot+label next to "view source" links. Surfaces
+   whether the live URL is reachable and whether we're falling back to the
+   archived copy. Aligns with the brand thesis: name the limits. */
+.src-health {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 6px 1px 14px;
+  font-size: 9px; letter-spacing: .05em; text-transform: uppercase;
+  font-family: 'IBM Plex Mono', monospace;
+  border-radius: 8px;
+  position: relative; cursor: help;
+  margin-left: 8px;
+}
+.src-health::before {
+  content: ''; position: absolute; left: 5px; top: 50%;
+  transform: translateY(-50%);
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor;
+}
+.src-health-ok   { color: var(--green); background: rgba(127,224,166,.06); }
+.src-health-bad  { color: var(--rose);  background: rgba(255,120,120,.08); }
+.src-health-mute { color: var(--muted); background: rgba(255,255,255,.02); }
+
+/* Archive-fallback link styling: archived link gets the gold treatment of
+   a regular view-source; the dead live link is muted + struck-through. */
+.passage-link-archive .glyph { color: var(--gold); margin-left: 1px; }
+.passage-link-dead {
+  display: inline-block; margin-left: 10px;
+  font-size: 10px; color: var(--muted-2);
+  text-decoration: line-through; cursor: not-allowed;
+}
+.passage-link-dead:hover { color: var(--rose); }
+
+/* ── Backing-model strip ───────────────────────────────────────────
+   Above the metric grid so the reader sees the lineage before the numbers. */
+.backing-strip {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 10px; padding: 10px 14px 8px;
+  border-bottom: 1px solid rgba(212,162,74,.08);
+}
+.backing-kicker {
+  font-size: 9px; letter-spacing: .12em;
+  color: var(--muted); font-family: 'IBM Plex Mono', monospace;
+}
+.backing-badge {
+  display: inline-block; padding: 3px 8px;
+  font-size: 10.5px; font-weight: 600;
+  border: 1px solid currentColor; border-radius: 2px;
+  font-family: 'IBM Plex Mono', monospace;
+  text-transform: uppercase; letter-spacing: .04em;
+  cursor: help;
+}
+.backing-fiat       { color: var(--green); background: rgba(127,224,166,.05); }
+.backing-crypto     { color: var(--gold);  background: rgba(212,162,74,.06); }
+.backing-synthetic  { color: var(--amber); background: rgba(247,185,85,.06); }
+.backing-algorithmic{ color: var(--rose);  background: rgba(255,120,120,.04); }
+.backing-new        { color: var(--muted); background: rgba(255,255,255,.02); }
+.backing-desc {
+  flex: 1 1 240px; min-width: 0;
+  font-size: 11px; color: var(--muted-2);
+  font-family: 'Inter Tight', sans-serif;
+  line-height: 1.4;
+}
+.backing-link {
+  font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--gold); padding: 3px 8px;
+  border: 1px solid rgba(212,162,74,.35); border-radius: 2px;
+  white-space: nowrap;
+}
+.backing-link:hover { background: rgba(212,162,74,.08); }
+
+/* ── Data lineage banner ───────────────────────────────────────────
+   Trust artefact: sits ABOVE the metric grid and names the lineage of
+   every figure below it. Multi-chain corroboration shouldn't be a
+   detail buried in a column; it should be the first thing a financial
+   reader sees, exactly the way an audit-trail line item would read. */
+.lineage-banner {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(212,162,74,.1);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; letter-spacing: .05em;
+  cursor: help;
+}
+.lineage-kick {
+  font-weight: 700; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 2px;
+  font-size: 10px;
+}
+.lineage-sub { color: var(--paper); font-weight: 500; }
+.lineage-prov {
+  margin-left: auto; color: var(--muted-2);
+  font-style: italic; font-size: 10px;
+}
+.lineage-prov .glyph { color: var(--gold); margin-right: 4px; }
+.lineage-strong { background: rgba(127,224,166,.04); }
+.lineage-strong .lineage-kick { color: var(--bg); background: var(--green); }
+.lineage-mixed  { background: rgba(212,162,74,.04); }
+.lineage-mixed .lineage-kick  { color: var(--bg); background: var(--gold); }
+.lineage-thin   { background: rgba(247,185,85,.04); }
+.lineage-thin .lineage-kick   { color: var(--bg); background: var(--amber); }
+.lineage-partial { background: rgba(247,185,85,.10); }
+.lineage-partial .lineage-kick {
+  color: var(--bg); background: var(--amber);
+  box-shadow: 0 0 4px rgba(247,185,85,.4);
+}
+.lineage-disagree { background: rgba(255,120,120,.08); }
+.lineage-disagree .lineage-kick {
+  color: var(--paper); background: var(--rose);
+  box-shadow: 0 0 6px rgba(255,120,120,.4);
+}
+
+/* ── Coherence bridge (n/a ↔ AI context) ──────────────────────────
+   When a cell reads n/a AND we have an AI context card, link the two
+   explicitly so the user never reads them as contradictory. */
+.na-bridge {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(212,162,74,.05);
+  border-left: 2px solid var(--gold);
+  font-size: 11.5px; line-height: 1.5;
+  display: flex; gap: 8px; align-items: flex-start;
+  color: var(--paper);
+}
+.na-bridge code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; padding: 1px 5px;
+  background: rgba(255,255,255,.05); border-radius: 2px;
+  color: var(--gold);
+}
+
+/* Working escape hatch from an n/a coverage cell to the live data
+   dashboard. Crypto-collateralised + synthetic tokens get a gold link
+   to MakerBurn / Ethena transparency / etc — never dead-end the user. */
+.na-proto-link {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 8px;
+  font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--gold); border: 1px solid rgba(212,162,74,.4);
+  border-radius: 2px;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.na-proto-link:hover { background: rgba(212,162,74,.08); }
+.na-proto-link .glyph { color: var(--gold); margin-left: 2px; }
+
+/* ── Doré Brief hero panel ────────────────────────────────────────────
+   Editorial top-of-view synthesis. Distinct visual identity (gold
+   accent border, large headline, kicker badge) so the reader knows in
+   the first glance this is AI-composed editorial — never confused with
+   a verified figure. Designed to be the first thing the eye lands on. */
+.brief-hero {
+  margin: 0 14px 12px;
+  padding: 14px 18px 16px;
+  background: linear-gradient(
+    180deg, rgba(212,162,74,.07) 0%, rgba(212,162,74,.025) 100%
+  );
+  border: 1px solid rgba(212,162,74,.4);
+  border-left: 4px solid var(--gold);
+  border-radius: 2px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.brief-kick-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+}
+.brief-badge {
+  padding: 3px 9px;
+  background: var(--gold); color: var(--bg);
+  font-weight: 700; letter-spacing: .09em;
+}
+.brief-surface {
+  color: var(--muted-2); letter-spacing: .08em;
+}
+.brief-symbol {
+  color: var(--gold); font-weight: 700; letter-spacing: .06em;
+}
+.brief-time {
+  margin-left: auto; color: var(--muted); font-style: italic;
+  cursor: help;
+}
+.brief-headline {
+  font-family: 'Bodoni Moda', 'Inter Tight', serif;
+  font-size: 22px; line-height: 1.3; font-weight: 600;
+  color: var(--paper);
+  letter-spacing: -.01em;
+}
+.brief-points {
+  margin: 0; padding-left: 18px;
+  display: flex; flex-direction: column; gap: 6px;
+  list-style: none;
+}
+.brief-point {
+  position: relative;
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 13px; line-height: 1.5;
+  color: var(--paper);
+  padding-left: 12px;
+}
+.brief-point::before {
+  content: '◇';
+  position: absolute; left: -8px; top: 0;
+  color: var(--gold); font-size: 11px;
+}
+.brief-news {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(212,162,74,.18);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.brief-news-kick {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px; letter-spacing: .1em;
+  color: var(--gold);
+  margin-bottom: 2px;
+}
+.brief-news-row {
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  font-size: 12px;
+  font-family: 'Inter Tight', sans-serif;
+}
+.brief-news-title {
+  color: var(--paper); font-weight: 500;
+  text-decoration: none;
+}
+.brief-news-title:hover { color: var(--gold); }
+.brief-news-title .glyph { color: var(--gold); margin-left: 1px; font-size: 10px; }
+.brief-news-src {
+  color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; letter-spacing: .03em;
+  padding: 1px 6px;
+  background: rgba(255,255,255,.04);
+  border-radius: 2px;
+}
+.brief-foot {
+  font-size: 10px; color: var(--muted-2);
+  font-style: italic; line-height: 1.4;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255,255,255,.06);
+}
+@media (max-width: 768px) {
+  .brief-hero { margin: 0 8px 10px; padding: 12px 14px 14px; }
+  .brief-headline { font-size: 18px; line-height: 1.35; }
+  .brief-news-row { gap: 6px; }
+  .brief-time { margin-left: 0; flex-basis: 100%; font-size: 9.5px; }
+}
+
+/* ── Augmentation card — AI context ────────────────────────────────
+   Visually distinct so it can never be confused with a verified figure.
+   Gold accent line + an explicit "AI CONTEXT" badge. */
+.aug-card {
+  margin: 12px 14px 0;
+  padding: 10px 14px 12px;
+  background: rgba(212,162,74,.04);
+  border-left: 3px solid var(--gold);
+  border-radius: 0 2px 2px 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.aug-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10px; font-family: 'IBM Plex Mono', monospace;
+}
+.aug-tag {
+  padding: 2px 7px; background: var(--gold); color: var(--bg);
+  font-weight: 700; letter-spacing: .08em;
+}
+.aug-conf {
+  padding: 1px 6px; border: 1px solid currentColor; border-radius: 2px;
+  letter-spacing: .04em; cursor: help;
+}
+.aug-conf-training { color: var(--muted); }
+.aug-conf-web      { color: var(--green); }
+.aug-reason { color: var(--muted-2); font-style: italic; }
+.aug-body {
+  font-size: 12.5px; line-height: 1.55;
+  color: var(--paper);
+  font-family: 'Inter Tight', sans-serif;
+}
+.aug-cites {
+  font-size: 10px; color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  letter-spacing: .03em;
+}
+.aug-cites-kick { color: var(--muted); margin-right: 6px; }
+.aug-cite { color: var(--gold); }
+.aug-cite:hover { background: rgba(212,162,74,.08); }
+.aug-cite .glyph { color: var(--gold); }
+.aug-cite-sep { color: var(--muted); }
+
 /* ── analyze: empty / progress ────────────────────────────────────── */
 .run-stages { padding: 4px 0; }
 .rstage {
@@ -1164,9 +1644,266 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-@media (max-width: 720px) {
+/* ════════════════════════════════════════════════════════════════════
+   MOBILE PASS — phone-first reading of a desktop terminal.
+   Strategy: keep desktop IDENTICAL above 768px. Below it, turn the
+   stacked-table view into a sequence of horizontal carousels, expand
+   touch targets to ≥44px, and collapse the sidebar into a horizontal
+   F-key strip at the top of the screen. Two breakpoints:
+     ≤ 768px — phone + small tablet: layout reflow, carousels, touch.
+     ≤ 500px — small phone: hide secondary topbar chips, cmd hint.
+   ════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+  /* ── topbar — drop the brand-credit + softer stat row ───────────── */
+  .topbar { padding: 0 8px; }
+  .brand-credit { display: none; }
+  .topbar-stats { flex: 1; justify-content: flex-end; overflow-x: auto;
+    scrollbar-width: none; }
+  .topbar-stats::-webkit-scrollbar { display: none; }
+  .tstat { padding: 0 8px; font-size: 10.5px; }
+  .topbar-tier { margin-right: 0; padding: 2px 4px; }
+  .tier-btn {
+    /* honest touch target — 44×44 effective via padding */
+    min-height: 26px; padding: 6px 10px; font-size: 10.5px;
+  }
+  .auth-ctl { padding: 0 10px; font-size: 10.5px; }
+
+  /* ── shell — flip to vertical (F-key strip on top, main below) ─── */
+  .shell {
+    flex-direction: column;
+    top: calc(var(--topbar-h) + var(--ticker-h));
+    bottom: var(--cmd-h);
+  }
+
+  /* sidebar collapses to a horizontal F-key bar; hide instruments +
+     engine blocks. The full sidebar lives in landscape/tablet — phone
+     gets just the navigation strip. */
+  .sidebar {
+    width: 100%; flex: none; height: auto;
+    border-right: none; border-bottom: 1px solid var(--line);
+    overflow: visible;
+  }
+  .side-block { border-bottom: none; padding: 0; }
+  .side-block.grow,
+  .side-block:not(:first-child) { display: none; }
+  .side-head { display: none; }
+  .side-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    /* fade-right edge hint that more tabs lie offscreen */
+    -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent);
+            mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent);
+  }
+  .side-nav::-webkit-scrollbar { display: none; }
+  .side-row {
+    flex: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px;
+    /* 44px tall on the y-axis honours touch */
+    min-height: 48px;
+    min-width: 64px;
+    padding: 6px 12px;
+    border-left: none;
+    border-bottom: 2px solid transparent;
+    scroll-snap-align: start;
+  }
+  .side-row.active {
+    border-left: none;
+    border-bottom-color: var(--gold);
+    background: transparent;
+  }
+  .side-row .lbl { font-size: 9.5px; letter-spacing: .08em; }
+  .side-row .fk { font-size: 8.5px; padding: 0 4px; }
+
+  .main { width: 100%; height: auto; flex: 1; min-height: 0; }
+
+  /* ── view header — looser on phone, hide subtitle ────────────────── */
+  .view-head { padding: 8px 12px; gap: 9px; flex-wrap: wrap; }
+  .view-sub { display: none; }
+  .view-actions { width: 100%; margin-left: 0; }
+
+  /* ── metric grid → horizontal scroll carousel ────────────────────
+     Each cell becomes a snap-point so the user swipes through metrics
+     instead of scrolling past a tower of stacked rows. Fade-right edge
+     signals more content. */
+  .mgrid {
+    display: flex; grid-template-columns: none;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scroll-padding-left: 12px;
+    scrollbar-width: none;
+    border-top: 1px solid var(--line-2);
+    -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 32px), transparent);
+            mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 32px), transparent);
+  }
+  .mgrid::-webkit-scrollbar { display: none; }
+  .mcell {
+    flex: 0 0 56vw;
+    max-width: 240px;
+    min-width: 160px;
+    border-right: 1px solid var(--line-2);
+    border-bottom: none;
+    scroll-snap-align: start;
+    padding: 10px 14px;
+  }
+  .mcell-val { font-size: 18px; }
+
+  /* ── coverage row — stack the two halves vertically ──────────────── */
+  .cov-row { grid-template-columns: 1fr; }
+  .cov-cell { border-right: none; border-bottom: 1px solid var(--line-2); }
+  .cov-cell:last-child { border-bottom: none; }
+  .cov-big { font-size: 26px; }
+
+  /* ── data tables → horizontal scroll with swipe hint ────────────
+     Tables stay tabular (financial readers want column alignment) but
+     are wrapped in their own scroll surface with a fade-right hint.
+     The hint pulses on first paint so the user knows to swipe. */
+  .dtable {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+    scrollbar-width: thin;
+    -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent);
+            mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent);
+  }
+  .dtable thead, .dtable tbody, .dtable tr { display: table; width: max-content; min-width: 100%; table-layout: auto; }
+  .dtable th, .dtable td { padding: 6px 10px; font-size: 10.5px; }
+
+  /* a wrapper-free swipe affordance — a subtle gold "→" pulses next to
+     any sub-head that precedes a scrollable table, so the user knows
+     to swipe instead of waiting for content to wrap */
+  .sub-head { position: relative; padding-right: 28px; }
+  .sub-head::after {
+    content: "›"; position: absolute; right: 12px; top: 50%;
+    transform: translateY(-50%);
+    color: var(--gold); font-weight: 700; font-size: 13px;
+    opacity: .55; animation: swipeHint 1.8s ease-in-out 1.5;
+  }
+  @keyframes swipeHint {
+    0%,100% { transform: translate(0, -50%); opacity: .35; }
+    50%     { transform: translate(4px, -50%); opacity: .85; }
+  }
+
+  /* ── panels — looser margins, full bleed ─────────────────────────── */
+  .panel { margin: 10px 8px; }
+  .panel-head { padding: 6px 10px; }
+  .panel-body.pb-pad { padding: 10px; }
+  .pad { padding: 10px; }
+
+  /* strip → horizontal carousel (was grid-auto-flow: column already, so
+     just make it scrollable when the cells overflow) */
+  .strip {
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent);
+            mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent);
+  }
+  .strip::-webkit-scrollbar { display: none; }
+  .strip-cell {
+    flex: 0 0 auto; min-width: 140px; scroll-snap-align: start;
+    padding: 9px 14px;
+  }
+
+  /* ── lineage banner — stack the three parts so they never line-wrap
+     awkwardly. The kicker + sub on top, the provenance under. */
+  .lineage-banner {
+    flex-direction: column; align-items: flex-start; gap: 4px;
+    padding: 10px 12px;
+  }
+  .lineage-prov { margin-left: 0; }
+
+  /* ── backing-strip — make the description full-width below the
+     badge so it never crowds */
+  .backing-strip { gap: 8px; padding: 10px 12px; }
+  .backing-desc { flex: 1 1 100%; }
+
+  /* ── reasoning frame — passage list takes more vertical room on phone,
+     cards a touch bigger for thumb-friendly tap targets */
+  .passage-list {
+    max-height: 70vh;
+    padding: 10px 8px 14px;
+    gap: 8px;
+  }
+  .passage { padding: 12px 12px 10px 14px; }
+  .passage-head { grid-template-columns: 20px 1fr auto; gap: 8px; }
+  .passage-summary,
+  .passage-foot,
+  .passage-full { padding-left: 0; margin-left: 0; }
+  .passage-full { padding: 9px 10px 10px; }
+  .passage-source { font-size: 13px; line-height: 1.3; }
+  .passage-heading { font-size: 11px; }
+  /* expand touch targets — toggle and view-source need to be tappable */
+  .passage-toggle,
+  .passage-link,
+  .passage-link-empty {
+    min-height: 32px; padding: 6px 10px; font-size: 10px;
+  }
+
+  /* ── augmentation citations row → horizontal scroll if many ────── */
+  .aug-cites {
+    display: flex; align-items: baseline; gap: 6px;
+    overflow-x: auto; white-space: nowrap;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+    -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent);
+            mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent);
+  }
+  .aug-cites::-webkit-scrollbar { display: none; }
+  .aug-cites-kick { flex: none; }
+  .aug-cite { flex: none; padding: 2px 6px; }
+  .aug-card { margin: 10px 8px 0; padding: 10px 12px 12px; }
+  .aug-body { font-size: 12px; }
+
+  /* ── corpus cards — pad and breathe; foot can wrap ───────────────── */
+  .corpus-card { padding: 12px 12px; }
+  .corpus-top { flex-wrap: wrap; gap: 8px; }
+  .corpus-tags { margin-left: 0; }
+  .corpus-foot { flex-wrap: wrap; gap: 8px; }
+  .corpus-votes { margin-left: 0; }
+  .vote-btn { min-height: 32px; padding: 6px 12px; font-size: 10px; }
+
+  /* picker cards — full-width single column with bigger tap zone */
+  .picker-grid { grid-template-columns: 1fr; }
+  .picker-card { padding: 12px 14px; min-height: 56px; }
+
+  /* checks + gaps — looser tap zone for the row */
+  .check, .gap { padding: 8px 12px; }
+
+  /* ── command line — hide the verbose hint, keep input full-bleed ── */
+  .cmd-hint { display: none; }
+  .cmdline { padding: 0 10px; }
+  .cmd-input { font-size: 12px; }
+
+  /* ── buttons — promote to 44px touch on phone ───────────────────── */
+  .btn { min-height: 36px; padding: 8px 14px; font-size: 11px; }
+
+  /* ── monitor log feed — let the wide log scroll horizontally
+     (preserving the column grid) instead of bleeding off-screen */
+  .feed { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .log-line { min-width: 760px; }
+  .feed-bar { padding: 6px 12px; font-size: 9.5px; }
+}
+
+/* ── small-phone refinements (iPhone SE / 375-class widths) ─────── */
+@media (max-width: 500px) {
+  /* keep only TOKENS and SESSION in the top stats — hide LLM / FEED /
+     LINK so the bar reads at a glance */
   .topbar-stats .tstat:nth-child(n+3) { display: none; }
-  .mgrid { grid-template-columns: 1fr 1fr; }
+  /* tighter brand: drop the "RS │" prefix on the smallest phones */
+  .brand-mark, .brand-sep { display: none; }
+  .brand-hero { font-size: 16px; }
+  .brand-rule { display: none; }
+  /* tighter tier toggle — keep two pills but reduce label noise */
+  .tier-btn { padding: 6px 8px; font-size: 9.5px; }
+  /* auth control tightens to icon + dot only */
+  .auth-ctl { padding: 0 8px; font-size: 9.5px; }
+  /* mcell snap-width grows so each metric fills almost the screen */
+  .mcell { flex-basis: 78vw; }
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -1174,6 +1911,68 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
    Persistence is gated, never use. The control is quiet; the panel is
    an invitation, native to the gold-on-dark terminal — not a wall.
    ════════════════════════════════════════════════════════════════════ */
+/* Theme toggle — sun/moon icon in the topbar. Renders the icon for the
+   theme you'd switch TO (cue for affordance), not the current one. */
+.topbar-theme {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 24px;
+  margin-right: 6px;
+  background: transparent; color: var(--muted-2);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.topbar-theme:hover {
+  color: var(--gold);
+  border-color: rgba(212,162,74,.4);
+}
+:root[data-theme="light"] .topbar-theme {
+  border-color: rgba(0,0,0,.1);
+  color: var(--muted);
+}
+:root[data-theme="light"] .topbar-theme:hover {
+  color: var(--gold);
+  border-color: rgba(139,103,32,.4);
+}
+.theme-icon { display: block; }
+/* Default (dark) shows the SUN — the action: "switch to light" */
+:root .theme-icon-sun  { display: block; }
+:root .theme-icon-moon { display: none; }
+:root[data-theme="light"] .theme-icon-sun  { display: none; }
+:root[data-theme="light"] .theme-icon-moon { display: block; }
+
+/* Model-tier toggle (Flash / Pro). Pro = opt-in, slower, more reasoning.
+   Active button gets the gold treatment; Pro-active adds an amber glow + a
+   live 120s countdown badge so the user sees the budget. */
+.topbar-tier {
+  display: flex; align-items: center; gap: 4px;
+  padding: 2px 8px;
+  margin-right: 4px;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.tier-btn {
+  padding: 2px 8px;
+  font-size: 10px; letter-spacing: .08em;
+  background: transparent; color: var(--muted-2);
+  border: 1px solid rgba(255,255,255,.1); border-radius: 2px;
+  cursor: pointer;
+}
+.tier-btn:hover { color: var(--paper); border-color: rgba(212,162,74,.4); }
+.tier-active { color: var(--bg); background: var(--gold); border-color: var(--gold); }
+.topbar-tier.tier-deep-active .tier-active {
+  background: var(--amber); border-color: var(--amber);
+  box-shadow: 0 0 6px rgba(247,185,85,.4);
+}
+.tier-countdown {
+  display: inline-block; padding: 2px 6px;
+  margin-left: 6px;
+  font-size: 9.5px; font-weight: 600;
+  color: var(--amber);
+  border: 1px solid rgba(247,185,85,.5); border-radius: 2px;
+  background: rgba(247,185,85,.08);
+  font-family: 'IBM Plex Mono', monospace;
+}
+
 .topbar-auth { display: flex; align-items: center; padding-left: 4px; }
 .auth-ctl {
   display: flex; align-items: center; gap: 7px;

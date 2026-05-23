@@ -116,16 +116,79 @@ class SupabaseStore(Store):
 
     # ── sources ───────────────────────────────────────────────────────
     def list_sources(self) -> list[dict]:
-        resp = (
-            self._client.table("sources")
-            .select("*")
-            .order("created_at")
-            .execute()
-        )
-        return resp.data or []
+        """The source registry lives in `corpus/sources.yaml` — the YAML is
+        the durable source-of-truth that operator commits and the discovery
+        agent appends to. The DB's `sources` table is legacy / unused by
+        the discovery flow; reading it here used to cause silent divergence
+        where YAML-added sources were invisible until ingestion. Reading
+        the YAML here keeps SupabaseStore and FileStore symmetrical."""
+        import yaml as _yaml
+        from sca import config as _config
+        path = _config.CORPUS_DIR / "sources.yaml"
+        if not path.exists():
+            return []
+        raw = _yaml.safe_load(path.read_text()) or {}
+        out: list[dict] = []
+        for s in raw.get("sources", []):
+            out.append({
+                "id": s["id"],
+                "title": s["title"],
+                "tier": s.get("tier", ""),
+                "status": s.get("status", "included"),
+                "url": s.get("url", ""),
+                "summary": s.get("summary", ""),
+                "notes": s.get("notes", ""),
+            })
+        return out
 
     # ── corpus ────────────────────────────────────────────────────────
+    def _ensure_source_row(self, source_id: str) -> None:
+        """Upsert a row into the DB `sources` table for this id.
+
+        The YAML at corpus/sources.yaml is the registry; the DB table
+        exists only to satisfy the corpus_passages foreign key. We
+        mirror the YAML entry on demand so DB constraints are happy
+        without forcing the discovery flow to manage two stores.
+        """
+        # Look up the registry entry from the YAML mirror in list_sources()
+        entry = next(
+            (s for s in self.list_sources() if s["id"] == source_id),
+            None,
+        )
+        if entry is None:
+            return  # caller will hit FK error — better than silent invention
+        # NOTE: the live DB CHECK constraint on `status` predates the
+        # opt-out migration (0002_corpus_opt_out.sql) and accepts only the
+        # legacy values {proposed, included, excluded}. Anything outside
+        # that set 23514's. Coercing to a known-good value here keeps
+        # discovery unblocked without forcing a DB migration mid-flight;
+        # the YAML still carries the canonical status (included/excluded)
+        # and that's what the SPA reads via list_sources.
+        legacy_status = entry["status"] if entry["status"] in {
+            "proposed", "approved", "rejected",
+        } else "approved"
+        # Tier constraint also predates tier1_official / tier2_industry —
+        # legacy accepts {primary, standard, methodology, research}.
+        legacy_tier = entry["tier"] if entry["tier"] in {
+            "primary", "standard", "methodology", "research",
+        } else "research"
+        row = {
+            "id": entry["id"],
+            "title": entry["title"],
+            "tier": legacy_tier,
+            "status": legacy_status,
+            "url": entry["url"],
+            "summary": entry["summary"],
+            "notes": entry["notes"],
+        }
+        # Surface the upsert error — the previous silent try/except was
+        # masking real failures (RLS, schema mismatch). Caller can decide
+        # whether to retry; better than a phantom-success.
+        self._client.table("sources").upsert(row, on_conflict="id").execute()
+
     def save_passages(self, source_id: str, passages: list[dict]) -> None:
+        # Ensure the source row exists before any passage insert (FK constraint).
+        self._ensure_source_row(source_id)
         # Replace: passages for a source are regenerated wholesale on ingest.
         self._client.table("corpus_passages").delete().eq(
             "source_id", source_id
@@ -158,8 +221,10 @@ class SupabaseStore(Store):
     def record_source_decision(
         self, source_id: str, decision: str, user_id: str | None = None
     ) -> None:
-        if decision not in ("approved", "rejected"):
-            raise ValueError("decision must be 'approved' or 'rejected'")
+        if decision not in ("excluded", "included", "verified"):
+            raise ValueError(
+                "decision must be 'excluded', 'included' or 'verified'"
+            )
         row = {"source_id": source_id, "decision": decision}
         if user_id is not None:
             row["decided_by"] = user_id
@@ -186,7 +251,8 @@ class SupabaseStore(Store):
         self._client.table("address_decisions").insert(row).execute()
 
     def source_status_overrides(self) -> dict[str, str]:
-        # Append-only ledger: latest row per source wins.
+        # Append-only ledger: latest row per source wins. A 'verified' vote
+        # keeps the source included; only 'excluded' drops it.
         resp = (
             self._client.table("curation_votes")
             .select("source_id, decision, created_at")
@@ -195,7 +261,22 @@ class SupabaseStore(Store):
         )
         out: dict[str, str] = {}
         for d in resp.data or []:
-            out[d["source_id"]] = d["decision"]
+            out[d["source_id"]] = (
+                "excluded" if d["decision"] == "excluded" else "included"
+            )
+        return out
+
+    def source_verified_overrides(self) -> dict[str, bool]:
+        # Latest vote per source: 'verified' marks it human-reviewed.
+        resp = (
+            self._client.table("curation_votes")
+            .select("source_id, decision, created_at")
+            .order("created_at")
+            .execute()
+        )
+        out: dict[str, bool] = {}
+        for d in resp.data or []:
+            out[d["source_id"]] = d["decision"] == "verified"
         return out
 
     def address_verified_overrides(self) -> dict[str, bool]:

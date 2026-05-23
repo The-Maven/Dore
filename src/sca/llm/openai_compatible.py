@@ -12,6 +12,10 @@ import json
 import requests
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+# `deepseek-chat` is DeepSeek's pointer alias to their current flagship —
+# it auto-upgrades to the latest generation without us pinning a stale
+# version. Override with LLM_MODEL=<exact-id> in .env if you want a
+# specific snapshot (e.g. `deepseek-reasoner` for R1-style reasoning).
 DEFAULT_MODEL = "deepseek-chat"
 
 
@@ -22,7 +26,10 @@ class OpenAICompatibleLLM:
         api_key: str,
         base_url: str = DEEPSEEK_BASE_URL,
         model: str = DEFAULT_MODEL,
-        timeout: float = 120.0,
+        # Default to a 45s hard timeout so a slow / reasoning model can't
+        # hang a user request indefinitely. Set LLM_TIMEOUT_S in .env to
+        # override (reasoning models like deepseek-reasoner may need 120+s).
+        timeout: float = 45.0,
     ) -> None:
         if not api_key:
             raise RuntimeError("api_key is required")

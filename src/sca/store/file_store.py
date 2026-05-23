@@ -57,7 +57,8 @@ class FileStore(Store):
         return data
 
     def _save_votes(self, data: dict) -> None:
-        self._votes_path.write_text(yaml.safe_dump(data, sort_keys=False))
+        from sca.persist import atomic_write_text
+        atomic_write_text(self._votes_path, yaml.safe_dump(data, sort_keys=False))
 
     # ── analyses ──────────────────────────────────────────────────────
     def create_analysis(
@@ -160,11 +161,11 @@ class FileStore(Store):
 
     # ── corpus ────────────────────────────────────────────────────────
     def save_passages(self, source_id: str, passages: list[dict]) -> None:
-        self._corpus_dir.mkdir(parents=True, exist_ok=True)
+        from sca.persist import atomic_write_json
         rows = [self._normalise_passage(source_id, i, p)
                 for i, p in enumerate(passages)]
-        (self._corpus_dir / f"{source_id}.json").write_text(
-            json.dumps(rows, indent=2)
+        atomic_write_json(
+            self._corpus_dir / f"{source_id}.json", rows, sort_keys=False,
         )
 
     def get_passages(self, source_id: str | None = None) -> list[dict]:
@@ -206,11 +207,15 @@ class FileStore(Store):
         }
 
     # ── curation ──────────────────────────────────────────────────────
+    _SOURCE_DECISIONS = ("excluded", "included", "verified")
+
     def record_source_decision(
         self, source_id: str, decision: str, user_id: str | None = None
     ) -> None:
-        if decision not in ("approved", "rejected"):
-            raise ValueError("decision must be 'approved' or 'rejected'")
+        if decision not in self._SOURCE_DECISIONS:
+            raise ValueError(
+                "decision must be 'excluded', 'included' or 'verified'"
+            )
         data = self._load_votes()
         # Same record shape as sca.votes; user_id is an additive field.
         entry = {"id": source_id, "decision": decision, "at": str(date.today())}
@@ -243,9 +248,19 @@ class FileStore(Store):
         self._save_votes(data)
 
     def source_status_overrides(self) -> dict[str, str]:
+        # A 'verified' vote keeps the source included; it never excludes.
         out: dict[str, str] = {}
         for d in self._load_votes()["source_decisions"]:
-            out[d["id"]] = d["decision"]
+            out[d["id"]] = "excluded" if d["decision"] == "excluded" \
+                else "included"
+        return out
+
+    def source_verified_overrides(self) -> dict[str, bool]:
+        # A 'verified' vote marks a source human-reviewed; any later
+        # include/exclude vote clears that explicit signal.
+        out: dict[str, bool] = {}
+        for d in self._load_votes()["source_decisions"]:
+            out[d["id"]] = d["decision"] == "verified"
         return out
 
     def address_verified_overrides(self) -> dict[str, bool]:

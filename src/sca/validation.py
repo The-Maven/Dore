@@ -123,20 +123,49 @@ def _allowed_figures(
 
 
 def validate_sanctions(screen: SanctionsScreen) -> list[Check]:
-    """Guardrails over an OFAC sanctions screen."""
+    """Guardrails over an OFAC sanctions screen.
+
+    Staleness is bucketed by severity. Treasury can add a sanctioned
+    address overnight (e.g. Tornado Cash, Aug 2022); a stale list means we
+    silently clear an address that should have flagged.
+      - fresh (<= 2 days):    pass
+      - stale (3-7 days):     warn
+      - very stale (> 7 days): CRITICAL — screening is no longer reliable
+    """
     stale = screen.sdn_staleness_days
+    if stale is None:
+        freshness = _check(
+            "sdn_list_fresh", False, "warn",
+            f"OFAC SDN list published {screen.sdn_publish_date or '?'} — "
+            "publish date unparseable",
+        )
+    elif stale <= 2:
+        freshness = _check(
+            "sdn_list_fresh", True, "warn",
+            f"OFAC SDN list published {screen.sdn_publish_date} — "
+            f"{stale} days ago",
+        )
+    elif stale <= 7:
+        freshness = _check(
+            "sdn_list_fresh", False, "warn",
+            f"OFAC SDN list published {screen.sdn_publish_date} — "
+            f"{stale} days ago (stale; rerun `sca refresh`)",
+        )
+    else:
+        freshness = _check(
+            "sdn_list_fresh", False, "critical",
+            f"OFAC SDN list published {screen.sdn_publish_date} — "
+            f"{stale} days ago. Screening is NOT reliable: Treasury can "
+            f"add addresses overnight. Refresh before relying on this result.",
+        )
+
     return [
         _check(
             "sdn_list_loaded", screen.sdn_address_count > 0, "critical",
             f"{screen.sdn_address_count} sanctioned crypto addresses loaded "
             f"from the OFAC SDN list",
         ),
-        _check(
-            "sdn_list_fresh",
-            stale is not None and 0 <= stale <= 30, "warn",
-            f"OFAC SDN list published {screen.sdn_publish_date or '?'}"
-            + (f" — {stale} days ago" if stale is not None else ""),
-        ),
+        freshness,
         _check(
             "no_sanctioned_addresses", not screen.hits, "critical",
             f"{len(screen.hits)} screened address(es) are on the OFAC SDN "
@@ -199,8 +228,9 @@ def verify_citations(
         ),
         _check(
             "citations_source_valid", not bad_sources, "critical",
-            f"cites non-approved sources: {bad_sources}" if bad_sources
-            else "corpus citations resolve to approved passages",
+            f"cites sources outside the included corpus: {bad_sources}"
+            if bad_sources
+            else "corpus citations resolve to included passages",
         ),
         _check(
             "figures_traceable", not untraceable, "critical",

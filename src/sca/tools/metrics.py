@@ -26,8 +26,13 @@ def compute_metrics(
     current_supply: float,
     attestation_date,
     as_of: date | None = None,
+    provenance: str = "",
 ) -> Metrics:
-    """Compare a point-in-time attestation against live on-chain supply."""
+    """Compare a point-in-time attestation against live on-chain supply.
+
+    `provenance` (e.g. "1 attestation + 5-chain supply, 4/5 RPCs corroborated")
+    is surfaced in the UI so the user sees how every number was sourced.
+    """
     as_of = as_of or date.today()
     att_date = _as_date(attestation_date)
     return Metrics(
@@ -45,4 +50,5 @@ def compute_metrics(
             if attested_tokens
             else None
         ),
+        provenance=provenance,
     )

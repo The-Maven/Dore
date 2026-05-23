@@ -79,9 +79,29 @@ def test_validate_sanctions_hit_is_critical():
     assert not chk.passed and chk.severity == "critical"
 
 
-def test_validate_sanctions_stale_list_warns():
+def test_validate_sanctions_mildly_stale_warns():
+    """3-7 days old: warn — refresh is overdue but not yet critical."""
+    chk = next(
+        c for c in validate_sanctions(_screen(stale=5))
+        if c.name == "sdn_list_fresh"
+    )
+    assert not chk.passed and chk.severity == "warn"
+
+
+def test_validate_sanctions_very_stale_is_critical():
+    """Past a week, screening is no longer reliable. Critical, not warn —
+    a compliance product cannot silently use stale sanctions data."""
     chk = next(
         c for c in validate_sanctions(_screen(stale=90))
         if c.name == "sdn_list_fresh"
     )
-    assert not chk.passed and chk.severity == "warn"
+    assert not chk.passed and chk.severity == "critical"
+
+
+def test_validate_sanctions_fresh_list_passes():
+    """0-2 days old: fresh."""
+    chk = next(
+        c for c in validate_sanctions(_screen(stale=1))
+        if c.name == "sdn_list_fresh"
+    )
+    assert chk.passed

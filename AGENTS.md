@@ -20,12 +20,19 @@ style nit.
    `metrics`). No estimating, no rounding into existence, no LLM-guessed
    numbers. This extends to the UI: no fabricated motion, no random-walked
    values, no placeholder data dressed as real.
-2. **Judgements are cited.** A judgement cites the approved corpus, to the
-   section. If the corpus cannot support a claim, say so and stop short — an
+2. **Judgements are cited.** A judgement cites the corpus, to the section.
+   If the corpus cannot support a claim, say so and stop short — an
    uncited judgement is not allowed.
-3. **The human curation gate holds.** Code (and the agent) may *propose* a
-   corpus source or flag an address; only a human *approves*. Never add a
-   path that auto-approves curation.
+3. **The human curation lever holds.** The corpus is **opt-out**: every
+   registered source is citable by default. A human can exclude a source
+   (and may mark one explicitly verified — a badge, not a gate). Address
+   verification has two paths: an *auto* path (the contract self-reports
+   `symbol()`/`decimals()` and the registry agrees, with a zero-supply
+   guard) and a *human* path through `sca curate`. The human vote is
+   always sovereign — it wins over any auto entry, and auto never touches
+   a deployment a human has already decided on. Anything ambiguous
+   (mismatch, unsupported chain, RPC failure) stays flagged for a human;
+   auto never papers over a doubt. Surface which path verified an address.
 4. **`n/a` is a valid, honest answer.** When data cannot be verified, surface
    it plainly. A clearly-labelled gap is a finding. Never paper over it.
 5. **The audience is financial / compliance, not engineers.** User-facing
@@ -38,7 +45,7 @@ style nit.
 
     src/sca/
       tools/       LAYER 1 — facts. Deterministic, no LLM judgement.
-      corpus/      LAYER 2 — the human-gated reasoning frame.
+      corpus/      LAYER 2 — the curated reasoning frame (opt-out).
       agent/       LAYER 3 — synthesis: analyze / screen_token / assess_redemption.
       store/       persistence: a Store interface; FileStore + SupabaseStore.
       validation.py  deterministic guardrails (Check / Gap).
@@ -51,10 +58,10 @@ style nit.
 
 ## Working rules
 
-- **Tests are the contract.** `.venv/bin/python -m pytest -q` — ~125 tests,
-  and they must stay **green and hermetic**: fully offline, no network, no
-  database. The suite forces the file backend regardless of `.env`. If a
-  change makes tests need a network or a DB, the change is wrong.
+- **Tests are the contract.** `.venv/bin/python -m pytest -q` — the suite
+  must stay **green and hermetic**: fully offline, no network, no database.
+  The suite forces the file backend regardless of `.env`. If a change makes
+  tests need a network or a DB, the change is wrong.
 - **The `Store` abstraction.** Durable state goes through `get_store()` —
   never write files or hit Supabase directly from feature code. `FileStore`
   preserves offline behaviour; `SupabaseStore` is production. New durable

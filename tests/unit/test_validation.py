@@ -121,7 +121,8 @@ def test_valid_tool_citation_passes():
     ).passed
 
 
-def test_citing_non_approved_source_is_critical():
+def test_citing_source_outside_included_corpus_is_critical():
+    # A citation must resolve to a passage actually retrieved (included).
     checks = verify_citations(
         "Per [mica-title-iii §36] reserves must be 1:1.",
         supply=_supply(), attestation=None, passages=[],
@@ -130,7 +131,7 @@ def test_citing_non_approved_source_is_critical():
     assert not chk.passed and chk.severity == "critical"
 
 
-def test_citing_approved_source_passes():
+def test_citing_included_source_passes():
     passage = CorpusPassage(
         source_id="mica-title-iii", section="36", heading="h",
         text="t", citation="mica-title-iii §36",

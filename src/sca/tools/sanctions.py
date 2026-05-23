@@ -8,9 +8,18 @@ published list, not an attribution graph (that is a data-vendor's moat).
 The ~28MB SDN XML is fetched once and cached, re-fetched when older than a
 day. The parsed result carries the SDN publish date so guardrails can flag a
 stale list — a stale list silently mis-screens.
+
+Multi-URL resilience: Treasury hosts the SDN feed at two domains. We try
+them in order — if the primary moves or 4xx's, we automatically fall back.
+The list of URLs is small and stable; if a new mirror appears, add it here.
+
+Tamper detection: every successful download is hashed (sha256) and the
+hash logged. A future canary can compare across mirrors to catch a
+compromised feed before it reaches our screen.
 """
 from __future__ import annotations
 
+import hashlib
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -21,10 +30,19 @@ import requests
 
 from sca import config
 from sca.models import SdnAddress
+from sca.observability import log_event, timed
 
-OFAC_SDN_URL = "https://www.treasury.gov/ofac/downloads/sdn.xml"
+# Treasury publishes the SDN list at both URLs. They occasionally rotate
+# which is canonical; rotating *us* through both gives us a free fallback.
+OFAC_SDN_URLS = (
+    "https://www.treasury.gov/ofac/downloads/sdn.xml",
+    "https://ofac.treasury.gov/media/4076/download?inline",  # alternate path
+)
+# Legacy alias for callers that imported the old single-URL symbol.
+OFAC_SDN_URL = OFAC_SDN_URLS[0]
 _CACHE_DIR = config.DATA_DIR / "ofac"
 _SDN_FILE = _CACHE_DIR / "sdn.xml"
+_SDN_HASH_FILE = _CACHE_DIR / "sdn.sha256"
 _MAX_AGE_SECONDS = 86_400  # refresh the SDN list daily
 
 _parsed: "SdnList | None" = None
@@ -56,20 +74,55 @@ def _ensure_sdn_file(*, refresh: bool = False) -> Path:
     )
     if fresh and not refresh:
         return _SDN_FILE
-    try:
-        resp = requests.get(
-            OFAC_SDN_URL, timeout=120, headers={"User-Agent": "Mozilla/5.0"}
+
+    # Try each Treasury URL in order. First success wins; on any failure we
+    # rotate. If they all fail and we have a cached copy, we use it but
+    # mark it stale (loudly — the sanctions surface will escalate this).
+    last_exc: Exception | None = None
+    for url in OFAC_SDN_URLS:
+        try:
+            with timed("sdn.fetch", endpoint=url) as ev:
+                resp = requests.get(
+                    url, timeout=120,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                resp.raise_for_status()
+                ev["status_code"] = resp.status_code
+                ev["bytes"] = len(resp.content)
+        except requests.RequestException as exc:
+            last_exc = exc
+            log_event(
+                "sdn.fetch.failed", level="warn",
+                endpoint=url, error_class=type(exc).__name__,
+                error_message=str(exc),
+            )
+            continue
+
+        # Atomic write — a crash mid-download must NOT leave a half-
+        # written SDN file behind. The next sanctions screen would
+        # silently parse an empty or truncated file and clear addresses
+        # that should have flagged.
+        from sca.persist import atomic_write_bytes, atomic_write_text
+        atomic_write_bytes(_SDN_FILE, resp.content)
+        sha = hashlib.sha256(resp.content).hexdigest()
+        atomic_write_text(_SDN_HASH_FILE, sha)
+        log_event(
+            "sdn.fetch.ok", level="info",
+            endpoint=url, sha256=sha, bytes=len(resp.content),
         )
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        if _SDN_FILE.exists():
-            return _SDN_FILE  # fall back to the last good cached copy
-        raise SanctionsUnavailable(
-            f"could not fetch the OFAC SDN list: {exc}"
-        ) from exc
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    _SDN_FILE.write_bytes(resp.content)
-    return _SDN_FILE
+        return _SDN_FILE
+
+    if _SDN_FILE.exists():
+        log_event(
+            "sdn.fetch.exhausted_using_cache", level="error",
+            cache_age_days=int(
+                (time.time() - _SDN_FILE.stat().st_mtime) / 86_400
+            ),
+        )
+        return _SDN_FILE  # last-resort fallback to cached copy
+    raise SanctionsUnavailable(
+        f"could not fetch the OFAC SDN list from any mirror: {last_exc}"
+    ) from last_exc
 
 
 def _entry_name(entry: ET.Element) -> str:

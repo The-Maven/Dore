@@ -60,5 +60,5 @@ mode of work.
 ## Verification
 
 Before you answer, check: every figure traces to a verification result;
-every judgement either cites an approved corpus passage or is explicitly
+every judgement either cites an included corpus passage or is explicitly
 marked unsupported; every gap in the result is reflected in your answer.

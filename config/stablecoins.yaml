@@ -14,13 +14,55 @@
 # are out of v1 — their backing is on-chain collateral, not a PDF attestation.
 
 chains:
-  ethereum: {kind: evm, rpc: "https://ethereum-rpc.publicnode.com"}
-  base: {kind: evm, rpc: "https://base-rpc.publicnode.com"}
-  arbitrum: {kind: evm, rpc: "https://arbitrum-one-rpc.publicnode.com"}
-  optimism: {kind: evm, rpc: "https://optimism-rpc.publicnode.com"}
-  polygon: {kind: evm, rpc: "https://polygon-bor-rpc.publicnode.com"}
-  solana: {kind: solana, rpc: "https://api.mainnet-beta.solana.com"}
-  tron: {kind: tron, rpc: "https://api.trongrid.io"}
+  # Each chain lists multiple endpoints — primary first, then fallbacks.
+  # High-stakes reads (totalSupply) are corroborated across endpoints so a
+  # single misbehaving RPC can't quietly poison a "fully backed" judgement.
+  # Decimals reads (immutable) use primary only.
+  # Env override: `<CHAIN>_RPCS=url1,url2,url3` or legacy `<CHAIN>_RPC_URL`.
+  ethereum:
+    kind: evm
+    rpcs:
+      - "https://ethereum-rpc.publicnode.com"
+      - "https://cloudflare-eth.com"
+  base:
+    kind: evm
+    rpcs:
+      - "https://base-rpc.publicnode.com"
+      - "https://mainnet.base.org"
+  arbitrum:
+    kind: evm
+    rpcs:
+      - "https://arbitrum-one-rpc.publicnode.com"
+      - "https://arb1.arbitrum.io/rpc"
+  optimism:
+    kind: evm
+    rpcs:
+      - "https://optimism-rpc.publicnode.com"
+      - "https://mainnet.optimism.io"
+  polygon:
+    kind: evm
+    rpcs:
+      - "https://polygon-bor-rpc.publicnode.com"
+      - "https://polygon-rpc.com"
+  bsc:
+    kind: evm
+    rpcs:
+      - "https://bsc-rpc.publicnode.com"
+      - "https://bsc-dataseed.binance.org"
+  avalanche:
+    kind: evm
+    rpcs:
+      - "https://avalanche-c-chain-rpc.publicnode.com"
+      - "https://api.avax.network/ext/bc/C/rpc"
+  solana:
+    kind: solana
+    rpcs:
+      - "https://api.mainnet-beta.solana.com"
+      - "https://solana-rpc.publicnode.com"
+  tron:
+    kind: tron
+    rpcs:
+      - "https://api.trongrid.io"
 
 stablecoins:
   - symbol: USDC
@@ -44,6 +86,20 @@ stablecoins:
     deployments:
       - {chain: ethereum, contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7", verified: true}
       - {chain: tron, contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", verified: false}
+      # Source: tether.to/en/supported-protocols (official) — Avalanche C-chain.
+      - {chain: avalanche, contract: "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7", verified: false}
+      # Source: polygonscan.com — canonical native USDT on Polygon PoS, the
+      # only address Tether endorses on Polygon. The on-chain symbol now
+      # reports as "USDT0" because Tether upgraded the contract to the
+      # USDT0 omnichain standard in place (same address); the auto-verifier
+      # flags the symbol mismatch, so the deployment needs a human sign-off
+      # via `sca curate verify USDT polygon` rather than auto verification.
+      # Tether's omnichain upgrade renamed the symbol in place — the
+      # contract still self-reports the new "USDT0" identity. The alias
+      # lets auto-verify accept the canonical Tether address cleanly.
+      - {chain: polygon, contract: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", verified: false, symbol_aliases: ["USDT0"]}
+      # Source: tether.to/en/supported-protocols (official) — Solana SPL.
+      - {chain: solana, contract: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", verified: false}
 
   - symbol: PYUSD
     name: PayPal USD
@@ -52,6 +108,10 @@ stablecoins:
     latest_attestation_url: ""
     deployments:
       - {chain: ethereum, contract: "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8", verified: false}
+      # Source: PayPal/Paxos Solana whitepaper — SPL Token-2022 mint.
+      - {chain: solana, contract: "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", verified: false}
+      # Source: PayPal Arbitrum announcement (July 2025) / arbiscan.io.
+      - {chain: arbitrum, contract: "0x46850aD61C2B7d64d08c9C754F45254596696984", verified: false}
 
   - symbol: USDP
     name: Pax Dollar
@@ -105,3 +165,224 @@ stablecoins:
     latest_attestation_url: ""
     deployments:
       - {chain: ethereum, contract: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c", verified: false}
+
+  # ── Crypto-collateralised / decentralised stablecoins ────────────────────
+  # No fiat reserve attestation: backing is on-chain collateral, not a PDF.
+  # transparency_url / latest_attestation_url left empty by design. These
+  # still feed the supply and sanctions surfaces.
+
+  - symbol: DAI
+    name: Dai Stablecoin
+    issuer: Sky (MakerDAO)
+    backing_model: crypto_collateral
+    protocol_url: https://makerburn.com
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: etherscan.io / Maker Protocol docs (docs.makerdao.com)
+      - {chain: ethereum, contract: "0x6B175474E89094C44Da98b954EedeAC495271d0F", verified: false}
+      # Official Maker token bridges. Source: arbiscan.io / optimistic.etherscan.io / polygonscan.com
+      - {chain: arbitrum, contract: "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1", verified: false, kind: bridged}
+      - {chain: optimism, contract: "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1", verified: false, kind: bridged}
+      - {chain: polygon, contract: "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063", verified: false, kind: bridged}
+      - {chain: base, contract: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb", verified: false, kind: bridged}
+
+  - symbol: USDS
+    name: USDS Stablecoin
+    issuer: Sky
+    backing_model: crypto_collateral
+    protocol_url: https://sky.money
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: etherscan.io (Sky: USDS Token) / basescan.org
+      - {chain: ethereum, contract: "0xdC035D45d973E3EC169d2276DDab16f1e407384F", verified: false}
+      - {chain: base, contract: "0x820C137fa70C8691f0e44Dc420a5e53c168921Dc", verified: false, kind: bridged}
+
+  - symbol: USDe
+    name: Ethena USDe
+    issuer: Ethena Labs
+    backing_model: synthetic_delta_neutral
+    protocol_url: https://app.ethena.fi/dashboards/transparency
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: Ethena docs (docs.ethena.fi/solution-design/key-addresses)
+      - {chain: ethereum, contract: "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3", verified: false}
+      # Standard LayerZero OFT address shared across most L2s per Ethena docs.
+      - {chain: arbitrum, contract: "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34", verified: false, kind: bridged}
+      - {chain: optimism, contract: "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34", verified: false, kind: bridged}
+
+  - symbol: USD1
+    name: World Liberty Financial USD
+    issuer: World Liberty Financial
+    backing_model: new_or_unverified
+    protocol_url: https://www.worldlibertyfinancial.com
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: WLFI docs (docs.worldlibertyfinancial.com/usd1-token/contract-addresses)
+      - {chain: ethereum, contract: "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d", verified: false}
+      - {chain: bsc, contract: "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d", verified: false}
+      - {chain: solana, contract: "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB", verified: false}
+      - {chain: tron, contract: "TPFqcBAaaUMCSVRCqPaQ9QnzKhmuoLR6Rc", verified: false}
+
+  - symbol: FRAX
+    name: Frax
+    issuer: Frax Finance
+    backing_model: crypto_collateral
+    protocol_url: https://app.frax.finance/dashboard
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: Frax docs (docs.frax.finance) / etherscan.io
+      - {chain: ethereum, contract: "0x853d955aCEf822Db058eb8505911ED77F175b99e", verified: false}
+
+  - symbol: crvUSD
+    name: Curve.Fi USD Stablecoin
+    issuer: Curve Finance
+    backing_model: crypto_collateral
+    protocol_url: https://crvusd.curve.fi
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: etherscan.io (Curve: crvUSD Token) / basescan.org
+      - {chain: ethereum, contract: "0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E", verified: false}
+      - {chain: base, contract: "0x417Ac0e078398C154EdFadD9Ef675d30Be60Af93", verified: false, kind: bridged}
+
+  - symbol: GHO
+    name: GHO Token
+    issuer: Aave
+    backing_model: crypto_collateral
+    protocol_url: https://aave.com/docs/developers/gho
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: Aave docs (aave.com/docs/developers/gho)
+      - {chain: ethereum, contract: "0x40D16FC0246aD3160Ccc09B8D0D3A2cD28aE6C2f", verified: false}
+      - {chain: arbitrum, contract: "0x7dfF72693f6A4149b17e7C6314655f6A9F7c8B33", verified: false, kind: bridged}
+      - {chain: base, contract: "0x6Bb7a212910682DCFdbd5BCBb3e28FB4E8da10Ee", verified: false, kind: bridged}
+      - {chain: avalanche, contract: "0xfc421aD3C883Bf9E7C4f42dE845C4e4405799e73", verified: false, kind: bridged}
+
+  - symbol: RLUSD
+    name: Ripple USD
+    issuer: Ripple
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: Ripple docs / etherscan.io. RLUSD is also native on the XRP
+      # Ledger, which the registry has no chain entry for — XRPL deployment
+      # omitted (no EVM/Solana/Tron chain key).
+      - {chain: ethereum, contract: "0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD", verified: false}
+
+  - symbol: USDD
+    name: Decentralized USD
+    issuer: TRON DAO
+    backing_model: algorithmic
+    protocol_url: https://usdd.io
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: etherscan.io (USDD: USDD Token) / tronscan.org
+      - {chain: ethereum, contract: "0x373ddd78391aB3452B31503D6Aa6b47C41697e0a", verified: false}
+      - {chain: tron, contract: "TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn", verified: false}
+
+  - symbol: LUSD
+    name: LUSD Stablecoin
+    issuer: Liquity
+    backing_model: crypto_collateral
+    protocol_url: https://www.liquity.org
+    # Liquity is immutable / governance-free; backing is ETH on-chain — no
+    # fiat reserve attestation by design.
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: etherscan.io (LUSDToken, verified) / docs.liquity.org
+      - {chain: ethereum, contract: "0x5f98805A4E8be255a32880FDeC7F6728C6568bA0", verified: false}
+      # Bridged via Stargate / Liquity x-chain strategy. Sources:
+      # optimistic.etherscan.io and arbiscan.io (LUSD Stablecoin token pages).
+      - {chain: optimism, contract: "0xc40F949F8a4e094D1b49a23ea9241D289B7b2819", verified: false, kind: bridged}
+      - {chain: arbitrum, contract: "0x93b346b6BC2548dA6A1E7d98E9a421B42541425b", verified: false, kind: bridged}
+
+  - symbol: MIM
+    name: Magic Internet Money
+    issuer: Abracadabra.money
+    backing_model: crypto_collateral
+    protocol_url: https://abracadabra.money
+    # Crypto-collateralised via interest-bearing tokens; no fiat reserve.
+    transparency_url: ""
+    latest_attestation_url: ""
+    deployments:
+      # Source: etherscan.io / docs.abracadabra.money
+      - {chain: ethereum, contract: "0x99D8a9C45b2ecA8864373A26D1459e3Dff1e17F3", verified: false}
+      # Source: arbiscan.io / bscscan.com / snowtrace.io (Abracadabra docs).
+      - {chain: arbitrum, contract: "0xFEa7a6a0B346362BF88A9e4A88416B77a57D6c2A", verified: false, kind: bridged}
+      - {chain: bsc, contract: "0xfE19F0B51438fd612f6FD59C1dbB3eA319f433Ba", verified: false, kind: bridged}
+      - {chain: avalanche, contract: "0x130966628846BFd36ff31a822705796e8cb8C18D", verified: false, kind: bridged}
+
+  - symbol: AUSD
+    name: Agora Dollar
+    issuer: Agora
+    transparency_url: https://www.agora.finance/
+    latest_attestation_url: ""
+    deployments:
+      # Source: docs.agora.finance/developer/contract-deployments — same
+      # zero-vanity address across all native EVM chains; distinct Solana mint.
+      - {chain: ethereum, contract: "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a", verified: false}
+      - {chain: avalanche, contract: "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a", verified: false}
+      - {chain: polygon, contract: "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a", verified: false}
+      - {chain: arbitrum, contract: "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a", verified: false}
+      - {chain: base, contract: "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a", verified: false}
+      - {chain: bsc, contract: "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a", verified: false}
+      - {chain: solana, contract: "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9", verified: false}
+
+  - symbol: USDM
+    name: Mountain Protocol USD
+    issuer: Mountain Protocol
+    # Yield-bearing rebasing token, regulated by Bermuda Monetary Authority;
+    # reserves are tokenised US T-bills.
+    transparency_url: https://mountainprotocol.com/transparency
+    latest_attestation_url: ""
+    deployments:
+      # Source: docs.mountainprotocol.com — canonical address across most chains.
+      - {chain: ethereum, contract: "0x59D9356E565Ab3A36dD77763Fc0d87fEaf85508C", verified: false}
+      - {chain: arbitrum, contract: "0x59D9356E565Ab3A36dD77763Fc0d87fEaf85508C", verified: false}
+      - {chain: optimism, contract: "0x59D9356E565Ab3A36dD77763Fc0d87fEaf85508C", verified: false}
+      - {chain: base, contract: "0x59D9356E565Ab3A36dD77763Fc0d87fEaf85508C", verified: false}
+      - {chain: polygon, contract: "0x59D9356E565Ab3A36dD77763Fc0d87fEaf85508C", verified: false}
+      - {chain: avalanche, contract: "0x59D9356E565Ab3A36dD77763Fc0d87fEaf85508C", verified: false}
+
+  - symbol: EURI
+    name: Eurite
+    issuer: Banking Circle
+    peg: EUR
+    # MiCA-compliant EMT issued by Banking Circle S.A.; EY attestations.
+    transparency_url: https://eurite.com/
+    latest_attestation_url: ""
+    deployments:
+      # Source: etherscan.io (EURITE token, verified contract); same address on BSC.
+      - {chain: ethereum, contract: "0x9d1A7A3191102e9f900FAa10540837ba84dcbae7", verified: false}
+      - {chain: bsc, contract: "0x9d1A7A3191102e9f900FAa10540837ba84dcbae7", verified: false}
+
+  - symbol: AEUR
+    name: Anchored Coins EUR
+    issuer: Anchored Coins
+    peg: EUR
+    transparency_url: https://www.anchoredcoins.com/
+    latest_attestation_url: ""
+    deployments:
+      # Source: etherscan.io (Anchored Coins EUR token page).
+      - {chain: ethereum, contract: "0xA40640458FBc27b6EefEdeA1E9C9E17d4ceE7a21", verified: false}
+
+  - symbol: USDf
+    name: Falcon USD
+    issuer: Falcon Finance
+    backing_model: synthetic_delta_neutral
+    protocol_url: https://falcon.finance
+    # Overcollateralised synthetic dollar; backing is on-chain collateral
+    # plus delta-neutral hedges — no fiat reserve attestation.
+    transparency_url: https://falcon.finance/
+    latest_attestation_url: ""
+    deployments:
+      # Source: etherscan.io (Falcon USD token, verified) / falcon.finance
+      - {chain: ethereum, contract: "0xFa2B947eEc368f42195f24F36d2aF29f7c24CeC2", verified: false}

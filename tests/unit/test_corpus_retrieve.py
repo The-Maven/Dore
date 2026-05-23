@@ -20,27 +20,53 @@ def test_chunk_markdown_splits_by_heading():
 
 
 @pytest.fixture
-def approved_corpus(monkeypatch, tmp_path):
-    src = Source("test-reg", "Test Regulation", "primary", "approved")
+def ingested_corpus(monkeypatch, tmp_path):
+    # Opt-out model: an included source is retrievable by default.
+    src = Source("test-reg", "Test Regulation", "primary", "included")
     monkeypatch.setattr("sca.corpus.sources.all_sources", lambda: (src,))
     ingest_source("test-reg", SAMPLE, store=tmp_path)
     return tmp_path
 
 
-def test_retrieve_finds_relevant_section(approved_corpus):
-    passages = retrieve("redeem at par business day", store=approved_corpus)
+def test_retrieve_finds_relevant_section(ingested_corpus):
+    passages = retrieve("redeem at par business day", store=ingested_corpus)
     assert passages
     assert passages[0].heading == "Redemption"
     assert passages[0].citation.startswith("test-reg")
 
 
-def test_retrieve_empty_without_approved_sources(monkeypatch, tmp_path):
+def test_retrieve_returns_passages_by_default(ingested_corpus):
+    # The opt-out flip: passages come back without any human approval step.
+    assert retrieve("reserve composition", store=ingested_corpus)
+
+
+def test_retrieve_omits_excluded_source(monkeypatch, tmp_path):
+    # A source a human has excluded is dropped from the citable set.
+    src = Source("test-reg", "Test Regulation", "primary", "included")
+    monkeypatch.setattr("sca.corpus.sources.all_sources", lambda: (src,))
+    ingest_source("test-reg", SAMPLE, store=tmp_path)
+    assert retrieve("reserve composition", store=tmp_path)
+
+    excluded = Source("test-reg", "Test Regulation", "primary", "excluded")
+    monkeypatch.setattr("sca.corpus.sources.all_sources", lambda: (excluded,))
+    assert retrieve("reserve composition", store=tmp_path) == []
+
+
+def test_retrieve_empty_without_sources(monkeypatch, tmp_path):
     monkeypatch.setattr("sca.corpus.sources.all_sources", lambda: ())
     assert retrieve("anything", store=tmp_path) == []
 
 
-def test_ingest_refuses_unapproved_source(monkeypatch, tmp_path):
-    src = Source("prop", "Proposed", "primary", "proposed")
+def test_passage_carries_verified_signal(monkeypatch, tmp_path):
+    src = Source("test-reg", "T", "primary", "included", verified=True)
+    monkeypatch.setattr("sca.corpus.sources.all_sources", lambda: (src,))
+    ingest_source("test-reg", SAMPLE, store=tmp_path)
+    passages = retrieve("redeem at par", store=tmp_path)
+    assert passages and passages[0].source_verified is True
+
+
+def test_ingest_refuses_excluded_source(monkeypatch, tmp_path):
+    src = Source("gone", "Excluded", "primary", "excluded")
     monkeypatch.setattr("sca.corpus.sources.all_sources", lambda: (src,))
     with pytest.raises(PermissionError):
-        ingest_source("prop", SAMPLE, store=tmp_path)
+        ingest_source("gone", SAMPLE, store=tmp_path)

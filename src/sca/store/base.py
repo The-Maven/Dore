@@ -77,7 +77,11 @@ class Store(ABC):
     def record_source_decision(
         self, source_id: str, decision: str, user_id: str | None = None
     ) -> None:
-        """Append a source-approval vote. decision: 'approved' | 'rejected'."""
+        """Append a source curation vote (opt-out model).
+
+        decision: 'excluded' (drop from the citable set), 'included' (reverse
+        an exclusion), or 'verified' (mark human-reviewed; stays included).
+        """
 
     @abstractmethod
     def record_address_decision(
@@ -92,7 +96,11 @@ class Store(ABC):
 
     @abstractmethod
     def source_status_overrides(self) -> dict[str, str]:
-        """Latest decision per source id (later votes win)."""
+        """Latest inclusion status per source id ('included'|'excluded')."""
+
+    @abstractmethod
+    def source_verified_overrides(self) -> dict[str, bool]:
+        """Whether each source has been explicitly human-verified."""
 
     @abstractmethod
     def address_verified_overrides(self) -> dict[str, bool]:

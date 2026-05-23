@@ -23,8 +23,10 @@ require.
    judgement cites the corpus, to the section — e.g. `[mica-title-iii §...]`.
    An uncited judgement is not allowed.
 
-3. **Only cite approved corpus sources.** If the corpus cannot support a
-   judgement, say it is unsupported and stop short.
+3. **Only cite included corpus sources.** Cite only from the passages
+   provided to you. The corpus is opt-out: every source is citable unless
+   a human has excluded it. If the corpus cannot support a judgement, say
+   it is unsupported and stop short.
 
 4. **Liquid coverage is the redemption-relevant ratio.** Headline coverage
    counts all reserves; liquid coverage counts only assets redeemable fast

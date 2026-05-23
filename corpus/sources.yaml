@@ -1,24 +1,26 @@
-# Curated source registry — the "reasoning frame" layer.
+# Curated source registry — the "reasoning frame" layer (opt-out model).
 #
-# CURATION RULE: the agent may PROPOSE a source (append with
-# status: proposed). Only a HUMAN may set status: approved — via `sca curate`
-# or the corpus view in the web UI. The agent must never cite a source that
-# is not status: approved. See corpus/README.md.
+# CURATION RULE: every registered source is `status: included` and citable
+# by DEFAULT. A human may opt a source OUT (`status: excluded`) via
+# `sca curate` or the corpus view in the web UI — reversible to `included`.
+# A human may also mark a source explicitly `verified` (a quality badge on
+# citations; it does not gate use). The agent may PROPOSE a source — it
+# enters as `included`, like any other. See corpus/README.md.
 #
 # tier:  primary      - law / regulation itself
 #        standard     - attestation / accounting / prudential standards
 #        methodology  - rating-agency or supervisory methodology
 #        research     - central-bank / policy-body analysis
 #
-# `url` is for a human to view the source. For proposed sources, verify the
-# link points to the authoritative text before approving. To make a source
-# citeable, also stage its text at corpus/staging/<id>.md and approve it.
+# `url` is for a human to view the source. A source only contributes
+# citable text once its text is staged at corpus/staging/<id>.md and
+# ingested (`sca curate` ingests staged text automatically).
 
 sources:
   - id: genius-act
     title: "GENIUS Act — US payment stablecoin statute (Public Law 119-27)"
     tier: primary
-    status: proposed
+    status: included
     url: "https://www.congress.gov/bill/119th-congress/senate-bill/1582/text"
     summary: >-
       The US federal stablecoin statute. Sets 1:1 reserve backing, the
@@ -30,7 +32,7 @@ sources:
   - id: mica-title-iii
     title: "MiCA — Regulation (EU) 2023/1114, Title III (asset-referenced tokens)"
     tier: primary
-    status: proposed
+    status: included
     url: "https://eur-lex.europa.eu/eli/reg/2023/1114/oj"
     summary: >-
       The EU crypto regulation, Title III. Governs asset-referenced tokens:
@@ -42,7 +44,7 @@ sources:
   - id: aicpa-at-c
     title: "AICPA AT-C 105 / 205 — attestation engagement standards"
     tier: standard
-    status: proposed
+    status: included
     url: "https://www.aicpa-cima.com/resources/landing/standards-and-statements"
     summary: >-
       The AICPA standards that define what a stablecoin reserve
@@ -53,7 +55,7 @@ sources:
   - id: isae-3000
     title: "ISAE 3000 (Revised) — international assurance standard"
     tier: standard
-    status: proposed
+    status: included
     url: "https://www.iaasb.org/publications/international-standard-assurance-engagements-isae-3000-revised"
     summary: >-
       The IAASB's international assurance standard used for non-US
@@ -63,7 +65,7 @@ sources:
   - id: sp-stablecoin-stability
     title: "S&P Global — Stablecoin Stability Assessment methodology"
     tier: methodology
-    status: proposed
+    status: included
     url: "https://www.spglobal.com/ratings/en/research-insights/topics/digital-assets"
     summary: >-
       S&P Global's framework for scoring a stablecoin's ability to hold its
@@ -73,7 +75,7 @@ sources:
   - id: bis-stablecoins
     title: "BIS — research on stablecoins and reserve backing"
     tier: research
-    status: proposed
+    status: included
     url: "https://www.bis.org/topic/cryptocurrencies_and_stablecoins.htm"
     summary: >-
       Bank for International Settlements analysis of stablecoins — reserve
@@ -83,7 +85,7 @@ sources:
   - id: pwg-stablecoin-report
     title: "President's Working Group — Report on Stablecoins (2021)"
     tier: research
-    status: proposed
+    status: included
     url: "https://home.treasury.gov/news/press-releases/jy0454"
     summary: >-
       The foundational US policy document on stablecoins, from the PWG with
@@ -93,7 +95,7 @@ sources:
   - id: nydfs-stablecoin-guidance
     title: "NYDFS — Guidance on USD-backed stablecoins (2022)"
     tier: primary
-    status: proposed
+    status: included
     url: "https://www.dfs.ny.gov/industry_guidance/industry_letters/il20220608_issuance_stablecoins"
     summary: >-
       New York DFS guidance governing NYDFS-regulated issuers (Paxos,
@@ -103,7 +105,7 @@ sources:
   - id: fca-stablecoin
     title: "UK FCA — regulatory regime for fiat-backed stablecoins"
     tier: primary
-    status: proposed
+    status: included
     url: "https://www.fca.org.uk/firms/cryptoassets"
     summary: >-
       The UK Financial Conduct Authority's regime for fiat-backed
@@ -113,7 +115,7 @@ sources:
   - id: fsb-global-stablecoin
     title: "FSB — recommendations for global stablecoin arrangements"
     tier: research
-    status: proposed
+    status: included
     url: "https://www.fsb.org/2023/07/high-level-recommendations-for-the-regulation-supervision-and-oversight-of-global-stablecoin-arrangements-final-report/"
     summary: >-
       The Financial Stability Board's high-level recommendations for
@@ -123,7 +125,7 @@ sources:
   - id: bcbs-crypto
     title: "Basel Committee — prudential standard for crypto-asset exposures"
     tier: standard
-    status: proposed
+    status: included
     url: "https://www.bis.org/bcbs/publ/d545.htm"
     summary: >-
       The Basel Committee's prudential treatment of banks' crypto-asset
@@ -133,19 +135,19 @@ sources:
   - id: ofac-virtual-currency
     title: "OFAC — Sanctions Compliance Guidance for the Virtual Currency Industry"
     tier: primary
-    status: proposed
+    status: included
     url: "https://home.treasury.gov/system/files/126/virtual_currency_guidance_brochure.pdf"
     summary: >-
       OFAC's compliance guidance for the virtual-currency industry: the
       expectation that issuers and service providers screen against the SDN
       list, block sanctioned digital-currency addresses, and run a
       risk-based sanctions-compliance programme.
-    notes: "Sanctions-surface corpus — verify the link before approving."
+    notes: "Sanctions-surface corpus — verify the link points to the live guidance."
 
   - id: ofac-faqs-digital-currency
     title: "OFAC FAQs — digital-currency addresses on the SDN List"
     tier: primary
-    status: proposed
+    status: included
     url: "https://ofac.treasury.gov/faqs"
     summary: >-
       OFAC's FAQs on how digital-currency addresses are added to the SDN
@@ -153,4 +155,292 @@ sources:
       basis for exact-match address screening.
     notes: "Sanctions-surface corpus."
 
-# Add more ONLY via: agent proposes (status: proposed) -> human approves.
+# New sources enter as `status: included`. A human opts one out by setting
+# `status: excluded` (or voting via `sca curate` / the web Corpus view).
+
+  - id: ofac-recent-actions-20260521
+    title: 'Counter Terrorism Designations'
+    tier: tier1_official
+    status: included
+    url: 'https://ofac.treasury.gov/recent-actions/20260521'
+    notes: 'auto-discovered by ofac on 2026-05-23T06:58:47+00:00'
+
+  - id: ofac-recent-actions-sanctions-list-updates
+    title: 'Sanctions List Updates'
+    tier: tier1_official
+    status: included
+    url: 'https://ofac.treasury.gov/recent-actions/sanctions-list-updates'
+    notes: 'auto-discovered by ofac on 2026-05-23T06:58:48+00:00'
+
+  - id: ofac-recent-actions-20260520-33
+    title: 'International Criminal Court-related Designation Removal'
+    tier: tier1_official
+    status: included
+    url: 'https://ofac.treasury.gov/recent-actions/20260520_33'
+    notes: 'auto-discovered by ofac on 2026-05-23T06:58:48+00:00'
+
+  - id: ofac-recent-actions-20260520
+    title: 'Counter Narcotics and Counter Terrorism Designations'
+    tier: tier1_official
+    status: included
+    url: 'https://ofac.treasury.gov/recent-actions/20260520'
+    notes: 'auto-discovered by ofac on 2026-05-23T06:58:49+00:00'
+
+  - id: ofac-recent-actions-20260519
+    title: 'Counter Terrorism Designations; Iran-related Designations'
+    tier: tier1_official
+    status: included
+    url: 'https://ofac.treasury.gov/recent-actions/20260519'
+    notes: 'auto-discovered by ofac on 2026-05-23T06:58:49+00:00'
+
+  - id: ofac-recent-actions-20260518-33
+    title: 'Cuba Designations and Designations Updates; Issuance of Russia-related General License'
+    tier: tier1_official
+    status: included
+    url: 'https://ofac.treasury.gov/recent-actions/20260518_33'
+    notes: 'auto-discovered by ofac on 2026-05-23T06:58:50+00:00'
+
+  - id: ofac-recent-actions-20260518
+    title: "Settlement Agreement between the U.S. Department of the Treasury's Office of Foreign Assets Control and Adani Enterprises Limited"
+    tier: tier1_official
+    status: included
+    url: 'https://ofac.treasury.gov/recent-actions/20260518'
+    notes: 'auto-discovered by ofac on 2026-05-23T06:58:50+00:00'
+
+  - id: ofac-recent-actions-enforcement-actions
+    title: 'Enforcement Actions'
+    tier: tier1_official
+    status: included
+    url: 'https://ofac.treasury.gov/recent-actions/enforcement-actions'
+    notes: 'auto-discovered by ofac on 2026-05-23T06:58:50+00:00'
+
+  - id: ofac-recent-actions-20260515
+    title: 'Notice with Regard to International Criminal Court-related Sanctions'
+    tier: tier1_official
+    status: included
+    url: 'https://ofac.treasury.gov/recent-actions/20260515'
+    notes: 'auto-discovered by ofac on 2026-05-23T06:58:51+00:00'
+
+  - id: ofac-recent-actions-regulations-and-guidance
+    title: 'Regulations and Guidance'
+    tier: tier1_official
+    status: included
+    url: 'https://ofac.treasury.gov/recent-actions/regulations-and-guidance'
+    notes: 'auto-discovered by ofac on 2026-05-23T06:58:51+00:00'
+
+  - id: fsb-publications
+    title: 'Publications'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/publications/'
+    notes: 'auto-discovered by fsb on 2026-05-23T06:58:59+00:00'
+
+  - id: fsb-publications-policy-documents
+    title: 'Policy Documents'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/publications/policy-documents/'
+    notes: 'auto-discovered by fsb on 2026-05-23T06:59:01+00:00'
+
+  - id: fsb-publications-progress-reports
+    title: 'Progress Reports'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/publications/progress-reports/'
+    notes: 'auto-discovered by fsb on 2026-05-23T06:59:02+00:00'
+
+  - id: fsb-publications-evaluation-reports
+    title: 'Evaluation Reports'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/publications/evaluation-reports/'
+    notes: 'auto-discovered by fsb on 2026-05-23T06:59:04+00:00'
+
+  - id: fsb-publications-g20-reports
+    title: 'Reports to the G20'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/publications/g20-reports/'
+    notes: 'auto-discovered by fsb on 2026-05-23T06:59:12+00:00'
+
+  - id: fsb-publications-peer-review-reports
+    title: 'Peer Review Reports'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/publications/peer-review-reports/'
+    notes: 'auto-discovered by fsb on 2026-05-23T06:59:13+00:00'
+
+  - id: fsb-publications-key-regular-publications
+    title: 'Key Regular Publications'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/publications/key-regular-publications/'
+    notes: 'auto-discovered by fsb on 2026-05-23T06:59:15+00:00'
+
+  - id: fsb-publications-regional-consultative-group-reports
+    title: 'Regional Consultative Group Reports'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/publications/regional-consultative-group-reports/'
+    notes: 'auto-discovered by fsb on 2026-05-23T06:59:22+00:00'
+
+  - id: fsb-press
+    title: 'Press'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/press/'
+    notes: 'auto-discovered by fsb on 2026-05-23T06:59:23+00:00'
+
+  - id: fsb-press-plenary-meetings
+    title: 'Plenary Meetings'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/press/plenary-meetings/'
+    notes: 'auto-discovered by fsb on 2026-05-23T06:59:35+00:00'
+
+  - id: rss-fsb-2026-05-fsb-regional-consultative-group-for-the-americas-meets-in-grand-cayman
+    title: 'FSB Regional Consultative Group for the Americas meets in Grand Cayman'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/2026/05/fsb-regional-consultative-group-for-the-americas-meets-in-grand-cayman/'
+    notes: 'auto-discovered by rss-fsb on 2026-05-23T06:59:48+00:00'
+
+  - id: rss-fsb-2026-05-fsb-regional-consultative-group-for-the-commonwealth-of-independent-stat
+    title: 'FSB Regional Consultative Group for the Commonwealth of Independent States meets in Astana'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/2026/05/fsb-regional-consultative-group-for-the-commonwealth-of-independent-states-meets-in-astana/'
+    notes: 'auto-discovered by rss-fsb on 2026-05-23T06:59:50+00:00'
+
+  - id: rss-fsb-2026-05-fsb-warns-on-private-credit-vulnerabilities
+    title: 'FSB warns on private credit vulnerabilities'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/2026/05/fsb-warns-on-private-credit-vulnerabilities/'
+    notes: 'auto-discovered by rss-fsb on 2026-05-23T07:00:00+00:00'
+
+  - id: rss-fsb-2026-05-report-on-vulnerabilities-in-private-credit
+    title: 'Report on Vulnerabilities in Private Credit'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/2026/05/report-on-vulnerabilities-in-private-credit/'
+    notes: 'auto-discovered by rss-fsb on 2026-05-23T07:00:02+00:00'
+
+  - id: rss-fsb-2026-04-fsb-regional-consultative-group-for-middle-east-and-north-africa-meets-v
+    title: 'FSB Regional Consultative Group for Middle East and North Africa meets virtually'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/2026/04/fsb-regional-consultative-group-for-middle-east-and-north-africa-meets-virtually/'
+    notes: 'auto-discovered by rss-fsb on 2026-05-23T07:00:03+00:00'
+
+  - id: rss-fsb-2026-04-fsb-finalises-guidance-on-insurers-subject-to-recovery-and-resolution-pl
+    title: 'FSB finalises guidance on insurers subject to recovery and resolution planning'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/2026/04/fsb-finalises-guidance-on-insurers-subject-to-recovery-and-resolution-planning/'
+    notes: 'auto-discovered by rss-fsb on 2026-05-23T07:00:05+00:00'
+
+  - id: rss-fsb-2026-04-scope-of-insurers-subject-to-the-recovery-and-resolution-planning-requir
+    title: 'Scope of Insurers Subject to the Recovery and Resolution Planning Requirements in the FSB Key Attributes: Final Report'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/2026/04/scope-of-insurers-subject-to-the-recovery-and-resolution-planning-requirements-in-the-fsb-key-attributes-final-report/'
+    notes: 'auto-discovered by rss-fsb on 2026-05-23T07:00:10+00:00'
+
+  - id: rss-fsb-2026-04-scope-of-insurers-subject-to-recovery-and-resolution-planning-requiremen
+    title: 'Scope of Insurers Subject to Recovery and Resolution Planning Requirements in the Key Attributes: Overview of consultation responses'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/2026/04/scope-of-insurers-subject-to-recovery-and-resolution-planning-requirements-in-the-key-attributes-overview-of-consultation-responses/'
+    notes: 'auto-discovered by rss-fsb on 2026-05-23T07:00:13+00:00'
+
+  - id: rss-fsb-2026-04-identification-of-critical-functions-of-insurers-practices-paper-revised
+    title: 'Identification of Critical Functions of Insurers: Practices paper – Revised version'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/2026/04/identification-of-critical-functions-of-insurers-practices-paper-revised-version/'
+    notes: 'auto-discovered by rss-fsb on 2026-05-23T07:00:14+00:00'
+
+  - id: rss-fsb-2026-04-key-attributes-assessment-methodology-for-the-insurance-sector-revised-v
+    title: 'Key Attributes Assessment Methodology for the Insurance Sector: Revised version'
+    tier: tier1_official
+    status: included
+    url: 'https://www.fsb.org/2026/04/key-attributes-assessment-methodology-for-the-insurance-sector-revised-version/'
+    notes: 'auto-discovered by rss-fsb on 2026-05-23T07:00:16+00:00'
+
+  - id: rss-ecb-digital-euro-press-key-date-2026-html-ecb-sp260508-dd909fbed1-en-html
+    title: 'Christine Lagarde: Stablecoins and the future of money: separating functions from instruments'
+    tier: tier1_official
+    status: included
+    url: 'https://www.ecb.europa.eu//press/key/date/2026/html/ecb.sp260508~dd909fbed1.en.html'
+    notes: 'auto-discovered by rss-ecb-digital-euro on 2026-05-23T07:00:19+00:00'
+
+  - id: blog-chainalysis-blog-category-crime
+    title: 'Crime'
+    tier: tier2_industry
+    status: included
+    url: 'https://www.chainalysis.com/blog/category/crime/'
+    notes: 'auto-discovered by blog-chainalysis on 2026-05-23T07:00:24+00:00'
+
+  - id: blog-chainalysis-blog-category-policy-and-regulation
+    title: 'Policy & Regulation'
+    tier: tier2_industry
+    status: included
+    url: 'https://www.chainalysis.com/blog/category/policy-and-regulation/'
+    notes: 'auto-discovered by blog-chainalysis on 2026-05-23T07:00:24+00:00'
+
+  - id: blog-chainalysis-blog-category-crypto-basics
+    title: 'Crypto Basics'
+    tier: tier2_industry
+    status: included
+    url: 'https://www.chainalysis.com/blog/category/crypto-basics/'
+    notes: 'auto-discovered by blog-chainalysis on 2026-05-23T07:00:25+00:00'
+
+  - id: blog-chainalysis-blog-category-markets
+    title: 'Markets'
+    tier: tier2_industry
+    status: included
+    url: 'https://www.chainalysis.com/blog/category/markets/'
+    notes: 'auto-discovered by blog-chainalysis on 2026-05-23T07:00:25+00:00'
+
+  - id: blog-chainalysis-blog-category-company-news
+    title: 'Company News'
+    tier: tier2_industry
+    status: included
+    url: 'https://www.chainalysis.com/blog/category/company-news/'
+    notes: 'auto-discovered by blog-chainalysis on 2026-05-23T07:00:25+00:00'
+
+  - id: blog-chainalysis-blog-category-podcast
+    title: 'Podcast'
+    tier: tier2_industry
+    status: included
+    url: 'https://www.chainalysis.com/blog/category/podcast/'
+    notes: 'auto-discovered by blog-chainalysis on 2026-05-23T07:00:26+00:00'
+
+  - id: blog-chainalysis-blog-ofac-sanctions
+    title: 'Crime OFAC and Crypto Crime: Every OFAC Specially Designated National with Identified Cryptocurrency Addresses May 22, 2026'
+    tier: tier2_industry
+    status: included
+    url: 'https://www.chainalysis.com/blog/ofac-sanctions/'
+    notes: 'auto-discovered by blog-chainalysis on 2026-05-23T07:00:27+00:00'
+
+  - id: blog-chainalysis-blog-sinaloa-cartel-fentanyl-trafficking-crypto-laundering-may-2026
+    title: 'Crime OFAC Sanctions Sinaloa Cartel Fentanyl Trafficking and Crypto Laundering Network May 20, 2026'
+    tier: tier2_industry
+    status: included
+    url: 'https://www.chainalysis.com/blog/sinaloa-cartel-fentanyl-trafficking-crypto-laundering-may-2026/'
+    notes: 'auto-discovered by blog-chainalysis on 2026-05-23T07:00:27+00:00'
+
+  - id: blog-chainalysis-blog-italy-guardia-di-finanza-bitcoin-ordinals-tax-fraud-scheme
+    title: 'Crime How Blockchain Intelligence Uncovered a Million-Euro Bitcoin Ordinals Tax Fraud Scheme May 20, 2026'
+    tier: tier2_industry
+    status: included
+    url: 'https://www.chainalysis.com/blog/italy-guardia-di-finanza-bitcoin-ordinals-tax-fraud-scheme/'
+    notes: 'auto-discovered by blog-chainalysis on 2026-05-23T07:00:29+00:00'
+
+  - id: blog-chainalysis-blog-crypto-prediction-markets
+    title: 'Markets Crypto Prediction Markets Explained: How the Blockchain Is Reshaping Forecasting May 7, 2026'
+    tier: tier2_industry
+    status: included
+    url: 'https://www.chainalysis.com/blog/crypto-prediction-markets/'
+    notes: 'auto-discovered by blog-chainalysis on 2026-05-23T07:00:29+00:00'

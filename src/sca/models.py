@@ -17,7 +17,16 @@ class ChainSupply:
     decimals: int
     supply: float
     kind: str = "native"   # native | bridged — provenance
-    verified: bool = True  # was this contract address human-verified
+    verified: bool = True  # is this contract address verified (human OR auto)
+    verification_method: str = ""  # 'human' | 'auto: on-chain symbol match' | '' — for the badge
+    # Multi-RPC reliability metadata — surfaced in the UI to build trust.
+    # `consensus` is a short label like "2/2 agree", "1/2 single source"
+    # (fallback unreachable), or "DISAGREEMENT" (RPCs returned different
+    # values — should never happen on a healthy chain, but if it does we
+    # want it loud). `endpoint` records which RPC actually returned the
+    # accepted value.
+    consensus: str = ""
+    endpoint: str = ""
 
 
 @dataclass
@@ -29,6 +38,14 @@ class SupplyResult:
     native_supply: float = 0.0
     bridged_supply: float = 0.0  # wrapped/bridged copies — shown, not summed in
     read_at: str = ""  # ISO timestamp — when these on-chain reads were taken
+    # When any chain read fails entirely, `complete` flips to False — the
+    # total is partial, not authoritative. UI must render this as PARTIAL.
+    # A wrong "fully backed" judgement is the worst class of bug we ship;
+    # this is the integrity gate that prevents it.
+    complete: bool = True
+    chains_expected: int = 0
+    chains_read: int = 0
+    failed_chains: list[str] = field(default_factory=list)
 
     @property
     def bridged_share(self) -> float | None:
@@ -60,6 +77,29 @@ class Metrics:
     live_coverage: float | None      # reserves / current supply — drift-affected
     staleness_days: int
     supply_drift: float | None
+    # Provenance: how this metric was actually computed. Surfaced in the UI
+    # so a user can see "computed across 5 chains, all RPCs corroborated"
+    # rather than a bare number with no audit trail. Built from the supply
+    # result's per-chain consensus + the attestation citation.
+    provenance: str = ""
+
+
+@dataclass
+class AugmentedContext:
+    """LLM-generated context that fills a gap an original source couldn't.
+
+    Rendered in the UI clearly tagged as 'AI context' — never confused
+    with a deterministic figure. The LLM is bounded: it provides
+    qualitative context (backing model, attestation cadence, where to
+    find live data) and cites sources where it can. It does NOT invent
+    numeric reserves, supply, or coverage figures."""
+    surface: str           # 'attestation' | 'sanctions' | 'redemption'
+    reason: str            # why we're augmenting (e.g. 'no transparency_url',
+                           # 'live fetch failed: 404', 'backing model is crypto')
+    text: str              # the LLM-generated context
+    citations: list[str] = field(default_factory=list)  # URLs the LLM cited
+    confidence: str = ""   # 'training-data-only' | 'web-searched' | 'low'
+    backing_model: str = ""  # echoed for the UI badge
 
 
 @dataclass
@@ -91,6 +131,9 @@ class CorpusPassage:
     citation: str
     page: int | None = None
     score: float = 0.0
+    # True when a human has explicitly marked the source verified — a
+    # quality signal surfaced as a badge, not a gate on whether it's used.
+    source_verified: bool = False
 
 
 # ── agent layer ───────────────────────────────────────────────────────
@@ -104,6 +147,18 @@ class Analysis:
     checks: list[Check] = field(default_factory=list)
     narrative: str = ""
     gaps: list[Gap] = field(default_factory=list)
+    # LLM-generated context to fill verified-source gaps. Tagged distinctly
+    # in the UI ("AI context") and never confused with deterministic figures.
+    augmentations: list[AugmentedContext] = field(default_factory=list)
+    # The token's backing model — drives UI framing of the attestation
+    # surface. fiat_reserves means an attestation SHOULD exist; crypto_collateral
+    # / synthetic / algorithmic mean a different verification path applies.
+    backing_model: str = "fiat_reserves"
+    protocol_url: str = ""
+    # AI Brief — editorial top-of-view synthesis. Optional; UI omits the
+    # panel if absent rather than rendering placeholder. Serialised as a
+    # dict so the SPA can render without mirroring the dataclass.
+    brief: dict | None = None
 
 
 # ── evals ─────────────────────────────────────────────────────────────
@@ -149,6 +204,16 @@ class SanctionsScreen:
     passages: list[CorpusPassage] = field(default_factory=list)
     narrative: str = ""
     gaps: list[Gap] = field(default_factory=list)
+    # LLM-generated context to fill verified-source gaps (SDN unavailable,
+    # critically stale, or no addresses to screen). Tagged distinctly in
+    # the UI ("AI context") and never replaces a deterministic match.
+    augmentations: list[AugmentedContext] = field(default_factory=list)
+    # The token's backing model + live-data link — echoed onto every
+    # surface so the UI can render the "BACKING MODEL" strip without
+    # re-fetching the registry.
+    backing_model: str = "fiat_reserves"
+    protocol_url: str = ""
+    brief: dict | None = None
 
     @property
     def clean(self) -> bool:
@@ -179,3 +244,15 @@ class RedemptionAssessment:
     passages: list[CorpusPassage] = field(default_factory=list)
     narrative: str = ""
     gaps: list[Gap] = field(default_factory=list)
+    # LLM-generated context — surfaces when there is no attestation to
+    # tier OR when the backing model isn't fiat (crypto / synthetic /
+    # algorithmic), where redemption is on-chain via the protocol. Tagged
+    # distinctly in the UI ("AI context") and never carries numeric
+    # reserves or redemption limits.
+    augmentations: list[AugmentedContext] = field(default_factory=list)
+    # The token's backing model + live-data link — echoed onto every
+    # surface so the UI can render the "BACKING MODEL" strip without
+    # re-fetching the registry.
+    backing_model: str = "fiat_reserves"
+    protocol_url: str = ""
+    brief: dict | None = None

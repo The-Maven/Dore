@@ -17,8 +17,8 @@ from sca.store import FileStore, get_store, reset_store
 
 # ── votes.py delegates to the Store ───────────────────────────────────
 def test_votes_record_and_overrides_round_trip():
-    votes.record_source_decision("mica-title-iii", "approved")
-    assert votes.source_status_overrides() == {"mica-title-iii": "approved"}
+    votes.record_source_decision("mica-title-iii", "excluded")
+    assert votes.source_status_overrides() == {"mica-title-iii": "excluded"}
 
 
 def test_address_overrides_keep_tuple_keys():
@@ -40,7 +40,7 @@ def test_record_address_decision_resolves_contract():
 
 
 def test_history_returns_full_ledger():
-    votes.record_source_decision("genius-act", "approved")
+    votes.record_source_decision("genius-act", "excluded")
     votes.record_address_decision("USDC", "ethereum", "verified")
     hist = votes.history()
     assert hist["source_decisions"][0]["id"] == "genius-act"
@@ -50,7 +50,7 @@ def test_history_returns_full_ledger():
 def test_curation_history_on_filestore(tmp_path):
     """The Store gained a curation_history() method."""
     store = FileStore(votes_path=tmp_path / "votes.yaml")
-    store.record_source_decision("s1", "approved")
+    store.record_source_decision("s1", "excluded")
     hist = store.curation_history()
     assert hist["source_decisions"][0]["id"] == "s1"
     assert hist["address_decisions"] == []
@@ -82,7 +82,7 @@ def store_corpus(monkeypatch, tmp_path):
     sources.write_text(
         yaml.safe_dump(
             {"sources": [{"id": "test-reg", "title": "Test Regulation",
-                          "tier": "primary", "status": "approved"}]}
+                          "tier": "primary", "status": "included"}]}
         )
     )
     fs = FileStore(
@@ -111,9 +111,14 @@ def test_ingest_then_retrieve_through_store(store_corpus):
     assert passages[0].source_id == "test-reg"
 
 
-def test_retrieve_gate_excludes_unapproved(monkeypatch, store_corpus):
-    """Only approved sources are retrievable, even via the Store."""
+def test_retrieve_omits_excluded_source(monkeypatch, store_corpus):
+    """A human-excluded source is dropped from retrieval, even via the Store."""
+    from sca.corpus.sources import Source
+
     ingest_source("test-reg", SAMPLE)
-    # Drop the only source's approval — retrieve's gate must exclude it.
-    monkeypatch.setattr("sca.corpus.sources.all_sources", lambda: ())
-    assert retrieve("anything") == []
+    assert retrieve("redeem at par business day")
+
+    # Opt the only source out — retrieve must now omit it.
+    excluded = Source("test-reg", "Test Regulation", "primary", "excluded")
+    monkeypatch.setattr("sca.corpus.sources.all_sources", lambda: (excluded,))
+    assert retrieve("redeem at par business day") == []

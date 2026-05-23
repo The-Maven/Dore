@@ -3,9 +3,10 @@
   sca analyze SYMBOL    full attestation analysis
   sca supply SYMBOL     on-chain supply only
   sca tokens            list configured stablecoins
-  sca sources           list corpus sources + curation status
-  sca curate            vote: approve sources, verify addresses
-  sca refresh           re-resolve attestation URLs from transparency pages
+  sca sources           list corpus sources + inclusion status
+  sca curate            vote: exclude/include/verify sources, verify addresses
+  sca verify [SYMBOL]   auto-verify contracts via on-chain self-report
+  sca refresh           re-resolve attestation URLs + run auto-verification
   sca evals             run the eval harness
 """
 from __future__ import annotations
@@ -25,6 +26,7 @@ from sca.corpus.sources import all_sources
 from sca.evals import run_evals
 from sca.models import Analysis, SupplyResult
 from sca.tools import AttestationUnavailable, get_onchain_supply, resolve_url
+from sca.tools.address_verify import verify_all
 
 
 def _header(subtitle: str) -> None:
@@ -62,8 +64,14 @@ def render_supply(supply: SupplyResult) -> None:
     for c in supply.per_chain:
         vmark = t.icon("ok") if c.verified else t.icon("warn")
         kind = t.paint(c.kind, t.GOLD if c.kind == "native" else t.AMBER)
+        if c.verification_method.startswith("auto"):
+            badge = t.paint("  ✓ auto", t.MUTED)
+        elif c.verification_method == "human":
+            badge = t.paint("  ✓ human", t.GREEN)
+        else:
+            badge = t.paint("  unverified", t.AMBER)
         print(f"  {vmark} {t.paint(c.chain.ljust(10), t.PAPER)} "
-              f"{t.paint(_money(c.supply).rjust(20), t.MUTED)}  {kind}")
+              f"{t.paint(_money(c.supply).rjust(20), t.MUTED)}  {kind}{badge}")
     for warning in supply.warnings:
         print(f"  {t.icon('warn')} {t.paint(warning, t.AMBER)}")
     if supply.read_at:
@@ -119,10 +127,14 @@ def render_analysis(analysis: Analysis) -> None:
     print(f"  {t.icon('corpus')} {t.paint('REASONING FRAME', t.PAPER, bold=True)}")
     if a.passages:
         for p in a.passages:
+            badge = (t.paint('  ✦ human-verified', t.GREEN)
+                     if p.source_verified
+                     else t.paint('  · auto-included', t.MUTED))
             print(f"  {t.icon('cite')} {t.paint(p.citation, t.GOLD)}  "
-                  f"{t.paint(p.heading, t.MUTED)}")
+                  f"{t.paint(p.heading, t.MUTED)}{badge}")
     else:
-        print(f"  {t.icon('warn')} {t.paint('no approved corpus passages', t.AMBER)}")
+        print(f"  {t.icon('warn')} "
+              f"{t.paint('no ingested corpus passages', t.AMBER)}")
     print()
 
     # Narrative
@@ -152,28 +164,37 @@ def render_tokens() -> None:
     print()
     for sym, coin in coins.items():
         verified = sum(1 for d in coin.deployments if d.verified)
+        auto = sum(1 for d in coin.deployments
+                   if d.verification_method.startswith("auto"))
+        human = sum(1 for d in coin.deployments if d.verification_method == "human")
         total = len(coin.deployments)
         state = "ok" if verified == total else "warn"
+        breakdown = (f"{verified}/{total} verified" +
+                     (f" · {human} human · {auto} auto" if verified else ""))
         print(f"  {t.icon(state)} {t.paint(sym.ljust(7), t.GOLD)} "
               f"{t.paint(coin.name.ljust(20), t.PAPER)} "
-              f"{t.paint(f'{verified}/{total} addrs verified', t.MUTED)}")
+              f"{t.paint(breakdown, t.MUTED)}")
     print()
 
 
 def render_sources() -> None:
     sources = all_sources()
-    approved = sum(1 for s in sources if s.approved)
+    included = sum(1 for s in sources if s.included)
+    verified = sum(1 for s in sources if s.verified)
     print(f"  {t.icon('corpus')} {t.paint('CORPUS SOURCES', t.PAPER, bold=True)}  "
-          f"{t.paint(f'{approved}/{len(sources)} approved', t.MUTED)}")
+          f"{t.paint(f'{included}/{len(sources)} included · {verified} verified',
+                     t.MUTED)}")
     print()
     for s in sources:
-        state = "ok" if s.approved else "warn"
+        state = "ok" if s.included else "error"
+        badge = "  ✦ human-verified" if s.verified else ""
         print(f"  {t.icon(state)} {t.paint(s.id.ljust(24), t.GOLD)} "
               f"{t.paint(s.tier.ljust(12), t.MUTED)} "
-              f"{t.paint(s.status, t.GREEN if s.approved else t.AMBER)}")
+              f"{t.paint(s.status, t.GREEN if s.included else t.ROSE)}"
+              f"{t.paint(badge, t.GOLD)}")
     print()
-    print(f"  {t.paint('Only approved sources are citeable. A human approves '
-                        'in corpus/sources.yaml.', t.MUTED)}")
+    print(f"  {t.paint('Every source is citeable by default. A human opts one '
+                        'out with `sca curate`.', t.MUTED)}")
     print()
 
 
@@ -201,31 +222,40 @@ def cmd_curate() -> None:
               f"{t.paint('curate is interactive — run it in a terminal', t.AMBER)}")
         return
 
-    # Sources awaiting approval.
-    proposed = [s for s in all_sources() if s.status == "proposed"]
+    # Sources — included by default; a human opts one out or verifies it.
+    sources = list(all_sources())
     print(f"  {t.icon('corpus')} {t.paint('CORPUS SOURCES', t.PAPER, bold=True)}  "
-          f"{t.paint(f'{len(proposed)} awaiting your vote', t.MUTED)}")
+          f"{t.paint(f'{len(sources)} registered · included by default', t.MUTED)}")
     print()
-    for s in proposed:
+    for s in sources:
+        flag = (t.paint('EXCLUDED', t.ROSE) if s.excluded
+                else t.paint('included', t.GREEN))
+        if s.verified:
+            flag += t.paint('  ✦ verified', t.GOLD)
         print(f"  {t.icon('cite')} {t.paint(s.id, t.GOLD)}  "
-              f"{t.paint(s.tier, t.MUTED)}")
+              f"{t.paint(s.tier, t.MUTED)}  {flag}")
         print(f"    {t.paint(s.title, t.PAPER)}")
-        choice = input(f"    {t.paint('[a]pprove  [r]eject  [s]kip >', t.GOLD)} "
-                       ).strip().lower()
-        if choice == "a":
-            votes.record_source_decision(s.id, "approved")
+        choice = input(
+            f"    {t.paint('[x]clude  [i]nclude  [v]erify  [s]kip >', t.GOLD)} "
+        ).strip().lower()
+        if choice == "x":
+            votes.record_source_decision(s.id, "excluded")
+            print(f"    {t.icon('error')} "
+                  f"{t.paint('excluded — opted out of the corpus', t.ROSE)}")
+        elif choice in ("i", "v"):
+            decision = "verified" if choice == "v" else "included"
+            votes.record_source_decision(s.id, decision)
             all_sources.cache_clear()
             staged = config.CORPUS_DIR / "staging" / f"{s.id}.md"
+            label = "verified" if choice == "v" else "included"
             if staged.exists():
                 chunks = ingest_source(s.id, staged.read_text())
                 print(f"    {t.icon('ok')} "
-                      f"{t.paint(f'approved · ingested {len(chunks)} chunks', t.GREEN)}")
+                      f"{t.paint(f'{label} · ingested {len(chunks)} chunks',
+                                 t.GREEN)}")
             else:
                 print(f"    {t.icon('ok')} "
-                      f"{t.paint('approved · no staged content to ingest', t.GREEN)}")
-        elif choice == "r":
-            votes.record_source_decision(s.id, "rejected")
-            print(f"    {t.icon('error')} {t.paint('rejected', t.ROSE)}")
+                      f"{t.paint(f'{label} · no staged text to ingest', t.GREEN)}")
         else:
             print(f"    {t.paint('skipped', t.MUTED)}")
         print()
@@ -259,8 +289,185 @@ def cmd_curate() -> None:
     print()
 
 
+def cmd_verify(symbol: str | None = None) -> None:
+    """Auto-verify contract addresses via on-chain self-report.
+
+    Asks each contract its own `symbol()` and `decimals()` and clears the
+    unverified flag on a clean match. Mismatches and unsupported chains
+    stay flagged — the actual cases a human should look at.
+    """
+    label = f"all tokens" if symbol is None else symbol.upper()
+    print(f"  {t.icon('reserve')} "
+          f"{t.paint('ADDRESS VERIFICATION', t.PAPER, bold=True)}  "
+          f"{t.paint(label, t.MUTED)}")
+    print()
+    summary = verify_all(symbol)
+
+    for sym, chain, _contract, result in summary["checked"]:
+        if result["verified"]:
+            print(f"  {t.icon('ok')} {t.paint(f'{sym} · {chain}'.ljust(22), t.GOLD)} "
+                  f"{t.paint('auto-verified', t.GREEN)}  "
+                  f"{t.paint(result['detail'], t.MUTED, dim=True)}")
+        elif result["signal"] == "mismatch":
+            print(f"  {t.icon('error')} {t.paint(f'{sym} · {chain}'.ljust(22), t.GOLD)} "
+                  f"{t.paint('MISMATCH', t.ROSE)}  "
+                  f"{t.paint(result['detail'], t.AMBER)}")
+        elif result["signal"] == "unsupported-chain":
+            print(f"  {t.icon('bullet')} {t.paint(f'{sym} · {chain}'.ljust(22), t.MUTED)} "
+                  f"{t.paint('unsupported · needs human', t.MUTED)}")
+        else:  # error
+            print(f"  {t.icon('warn')} {t.paint(f'{sym} · {chain}'.ljust(22), t.GOLD)} "
+                  f"{t.paint(result['detail'], t.AMBER)}")
+
+    print()
+    print(f"  {t.paint('SUMMARY', t.GOLD)}")
+    print(t.kv("auto-verified", t.paint(str(summary['auto_verified']), t.GREEN)))
+    print(t.kv("mismatch (review)",
+               t.paint(str(summary['mismatch']),
+                       t.ROSE if summary['mismatch'] else t.MUTED)))
+    print(t.kv("unsupported chain", t.paint(str(summary['unsupported']), t.MUTED)))
+    print(t.kv("rpc error",
+               t.paint(str(summary['errored']),
+                       t.AMBER if summary['errored'] else t.MUTED)))
+    print(t.kv("skipped (human decided)",
+               t.paint(str(summary['skipped_human']), t.MUTED)))
+    print()
+    print(f"  {t.paint('Auto-verifications cached to '
+                       'data/auto_verifications.json. '
+                       'Human votes (sca curate) always win.', t.MUTED)}")
+    print()
+
+
+def cmd_discover() -> None:
+    """Sweep every discovery surface; auto-register anything new.
+
+    Designed for a nightly cron — runs three surfaces:
+      - tier1_official HTML scrapers (OFAC, BIS, FSB, EUR-Lex MiCA,
+        NYDFS, IAASB)
+      - tier1_official RSS / Atom feed pollers (BIS, FSB, NYDFS press,
+        Fed speeches, ECB digital-euro)
+      - tier2_industry issuer + analytics blog scrapers (Circle, Paxos,
+        Tether, Chainalysis, TRM Labs, Elliptic)
+
+    All three feed the same `sync_discovered()` pipeline, so dedup
+    (by body hash) and the ledger / staging / `included`-by-default
+    registration path is identical regardless of surface. The existing
+    `sync_staging()` picks new sources up on the next `retrieve()`.
+    """
+    from sca.discovery import POLLERS, sync_discovered
+    from sca.discovery_rss import POLLERS as RSS_POLLERS
+    from sca.discovery_blogs import POLLERS as BLOG_POLLERS
+
+    report = sync_discovered()
+
+    all_pollers = sorted(
+        list(POLLERS) + list(RSS_POLLERS) + list(BLOG_POLLERS)
+    )
+    print(f"  {t.paint('DISCOVERY · ' + ' · '.join(all_pollers),
+                       t.GOLD, bold=True)}")
+    print()
+    if report.new:
+        print(f"  {t.paint('NEW', t.GREEN, bold=True)}  "
+              f"{t.paint(f'{len(report.new)} sources registered', t.MUTED)}")
+        for sid in report.new:
+            print(f"    {t.icon('ok')} {t.paint(sid, t.GOLD)}")
+        print()
+    if report.revised:
+        print(f"  {t.paint('REVISED', t.AMBER, bold=True)}  "
+              f"{t.paint(f'{len(report.revised)} updated bodies', t.MUTED)}")
+        for sid in report.revised:
+            print(f"    {t.icon('warn')} {t.paint(sid, t.GOLD)}")
+        print()
+    if report.unchanged:
+        print(f"  {t.paint('UNCHANGED', t.MUTED, bold=True)}  "
+              f"{t.paint(f'{len(report.unchanged)} already known', t.MUTED)}")
+        print()
+    if report.errors:
+        print(f"  {t.paint('ERRORS', t.ROSE, bold=True)}  "
+              f"{t.paint(f'{len(report.errors)} failures', t.MUTED)}")
+        for sid, err in report.errors.items():
+            print(f"    {t.icon('error')} {t.paint(sid.ljust(40), t.GOLD)} "
+                  f"{t.paint(err[:60], t.ROSE)}")
+        print()
+
+    print(f"  {t.paint('TOTAL', t.GOLD, bold=True)}")
+    print(t.kv("new", t.paint(str(len(report.new)),
+                              t.GREEN if report.new else t.MUTED)))
+    print(t.kv("revised", t.paint(str(len(report.revised)),
+                                  t.AMBER if report.revised else t.MUTED)))
+    print(t.kv("unchanged", t.paint(str(len(report.unchanged)), t.MUTED)))
+    print(t.kv("errors", t.paint(str(len(report.errors)),
+                                 t.ROSE if report.errors else t.MUTED)))
+    print()
+    print(f"  {t.paint('New sources staged to corpus/staging/. They '
+                       'become retrievable on next sync_staging().',
+                       t.MUTED)}")
+    print()
+
+
+def cmd_canary() -> None:
+    """Re-fetch every external source and report drift.
+
+    Sweeps: per-chain RPC endpoints, OFAC SDN feeds, issuer transparency
+    URLs, corpus source URLs. Persists fresh snapshots for the UI's
+    "archived copy" fallback and flags broken/changed sources loud enough
+    to actually fix.
+    """
+    from sca.canary import run_canary
+
+    report = run_canary()
+
+    by_kind: dict[str, list] = {}
+    for c in report.checks:
+        by_kind.setdefault(c.kind, []).append(c)
+
+    for kind, items in sorted(by_kind.items()):
+        live = sum(1 for c in items if c.status == "live")
+        broken = sum(1 for c in items if c.status == "broken")
+        snap = sum(1 for c in items if c.status == "snapshot")
+        changed = sum(1 for c in items if c.sha256_changed)
+        head = (
+            f"{kind.upper()}  {live} live · {snap} archived · "
+            f"{broken} broken · {changed} changed"
+        )
+        print(f"  {t.paint(head, t.GOLD, bold=True)}")
+        for c in items:
+            label = c.id[:48]
+            if c.status == "live":
+                tag = t.paint("live", t.GREEN)
+                if c.sha256_changed:
+                    tag += " " + t.paint("· content changed", t.AMBER)
+                print(f"    {t.icon('ok')} {label.ljust(50)} {tag}")
+            elif c.status == "snapshot":
+                print(f"    {t.icon('warn')} {label.ljust(50)} "
+                      f"{t.paint('archived copy only', t.AMBER)}  "
+                      f"{t.paint(c.error[:60], t.MUTED)}")
+            else:
+                print(f"    {t.icon('error')} {label.ljust(50)} "
+                      f"{t.paint('BROKEN', t.ROSE)}  "
+                      f"{t.paint(c.error[:60], t.MUTED)}")
+        print()
+
+    print(f"  {t.paint('TOTAL', t.GOLD, bold=True)}")
+    print(t.kv("checked", str(len(report.checks))))
+    print(t.kv("live", t.paint(str(report.live), t.GREEN)))
+    print(t.kv("archived (live broken)",
+               t.paint(str(report.snapshot_only),
+                       t.AMBER if report.snapshot_only else t.MUTED)))
+    print(t.kv("broken (no fallback)",
+               t.paint(str(report.broken),
+                       t.ROSE if report.broken else t.MUTED)))
+    print(t.kv("content changed", str(report.changed)))
+    print()
+
+
 def cmd_refresh() -> None:
-    """Re-resolve attestation URLs from issuer transparency pages."""
+    """Re-resolve attestation URLs from issuer transparency pages.
+
+    Also runs the on-chain address-verification pass so a routine refresh
+    keeps the auto-verification state current — addresses that pass the
+    self-report check clear the unverified wall automatically.
+    """
     coins = config.stablecoins()
     print(f"  {t.icon('doc')} {t.paint('ATTESTATION URL REFRESH', t.PAPER, bold=True)}")
     print()
@@ -280,6 +487,8 @@ def cmd_refresh() -> None:
     print()
     print(f"  {t.paint('Resolved URLs cached to data/attestation_cache.json', t.MUTED)}")
     print()
+    # Verification pass — keep the auto-verified state in sync with reality.
+    cmd_verify(None)
 
 
 def _render_checks(checks) -> None:
@@ -300,11 +509,14 @@ def _render_passages(passages) -> None:
     print(f"  {t.icon('corpus')} {t.paint('REASONING FRAME', t.PAPER, bold=True)}")
     if passages:
         for p in passages:
+            badge = (t.paint('  ✦ human-verified', t.GREEN)
+                     if p.source_verified
+                     else t.paint('  · auto-included', t.MUTED))
             print(f"  {t.icon('cite')} {t.paint(p.citation, t.GOLD)}  "
-                  f"{t.paint(p.heading, t.MUTED)}")
+                  f"{t.paint(p.heading, t.MUTED)}{badge}")
     else:
         print(f"  {t.icon('warn')} "
-              f"{t.paint('no approved corpus passages', t.AMBER)}")
+              f"{t.paint('no ingested corpus passages', t.AMBER)}")
     print()
 
 
@@ -404,6 +616,19 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("curate")
     sub.add_parser("refresh")
     sub.add_parser("evals")
+    verify_parser = sub.add_parser(
+        "verify",
+        help="auto-verify contract addresses (all tokens, or one symbol)",
+    )
+    verify_parser.add_argument("symbol", nargs="?", default=None)
+    sub.add_parser(
+        "canary",
+        help="re-fetch every external source we depend on; report drift",
+    )
+    sub.add_parser(
+        "discover",
+        help="sweep official-source pollers; auto-register new publications",
+    )
     return parser
 
 
@@ -457,6 +682,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "evals":
             _header("eval harness")
             render_evals()
+        elif args.command == "verify":
+            _header("address verification")
+            cmd_verify(args.symbol)
+        elif args.command == "canary":
+            _header("source canary")
+            cmd_canary()
+        elif args.command == "discover":
+            _header("source discovery · nightly sweep")
+            cmd_discover()
     except Exception as exc:  # noqa: BLE001 - surface cleanly to the user
         print(f"  {t.icon('error')} {t.paint(str(exc), t.ROSE)}")
         return 1

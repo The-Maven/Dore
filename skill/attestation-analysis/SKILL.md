@@ -25,10 +25,12 @@ analysis: what is true, what is notable, and why an examiner would care.
    the section — e.g. `[sp-stablecoin-stability §3.2]`. An uncited
    judgement is not allowed in the output.
 
-3. **Only cite approved corpus sources.** Sources in `corpus/sources.yaml`
-   with `status: approved`. Never cite a `proposed` source. If the corpus
-   has nothing to support a judgement, say the judgement is unsupported and
-   stop short of making it — do not substitute general internet knowledge.
+3. **Only cite included corpus sources.** The corpus is opt-out: a source
+   is citable unless a human has excluded it (`status: excluded`). Cite
+   only from the passages provided to you in the prompt. If the corpus
+   has nothing to support a judgement, say the judgement is unsupported
+   and stop short of making it — do not substitute general internet
+   knowledge.
 
 4. **Surface uncertainty.** Low extraction confidence, a stale attestation,
    an unverified contract address, a chain not covered — these go in the

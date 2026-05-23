@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from sca import config
@@ -32,6 +32,7 @@ from sca.corpus.sources import all_sources
 from sca.store import get_store
 from sca.tools import get_onchain_supply
 from web.auth import current_user, require_user
+from web.rate_limit import enforce as rate_limit_enforce
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -164,29 +165,71 @@ def _fresh_cached(surface: str, symbol: str) -> dict[str, Any] | None:
 
 # ── async analysis jobs ───────────────────────────────────────────────
 # An analysis hits live RPCs + a PDF download + an LLM (~10-40s). We run
-# it in a background thread and let the client poll, so the UI can show a
-# real, staged progress experience instead of a frozen request.
+# it through a BOUNDED thread pool so a burst of users can't spawn 100
+# concurrent jobs and exhaust LLM quota / file descriptors / RAM. Jobs
+# auto-evict after `_JOB_TTL_S` so memory stays flat under sustained load.
+#
+# Defaults: 4 concurrent jobs, 1-hour TTL. Override via env
+# `SCA_JOB_POOL` and `SCA_JOB_TTL_S`. With 4 workers each running ~30s LLM
+# calls, throughput is ~8 jobs/minute — fine for current load and bounded
+# enough to be reasoned about. Live cache (`_fresh_cached`) makes the
+# common case (warm token) free, so concurrent compute is the rare path.
+import os as _os
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
+
+_JOB_POOL_SIZE = int(_os.environ.get("SCA_JOB_POOL", "4"))
+_JOB_TTL_S = int(_os.environ.get("SCA_JOB_TTL_S", str(60 * 60)))
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
+_JOB_POOL = _ThreadPoolExecutor(
+    max_workers=_JOB_POOL_SIZE, thread_name_prefix="dore-job",
+)
+
+
+def _evict_old_jobs() -> int:
+    """Drop completed jobs older than the TTL. Cheap O(n); called whenever
+    we enqueue a new job so eviction tracks volume, not wall time."""
+    cutoff = time.time() - _JOB_TTL_S
+    with _JOBS_LOCK:
+        stale = [
+            j for j, st in _JOBS.items()
+            if st.get("started_at", 0) < cutoff
+            and st.get("status") in {"done", "error"}
+        ]
+        for j in stale:
+            del _JOBS[j]
+    return len(stale)
+
+
+def _submit_job(job_id: str, fn, *args, **kwargs) -> None:
+    """Enqueue work on the bounded pool. Bounded queueing prevents the
+    thundering-herd / quota-exhaustion class of bug."""
+    _evict_old_jobs()
+    _JOB_POOL.submit(fn, *args, **kwargs)
 
 _STAGES = [
     "Resolving on-chain supply across deployments",
     "Locating + downloading the latest attestation",
     "Extracting reserves from the attestation PDF",
     "Running deterministic guardrail checks",
-    "Retrieving the approved corpus reasoning frame",
+    "Retrieving the corpus reasoning frame",
     "Synthesising the cited compliance analysis",
 ]
 
 
 def _run_job(
-    job_id: str, symbol: str, refresh: bool = False, user_id: str | None = None
+    job_id: str, symbol: str, refresh: bool = False,
+    user_id: str | None = None, tier: str = "fast",
 ) -> None:
     started = time.time()
     try:
         # user_id attributes the persisted analysis row to the signed-in
         # user; None (anonymous) means the run is transient.
-        result = analyze(symbol, refresh=refresh, user_id=user_id)
+        # tier selects the LLM (fast / deep) — user opt-in for deeper
+        # reasoning; default is fast for sub-2s LLM hops.
+        from sca.llm import get_llm
+        llm = get_llm(tier)
+        result = analyze(symbol, refresh=refresh, user_id=user_id, llm=llm)
         payload = _asdict(result)
         with _JOBS_LOCK:
             _JOBS[job_id].update(
@@ -208,6 +251,7 @@ def _run_job(
 def start_analysis(
     body: dict[str, Any],
     user: dict[str, Any] | None = Depends(current_user),
+    _rate: None = Depends(rate_limit_enforce),
 ) -> dict[str, Any]:
     """Kick off an analysis job. Returns a job id to poll.
 
@@ -218,14 +262,20 @@ def start_analysis(
     Anonymous callers run the analysis fully — only persistence to history
     requires an account, so the run is attributed only when ``user`` is set.
     """
-    symbol = str(body.get("symbol", "")).strip().upper()
-    if not symbol:
+    raw = str(body.get("symbol", "")).strip()
+    if not raw:
         raise HTTPException(400, "symbol is required")
-    if symbol not in config.stablecoins():
-        raise HTTPException(404, f"unknown stablecoin: {symbol}")
+    try:
+        symbol = config.get_stablecoin(raw).symbol  # canonical case
+    except ValueError:
+        raise HTTPException(404, f"unknown stablecoin: {raw}")
     refresh = bool(body.get("refresh", False))
+    tier = "deep" if str(body.get("tier", "")).lower() == "deep" else "fast"
     # A fresh, already-computed result is served instantly — no job, no
     # staged motions. An explicit refresh always bypasses this.
+    # Cache lookup is shared across tiers (the heavy work is identical;
+    # only narrative style differs). `refresh=true` is the escape hatch
+    # when a user wants a deep-tier re-run.
     if not refresh:
         cached = _fresh_cached("attestation", symbol)
         if cached is not None:
@@ -238,11 +288,7 @@ def start_analysis(
             "status": "running",
             "started_at": time.time(),
         }
-    threading.Thread(
-        target=_run_job,
-        args=(job_id, symbol, refresh, _uid(user)),
-        daemon=True,
-    ).start()
+    _submit_job(job_id, _run_job, job_id, symbol, refresh, _uid(user), tier)
     return {"job_id": job_id, "symbol": symbol, "stages": _STAGES}
 
 
@@ -268,7 +314,7 @@ _SANCTIONS_STAGES = [
     "Loading the OFAC SDN sanctioned-address list",
     "Screening token deployment addresses against the list",
     "Running deterministic guardrail checks",
-    "Retrieving the approved corpus reasoning frame",
+    "Retrieving the corpus reasoning frame",
     "Synthesising the cited sanctions screen",
 ]
 _REDEMPTION_STAGES = [
@@ -276,18 +322,20 @@ _REDEMPTION_STAGES = [
     "Locating + downloading the latest attestation",
     "Classifying reserves into liquidity tiers",
     "Running deterministic guardrail checks",
-    "Retrieving the approved corpus reasoning frame",
+    "Retrieving the corpus reasoning frame",
     "Synthesising the cited redemption assessment",
 ]
 
 
 def _run_surface_job(
-    job_id: str, symbol: str, fn: Any, user_id: str | None = None
+    job_id: str, symbol: str, fn: Any, user_id: str | None = None,
+    tier: str = "fast",
 ) -> None:
     """Run a slow compliance-surface job (sanctions or redemption)."""
+    from sca.llm import get_llm
     started = time.time()
     try:
-        result = fn(symbol, user_id=user_id)
+        result = fn(symbol, user_id=user_id, llm=get_llm(tier))
         payload = _asdict(result)
         with _JOBS_LOCK:
             _JOBS[job_id].update(
@@ -309,11 +357,13 @@ def _start_surface_job(
     body: dict[str, Any], fn: Any, stages: list[str], surface: str,
     user_id: str | None = None,
 ) -> dict[str, Any]:
-    symbol = str(body.get("symbol", "")).strip().upper()
-    if not symbol:
+    raw = str(body.get("symbol", "")).strip()
+    if not raw:
         raise HTTPException(400, "symbol is required")
-    if symbol not in config.stablecoins():
-        raise HTTPException(404, f"unknown stablecoin: {symbol}")
+    try:
+        symbol = config.get_stablecoin(raw).symbol  # canonical case
+    except ValueError:
+        raise HTTPException(404, f"unknown stablecoin: {raw}")
     # A fresh, already-computed result is served instantly — no job, no
     # staged motions. An explicit refresh always bypasses this.
     if not bool(body.get("refresh", False)):
@@ -328,11 +378,8 @@ def _start_surface_job(
             "status": "running",
             "started_at": time.time(),
         }
-    threading.Thread(
-        target=_run_surface_job,
-        args=(job_id, symbol, fn, user_id),
-        daemon=True,
-    ).start()
+    tier = "deep" if str(body.get("tier", "")).lower() == "deep" else "fast"
+    _submit_job(job_id, _run_surface_job, job_id, symbol, fn, user_id, tier)
     return {"job_id": job_id, "symbol": symbol, "stages": stages}
 
 
@@ -340,6 +387,7 @@ def _start_surface_job(
 def start_sanctions(
     body: dict[str, Any],
     user: dict[str, Any] | None = Depends(current_user),
+    _rate: None = Depends(rate_limit_enforce),
 ) -> dict[str, Any]:
     """Kick off an OFAC sanctions screen. Returns a job id to poll."""
     uid = user["user"]["id"] if user else None
@@ -358,6 +406,7 @@ def poll_sanctions(job_id: str) -> dict[str, Any]:
 def start_redemption(
     body: dict[str, Any],
     user: dict[str, Any] | None = Depends(current_user),
+    _rate: None = Depends(rate_limit_enforce),
 ) -> dict[str, Any]:
     """Kick off a redemption-capacity assessment. Returns a job id."""
     uid = user["user"]["id"] if user else None
@@ -387,12 +436,70 @@ def tokens() -> dict[str, Any]:
 
 @app.get("/api/sources")
 def sources() -> dict[str, Any]:
-    """The corpus source registry + the human-curation gate state."""
-    items = [_asdict(s) for s in all_sources()]
-    for s, raw in zip(items, all_sources()):
-        s["approved"] = raw.approved
-    approved = sum(1 for s in items if s["approved"])
-    return {"sources": items, "count": len(items), "approved": approved}
+    """The corpus source registry (opt-out model).
+
+    Every source is `included` and citable by default; `included` is False
+    only for a source a human has explicitly excluded. `verified` flags a
+    source a human has explicitly reviewed — a badge, not a gate.
+
+    Each source also carries `snapshot_status` and `snapshot_url` so the UI
+    can render a health badge and swap the live link to an archived copy
+    when the source is broken.
+    """
+    from sca import snapshots as _snap
+
+    raw = all_sources()
+    items = [_asdict(s) for s in raw]
+    for s, src in zip(items, raw):
+        s["included"] = src.included
+        s["verified"] = src.verified
+        # Source health — derived from the snapshot store.
+        meta = _snap.load_meta(f"corpus::{src.id}")
+        if meta is None:
+            s["snapshot_status"] = "unknown"  # never canaried
+            s["snapshot_url"] = ""
+            s["snapshot_age_days"] = None
+        else:
+            s["snapshot_status"] = (
+                "broken" if meta.status_code >= 400 else "live"
+            )
+            s["snapshot_url"] = f"/api/snapshot/corpus::{src.id}"
+            s["snapshot_age_days"] = _snap.staleness_days(meta)
+    included = sum(1 for s in items if s["included"])
+    verified = sum(1 for s in items if s["verified"])
+    return {
+        "sources": items,
+        "count": len(items),
+        "included": included,
+        "verified": verified,
+    }
+
+
+@app.get("/api/snapshot/{snapshot_id}")
+def get_snapshot(snapshot_id: str):
+    """Serve the last-known-good body for a snapshot id.
+
+    Used by the UI when the live source URL is broken — every "view
+    source ↗" link transparently falls back to "view archived copy". The
+    archived bytes come from the canary's most recent successful fetch.
+    """
+    from fastapi import HTTPException
+    from fastapi.responses import Response
+
+    from sca import snapshots as _snap
+
+    loaded = _snap.load_body(snapshot_id)
+    if loaded is None:
+        raise HTTPException(status_code=404, detail="no snapshot for that id")
+    body, meta = loaded
+    return Response(
+        content=body, media_type=meta.content_type,
+        headers={
+            "X-Snapshot-Fetched-At": meta.fetched_at,
+            "X-Snapshot-Sha256": meta.sha256,
+            "X-Snapshot-Source-Url": meta.url,
+        },
+    )
 
 
 @app.post("/api/sources/{source_id}/vote")
@@ -401,19 +508,24 @@ def vote_source(
     body: dict[str, Any],
     user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    """Record a human curation decision on a corpus source.
+    """Record a human curation decision on a corpus source (opt-out model).
 
     Mirrors ``sca curate``: records the decision, clears the lru_cached
-    source loader, and — on an ``approved`` decision — ingests any staged
-    file so the source becomes citeable.
+    source loader, and — on an ``included``/``verified`` decision — ingests
+    any staged file so the source contributes citable text.
+
+    decision: ``excluded`` (opt the source out), ``included`` (reverse an
+    exclusion), or ``verified`` (mark it human-reviewed; stays included).
 
     Curation is a save-type action: it requires an account. An anonymous
     caller gets a 401 from ``require_user`` (the SPA turns this into a
     friendly "sign in to save" prompt). The vote is attributed to the user.
     """
     decision = str(body.get("decision", "")).strip().lower()
-    if decision not in {"approved", "rejected"}:
-        raise HTTPException(400, "decision must be 'approved' or 'rejected'")
+    if decision not in {"excluded", "included", "verified"}:
+        raise HTTPException(
+            400, "decision must be 'excluded', 'included' or 'verified'"
+        )
 
     known = {s.id for s in all_sources()}
     if source_id not in known:
@@ -428,7 +540,7 @@ def vote_source(
 
     ingested = False
     ingest_error = None
-    if decision == "approved":
+    if decision in {"included", "verified"}:
         try:
             from sca.corpus.ingest import ingest_source
 
@@ -443,7 +555,8 @@ def vote_source(
     for s in all_sources():
         if s.id == source_id:
             updated = _asdict(s)
-            updated["approved"] = s.approved
+            updated["included"] = s.included
+            updated["verified"] = s.verified
             break
 
     return {
@@ -457,11 +570,14 @@ def vote_source(
 @app.get("/api/supply/{symbol}")
 def supply(symbol: str) -> dict[str, Any]:
     """Live on-chain supply only — fast, no LLM, no attestation."""
-    symbol = symbol.strip().upper()
-    if symbol not in config.stablecoins():
+    try:
+        # Canonicalize via the case-insensitive lookup so USDe / USDf / crvUSD
+        # resolve from URL params without forcing the caller to know casing.
+        canon = config.get_stablecoin(symbol.strip()).symbol
+    except ValueError:
         raise HTTPException(404, f"unknown stablecoin: {symbol}")
     try:
-        result = get_onchain_supply(symbol, allow_unverified=True)
+        result = get_onchain_supply(canon, allow_unverified=True)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"supply read failed: {exc}") from exc
     return _asdict(result)
@@ -478,14 +594,16 @@ def address_decision(
     account and returns 401 for an anonymous caller. The decision is
     attributed to the signed-in user and persisted through the store.
     """
-    symbol = str(body.get("symbol", "")).strip().upper()
+    raw = str(body.get("symbol", "")).strip()
     chain = str(body.get("chain", "")).strip()
     decision = str(body.get("decision", "")).strip().lower()
-    if not symbol or symbol not in config.stablecoins():
-        raise HTTPException(404, f"unknown stablecoin: {symbol}")
+    try:
+        coin = config.get_stablecoin(raw)  # canonical case
+    except ValueError:
+        raise HTTPException(404, f"unknown stablecoin: {raw}")
+    symbol = coin.symbol
     if decision not in {"verified", "rejected"}:
         raise HTTPException(400, "decision must be 'verified' or 'rejected'")
-    coin = config.stablecoins()[symbol]
     match = next((d for d in coin.deployments if d.chain == chain), None)
     if match is None:
         raise HTTPException(404, f"unknown deployment: {symbol} on {chain}")
@@ -527,6 +645,25 @@ def health() -> dict[str, Any]:
         "tokens": len(config.stablecoins()),
         "llm_configured": bool(os.environ.get("LLM_API_KEY")),
     }
+
+
+# ── background source-health canary ───────────────────────────────────
+# Periodically re-runs `sca canary` so the snapshot store stays fresh
+# and the UI's "broken" badges reflect reality without an operator ever
+# touching the CLI. Default cadence is 6h; override with
+# SCA_HEALTH_INTERVAL_HOURS or disable with SCA_HEALTH_DISABLED=1
+# (useful in CI). See sca.health_thread for the loop body + flip
+# detection.
+@app.on_event("startup")
+def _start_health_thread() -> None:
+    try:
+        from sca.health_thread import start_health_thread
+        start_health_thread()
+    except Exception:  # noqa: BLE001 - startup must never fail on a bg thread
+        # The thread is best-effort observability; if it fails to spawn,
+        # the web app still serves analyses normally. log_event already
+        # surfaced the failure inside start_health_thread.
+        pass
 
 
 # ── F7 · ANALYST — the Doré agent bridge ──────────────────────────────

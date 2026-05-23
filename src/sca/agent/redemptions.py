@@ -7,11 +7,12 @@ a cited analysis against the redemption-rights corpus.
 """
 from __future__ import annotations
 
+from sca import config
 from sca.agent.analyze import analyze
 from sca.agent.synthesis import synthesize_surface
 from sca.corpus import retrieve
 from sca.llm import LLMClient
-from sca.models import Gap, RedemptionAssessment
+from sca.models import AugmentedContext, Gap, RedemptionAssessment
 from sca.tools.redemption import classify_reserves, liquid_reserves
 from sca.validation import validate_redemption, verify_citations
 
@@ -87,6 +88,42 @@ def assess_redemption(
             base.supply.total_supply - base.attestation.tokens_outstanding
         )
 
+    coin = config.get_stablecoin(symbol)
+
+    # Augmentation — qualitative redemption-mechanism context whenever
+    # the deterministic tier breakdown can't run. Bounded to non-numeric
+    # context (settlement window, KYC requirement for fiat-backed; on-chain
+    # burn-for-collateral for crypto-collateralized). Tagged in the UI
+    # as 'AI context'.
+    #
+    # Two triggers:
+    #   - no attestation -> no reserve composition -> no tiers, liquid_cov is None
+    #   - backing model isn't fiat (crypto / synthetic / algorithmic) — fiat-style
+    #     tier decomposition simply doesn't apply; redemption is on-chain
+    augmentations: list[AugmentedContext] = []
+    aug_reason: str | None = None
+    if coin.backing_model != "fiat_reserves":
+        aug_reason = (
+            f"backing-model-{coin.backing_model}-no-fiat-tiering"
+        )
+    elif base.attestation is None or not tiers:
+        aug_reason = "no-attestation-no-tier-breakdown"
+    if aug_reason is not None:
+        try:
+            from sca import augment
+
+            ctx = augment.augment_redemption_gap(coin, aug_reason, llm=llm)
+            if ctx is not None:
+                augmentations.append(ctx)
+        except Exception as exc:  # noqa: BLE001 - never break the surface
+            from sca.observability import log_event
+            log_event(
+                "augment.redemption.dispatch_failed", level="warn",
+                symbol=symbol,
+                error_class=type(exc).__name__,
+                error_message=str(exc),
+            )
+
     result = RedemptionAssessment(
         symbol=symbol,
         supply=base.supply,
@@ -96,6 +133,9 @@ def assess_redemption(
         liquid_reserves=liquid,
         liquid_coverage=liquid_cov,
         net_redemption_flow=net_flow,
+        augmentations=augmentations,
+        backing_model=coin.backing_model,
+        protocol_url=coin.protocol_url,
     )
 
     checks = validate_redemption(result)
@@ -106,8 +146,9 @@ def assess_redemption(
     if not passages:
         gaps.append(Gap(
             "warn", "corpus",
-            "corpus has no approved + ingested sources — redemption "
-            "judgements remain unsupported until a human approves sources",
+            "corpus has no ingested source text — redemption "
+            "judgements remain unsupported until source text is staged "
+            "and ingested",
         ))
 
     narrative = ""
@@ -135,7 +176,21 @@ def assess_redemption(
     result.passages = passages
     result.narrative = narrative
     result.gaps = gaps
+
+    # AI Brief — editorial top-of-view synthesis. Best-effort.
     if synthesize_narrative:
+        try:
+            from sca.brief import generate_brief
+            from dataclasses import asdict as _asdict
+            coin = config.get_stablecoin(symbol)
+            brief_obj = generate_brief(
+                surface="redemption", coin=coin, facts=_facts(result),
+                news_candidates=passages, llm=llm,
+            )
+            if brief_obj is not None:
+                result.brief = _asdict(brief_obj)
+        except Exception:  # noqa: BLE001 - brief is optional
+            pass
         _persist_redemption(symbol, result, user_id)
     return result
 

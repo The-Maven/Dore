@@ -42,7 +42,12 @@ def _store() -> Store:
 
 
 def record_source_decision(source_id: str, decision: str) -> None:
-    """Record a vote on a corpus source. decision: 'approved' | 'rejected'."""
+    """Record a vote on a corpus source.
+
+    decision: 'excluded' (opt out — drop from the citable set), 'included'
+    (reverse an exclusion — back to the default state), or 'verified' (mark
+    the source human-reviewed; it stays included, and gains a badge).
+    """
     _store().record_source_decision(source_id, decision)
 
 
@@ -73,8 +78,21 @@ def _resolve_contract(symbol: str, chain: str) -> str:
 
 
 def source_status_overrides() -> dict[str, str]:
-    """Latest decision per source id (later votes win)."""
+    """Latest inclusion status per source id (later votes win).
+
+    Maps a source id to 'included' or 'excluded'. A 'verified' vote keeps a
+    source included, so it resolves to 'included' here.
+    """
     return _store().source_status_overrides()
+
+
+def source_verified_overrides() -> dict[str, bool]:
+    """Whether each source has been explicitly human-verified.
+
+    A quality signal, not a gate — surfaced as a badge on citations. Once a
+    source is verified it stays verified until a later vote says otherwise.
+    """
+    return _store().source_verified_overrides()
 
 
 def address_verified_overrides() -> dict[tuple[str, str], bool]:

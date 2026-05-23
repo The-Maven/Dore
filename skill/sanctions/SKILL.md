@@ -23,9 +23,10 @@ examiner would expect of the issuer.
    corpus, to the section — e.g. `[ofac-virtual-currency §...]`. An uncited
    judgement is not allowed.
 
-3. **Only cite approved corpus sources.** If the corpus has nothing to
-   support a judgement, say so and stop short — do not substitute general
-   knowledge.
+3. **Only cite included corpus sources.** Cite only from the passages
+   provided to you. The corpus is opt-out: every source is citable
+   unless a human has excluded it. If the corpus has nothing to support a
+   judgement, say so and stop short — do not substitute general knowledge.
 
 4. **Distinguish what was screened from what was not.** This tool screens
    the token's own contract addresses against the OFAC SDN list. It does

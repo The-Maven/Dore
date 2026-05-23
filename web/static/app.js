@@ -127,16 +127,385 @@ function chainMark(chain, cls = '') {
 
 // block-explorer base URLs — append the token contract address
 const CHAIN_EXPLORERS = {
-  ethereum: 'https://etherscan.io/token/',
-  arbitrum: 'https://arbiscan.io/token/',
-  base:     'https://basescan.org/token/',
-  optimism: 'https://optimistic.etherscan.io/token/',
-  polygon:  'https://polygonscan.com/token/',
-  solana:   'https://solscan.io/token/',
+  ethereum:  'https://etherscan.io/token/',
+  arbitrum:  'https://arbiscan.io/token/',
+  base:      'https://basescan.org/token/',
+  optimism:  'https://optimistic.etherscan.io/token/',
+  polygon:   'https://polygonscan.com/token/',
+  bsc:       'https://bscscan.com/token/',
+  avalanche: 'https://snowtrace.io/token/',
+  solana:    'https://solscan.io/token/',
+  // Tron uses the #/contract/{address} hash route on TronScan — the
+  // contract page shows symbol, decimals, holders, and recent transfers,
+  // matching the credibility of the etherscan token pages we link for
+  // the EVM chains.
+  tron:      'https://tronscan.org/#/contract/',
 };
 function explorerUrl(chain, contract) {
   const base = CHAIN_EXPLORERS[String(chain || '').toLowerCase().trim()];
   return base && contract ? base + contract : null;
+}
+
+// Render a small badge for the per-chain RPC consensus.
+// "2/2 agree" = best, "1/2 single source" = degraded, "DISAGREEMENT" = bad.
+function consensusBadge(label) {
+  if (!label) return el('span', { class: 'consensus consensus-mute' }, '—');
+  const s = String(label);
+  let cls = 'consensus-mute';
+  let tip = label;
+  // DISAGREEMENT must be checked first — the word "AGREE" is a substring,
+  // so a naive /agree/ regex would misclassify it as the green path.
+  if (/DISAGREEMENT/i.test(s)) {
+    cls = 'consensus-bad';
+    tip = 'RPC endpoints returned different values. '
+        + 'Do not trust this read — investigate immediately.';
+  } else if (/\bagree\b/i.test(s)) {
+    cls = 'consensus-ok';
+    tip = 'Two RPC endpoints returned the same value — strong corroboration.';
+  } else if (/single source/i.test(s)) {
+    cls = 'consensus-warn';
+    tip = 'Only one RPC endpoint responded — value is uncorroborated. '
+        + 'Fallback unreachable; check endpoint health.';
+  } else if (/majority/i.test(s)) {
+    cls = 'consensus-ok';
+    tip = 'Two of three RPCs agreed; outlier ignored.';
+  } else if (/primary|fallback/i.test(s)) {
+    cls = 'consensus-mute';
+    tip = 'Sequential read — primary endpoint sufficient; no corroboration attempted.';
+  }
+  return el('span', { class: 'consensus ' + cls, title: tip }, s);
+}
+
+// Render a small dot+label badge for a corpus source's snapshot health.
+// Drives both the per-passage card and the global "needs attention" banner.
+function sourceHealthBadge(src) {
+  const status = (src && src.snapshotStatus) || 'unknown';
+  let cls = 'src-health-mute';
+  let label = status;
+  let tip = '';
+  if (status === 'live') {
+    cls = 'src-health-ok';
+    label = 'live';
+    tip = 'Last fetched cleanly. Archived copy on file as a fallback.';
+  } else if (status === 'broken') {
+    cls = 'src-health-bad';
+    label = 'live broken';
+    tip = 'The live URL is down or 4xx/5xx. Showing the archived copy. '
+        + 'This source needs a maintainer to re-anchor.';
+  } else {
+    cls = 'src-health-mute';
+    label = 'not canaried';
+    tip = 'No snapshot on record yet — run `sca canary` to fetch one.';
+  }
+  if (src && src.snapshotAgeDays != null) {
+    tip += ` (archived ${src.snapshotAgeDays} day(s) ago)`;
+  }
+  return el('span', { class: 'src-health ' + cls, title: tip }, label);
+}
+
+// Backing-model strip — names what's actually backing this token, so a
+// missing fiat attestation reads "by design" (crypto-collateralized) vs.
+// a real gap (fiat-backed, fetch failed). Always visible above the
+// metric grid so the reader sees the lineage before the numbers.
+const BACKING_LABELS = {
+  fiat_reserves: {
+    label: 'fiat reserves',
+    cls: 'backing-fiat',
+    desc: 'Backed by off-chain cash, treasuries, or equivalents — an issuer publishes periodic attestations by an independent CPA.',
+  },
+  crypto_collateral: {
+    label: 'crypto collateral',
+    cls: 'backing-crypto',
+    desc: 'Backed by on-chain collateral managed by a smart-contract protocol — backing is visible on-chain, not via a PDF.',
+  },
+  synthetic_delta_neutral: {
+    label: 'synthetic · delta-neutral',
+    cls: 'backing-synthetic',
+    desc: 'Backed by delta-neutral positions (e.g. staked ETH + short perpetuals). Live reserves on the issuer dashboard.',
+  },
+  algorithmic: {
+    label: 'algorithmic',
+    cls: 'backing-algorithmic',
+    desc: 'Stabilised by an algorithmic mechanism plus partial collateral. Composition varies — see protocol dashboard.',
+  },
+  new_or_unverified: {
+    label: 'new · unverified',
+    cls: 'backing-new',
+    desc: 'Recently launched. No mature published attestation system yet — treat any backing claim with caution.',
+  },
+};
+
+// Data-lineage banner — the audit-grade artefact. Sits above the snapshot
+// and names exactly how every figure below was sourced: how many chains
+// read, how many endpoints agreed, whether the read is partial. This is
+// the visible bridge between "we run multi-RPC" (a feature) and "you can
+// see we ran multi-RPC" (a trust signal). World-class compliance UI
+// should never make a user dig for provenance.
+function dataLineageBanner(supply, metrics) {
+  if (!supply) return el('span');
+  const chainsRead = supply.chains_read != null ? supply.chains_read
+                   : (supply.per_chain || []).length;
+  const chainsExp = supply.chains_expected != null ? supply.chains_expected
+                  : chainsRead;
+  const complete = supply.complete !== false;
+  const corroborated = (supply.per_chain || [])
+    .filter((c) => /\bagree\b/i.test(c.consensus || '')).length;
+  const single = (supply.per_chain || [])
+    .filter((c) => /single source/i.test(c.consensus || '')).length;
+  const disagree = (supply.per_chain || [])
+    .filter((c) => /DISAGREEMENT/i.test(c.consensus || '')).length;
+
+  const cls = !complete ? 'lineage-partial'
+            : disagree > 0 ? 'lineage-disagree'
+            : corroborated >= chainsRead ? 'lineage-strong'
+            : corroborated > 0 ? 'lineage-mixed' : 'lineage-thin';
+  const headline = !complete
+    ? `PARTIAL — ${chainsRead}/${chainsExp} chains read`
+    : disagree > 0
+      ? `DATA LINEAGE — ${chainsRead} chains, ${disagree} disagreement(s) needs review`
+      : `DATA LINEAGE — ${chainsRead} chain${chainsRead === 1 ? '' : 's'} read`;
+  const breakdown = [];
+  if (corroborated > 0) breakdown.push(`${corroborated} cross-RPC corroborated`);
+  if (single > 0) breakdown.push(`${single} single-source`);
+  if (chainsExp > chainsRead) {
+    const failed = (supply.failed_chains || []).join(', ');
+    breakdown.push(`failed: ${failed || (chainsExp - chainsRead) + ' chain(s)'}`);
+  }
+  const sub = breakdown.length ? breakdown.join(' · ')
+    : 'single-endpoint reads (no fallback pool configured for this chain)';
+  return el('div', { class: 'lineage-banner ' + cls,
+    title: 'Multi-chain reads with cross-RPC corroboration. Doré reads '
+      + 'each chain from multiple RPC endpoints in parallel and requires '
+      + 'agreement on supply figures — a single misbehaving RPC cannot '
+      + 'poison the result.' },
+    el('span', { class: 'lineage-kick' }, headline),
+    el('span', { class: 'lineage-sub' }, sub),
+    metrics && metrics.provenance
+      ? el('span', { class: 'lineage-prov' },
+          el('span', { class: 'glyph' }, '§'),
+          'metrics: ' + metrics.provenance)
+      : null,
+  );
+}
+
+// ── Doré Brief hero panel ─────────────────────────────────────────────
+// Editorial top-of-view synthesis. Distinct visual identity (gold border,
+// large headline, kicker badge) so a reader recognises it as an AI brief
+// in the first glance — never confused with a verified figure.
+function aiBriefHero(brief) {
+  if (!brief || !brief.headline) return el('span');
+  const surfaceLabel = {
+    'analyze': 'ATTESTATION',
+    'sanctions': 'SANCTIONS',
+    'redemption': 'REDEMPTION',
+  }[brief.surface] || (brief.surface || '').toUpperCase();
+  const generated = brief.generated_at
+    ? new Date(brief.generated_at).toLocaleString()
+    : '';
+
+  const hero = el('div', { class: 'brief-hero fade-in' });
+  // Kicker row: DORÉ BRIEF badge + surface + symbol + generated time
+  hero.append(el('div', { class: 'brief-kick-row' },
+    el('span', { class: 'brief-badge' }, 'DORÉ BRIEF'),
+    el('span', { class: 'brief-surface' }, surfaceLabel),
+    el('span', { class: 'brief-symbol' }, brief.symbol || ''),
+    generated
+      ? el('span', { class: 'brief-time',
+          title: 'AI brief composed at ' + generated },
+          'composed ' + generated)
+      : el('span'),
+  ));
+  // Headline — the bottom line, large editorial type
+  hero.append(el('div', { class: 'brief-headline' }, brief.headline));
+  // Key points — 2-4 bullets, scannable
+  if ((brief.key_points || []).length) {
+    const kp = el('ul', { class: 'brief-points' });
+    brief.key_points.forEach((p) =>
+      kp.append(el('li', { class: 'brief-point' }, p)));
+    hero.append(kp);
+  }
+  // Relevant news — auto-discovered corpus items the LLM judged relevant
+  if ((brief.relevant_news || []).length) {
+    const news = el('div', { class: 'brief-news' },
+      el('div', { class: 'brief-news-kick' }, 'RELEVANT IN THE CORPUS'));
+    brief.relevant_news.forEach((item) => {
+      const row = el('div', { class: 'brief-news-row' });
+      if (item.url) {
+        row.append(el('a', {
+          class: 'brief-news-title',
+          href: item.url, target: '_blank', rel: 'noopener noreferrer',
+          title: 'open ' + item.url + ' in a new tab',
+        }, item.title || item.source || 'untitled', ' ',
+          el('span', { class: 'glyph' }, '↗')));
+      } else {
+        row.append(el('span', { class: 'brief-news-title' },
+          item.title || item.source || 'untitled'));
+      }
+      if (item.source) {
+        row.append(el('span', { class: 'brief-news-src' }, item.source));
+      }
+      news.append(row);
+    });
+    hero.append(news);
+  }
+  // Provenance footer: AI-composed tag, never confused with deterministic
+  hero.append(el('div', { class: 'brief-foot' },
+    el('span', {}, 'AI-composed from deterministic facts + recent corpus. ' +
+      'Figures verbatim from the verification pipeline; never invented. ' +
+      'Read the panels below for the structured detail.')));
+  return hero;
+}
+
+// ── backing-model-aware n/a copy ─────────────────────────────────────
+// The coverage cells used to dead-end with "No current attestation could
+// be resolved — see GAPS" regardless of the token. That line is wrong
+// for crypto-collateralised, synthetic, and algorithmic tokens — they
+// don't HAVE a fiat attestation by design. These helpers read the
+// backing model and frame the missing-coverage state correctly per
+// category, with a working link to where live data actually lives.
+function _backingNaCopy(a) {
+  const model = a && a.backing_model || 'fiat_reserves';
+  const proto = a && a.protocol_url || '';
+  const issuer = a && a.symbol ? a.symbol : 'this token';
+  if (model === 'crypto_collateral') {
+    return {
+      kicker: 'BACKING — ON-CHAIN COLLATERAL',
+      big: '∞',  // mathematical "outside this metric's domain"
+      desc: 'A fiat coverage ratio doesn\'t apply: ' + issuer + ' is '
+        + 'over-collateralised by on-chain assets held in protocol vaults. '
+        + 'Live backing composition is visible on-chain (not via a PDF), '
+        + 'and the AI Context below points to the protocol dashboard.',
+      protoLabel: 'view live collateral',
+    };
+  }
+  if (model === 'synthetic_delta_neutral') {
+    return {
+      kicker: 'BACKING — DELTA-NEUTRAL POSITIONS',
+      big: '◇',
+      desc: issuer + ' is backed by dynamic hedged positions (e.g. staked '
+        + 'ETH offset by short perpetuals); a single static coverage '
+        + 'ratio doesn\'t describe it. Reserves are visible on the issuer '
+        + 'live dashboard rather than a periodic attestation.',
+      protoLabel: 'view live reserves dashboard',
+    };
+  }
+  if (model === 'algorithmic') {
+    return {
+      kicker: 'BACKING — HYBRID ALGORITHMIC',
+      big: '⌬',
+      desc: issuer + ' uses an algorithmic stabilisation mechanism plus '
+        + 'partial on-chain collateral. Composition varies and isn\'t '
+        + 'reducible to a fiat coverage ratio — treat any attestation '
+        + 'claim with caution.',
+      protoLabel: 'view protocol dashboard',
+    };
+  }
+  if (model === 'new_or_unverified') {
+    return {
+      kicker: 'BACKING — NEW · UNVERIFIED',
+      big: '—',
+      desc: issuer + ' is recently launched and has no mature published '
+        + 'attestation system yet. Any backing claim should be treated '
+        + 'with caution until an independent attestation appears.',
+      protoLabel: 'issuer page',
+    };
+  }
+  // Default: fiat_reserves where the fetch failed
+  return {
+    kicker: 'ATTESTATION — FETCH UNAVAILABLE',
+    big: 'n/a',
+    desc: 'The current ' + issuer + ' attestation could not be fetched '
+      + 'automatically — see the AI Context below for WHY (typically a '
+      + 'JavaScript-rendered issuer page) and where to find the document '
+      + 'manually. On-chain supply figures above are unaffected.',
+    protoLabel: '',
+  };
+}
+
+function naCoverageDesc(a) {
+  const c = _backingNaCopy(a);
+  const proto = a && a.protocol_url || '';
+  const children = [c.desc];
+  if (proto && c.protoLabel) {
+    children.push(' ');
+    children.push(el('a', {
+      href: proto, target: '_blank', rel: 'noopener noreferrer',
+      class: 'na-proto-link',
+      title: 'open ' + proto + ' in a new tab',
+    }, c.protoLabel, ' ', el('span', { class: 'glyph' }, '↗')));
+  }
+  return naFieldNote(...children);
+}
+
+function coverageKickerForNa(a, defaultLabel) {
+  const c = _backingNaCopy(a);
+  return c.kicker || defaultLabel;
+}
+
+function naCoverageBig(a) {
+  return _backingNaCopy(a).big;
+}
+
+function backingModelStrip(a) {
+  const model = a && a.backing_model || 'fiat_reserves';
+  const info = BACKING_LABELS[model] || BACKING_LABELS.fiat_reserves;
+  const protoUrl = a && a.protocol_url || '';
+  const children = [
+    el('span', { class: 'backing-kicker' }, 'BACKING MODEL'),
+    el('span', { class: 'backing-badge ' + info.cls, title: info.desc },
+      info.label),
+    el('span', { class: 'backing-desc' }, info.desc),
+  ];
+  if (protoUrl) {
+    children.push(el('a', {
+      class: 'backing-link', href: protoUrl,
+      target: '_blank', rel: 'noopener noreferrer',
+      title: 'open the protocol / dashboard where live backing data lives',
+    }, 'protocol ', el('span', { class: 'glyph' }, '↗')));
+  }
+  return el('div', { class: 'backing-strip' }, ...children);
+}
+
+// Augmentation card — LLM-generated context, clearly tagged "AI CONTEXT".
+// Surfaces qualitative info (backing model, attestation cadence, where to
+// find live data) when a deterministic source couldn't be resolved.
+// Never carries numeric figures.
+function augmentationCard(ctx) {
+  if (!ctx || !ctx.text) return el('span');
+  const confidence = ctx.confidence || 'training-data-only';
+  const conf = confidence === 'web-searched'
+    ? { label: 'web-augmented', cls: 'aug-conf-web' }
+    : { label: 'training-data only', cls: 'aug-conf-training' };
+  const reasonLabel = {
+    'no-fiat-attestation-by-design': 'No fiat attestation by design',
+    'live-attestation-fetch-failed': 'Live attestation fetch failed',
+  }[ctx.reason] || ctx.reason || '';
+  const head = el('div', { class: 'aug-head' },
+    el('span', { class: 'aug-tag' }, 'AI CONTEXT'),
+    el('span', { class: 'aug-conf ' + conf.cls,
+      title: 'AI-generated text from ' + confidence
+        + '. The pipeline never injects numeric figures via the LLM.' },
+      conf.label));
+  if (reasonLabel) {
+    head.append(el('span', { class: 'aug-reason' }, '· ' + reasonLabel));
+  }
+  const card = el('div', { class: 'aug-card' }, head,
+    el('div', { class: 'aug-body' }, ctx.text));
+  if ((ctx.citations || []).length) {
+    const cites = el('div', { class: 'aug-cites' },
+      el('span', { class: 'aug-cites-kick' }, 'cited:'));
+    ctx.citations.forEach((url, i) => {
+      if (i > 0) cites.append(el('span', { class: 'aug-cite-sep' }, ' · '));
+      cites.append(el('a', {
+        class: 'aug-cite', href: url,
+        target: '_blank', rel: 'noopener noreferrer',
+        title: 'open ' + url + ' in a new tab',
+      }, url.replace(/^https?:\/\//, '').replace(/\/.*$/, ''),
+         el('span', { class: 'glyph' }, ' ↗')));
+    });
+    card.append(cites);
+  }
+  return card;
 }
 
 const esc = (s) => String(s).replace(/[&<>"]/g,
@@ -460,8 +829,72 @@ const STATE = {
   feedSeq: 0,
   activeSymbol: '',      // selected instrument
   monitorRunning: false,
+  sources: {},           // source_id → { title, url, tier, verified, included }
+  sourcesLoaded: false,  // becomes true on first successful /api/sources fetch
+  sourcesLoading: null,  // in-flight promise (so concurrent callers share a load)
 };
 const FEED_MAX = 320;
+
+// ── corpus source registry — lazy single-shot loader ─────────────────
+// The REASONING FRAME passage card looks up its source's display title and
+// canonical URL from /api/sources. We load once, cache in STATE.sources,
+// and let renderPassage() trigger a background refresh on the first miss.
+// The renderer is synchronous (no network in the render path) — a passage
+// that arrives before the registry resolves falls back to a humanised
+// version of source_id, then re-rendering picks up the loaded title.
+async function loadSources() {
+  if (STATE.sourcesLoading) return STATE.sourcesLoading;
+  STATE.sourcesLoading = (async () => {
+    try {
+      const data = await api('/sources');
+      const map = {};
+      (data.sources || []).forEach((s) => {
+        if (!s || !s.id) return;
+        map[s.id] = {
+          title: s.title || '',
+          url: s.url || '',
+          tier: s.tier || '',
+          verified: !!s.verified,
+          included: s.included !== false,
+          // snapshot health — drives the "live / archived / broken" badge
+          // and the auto-fallback from view-source to view-archived-copy.
+          snapshotStatus: s.snapshot_status || 'unknown',
+          snapshotUrl: s.snapshot_url || '',
+          snapshotAgeDays: s.snapshot_age_days,
+        };
+      });
+      STATE.sources = map;
+      STATE.sourcesLoaded = true;
+    } catch (_e) { /* leave whatever's cached; renderer has a fallback */ }
+    finally { STATE.sourcesLoading = null; }
+    return STATE.sources;
+  })();
+  return STATE.sourcesLoading;
+}
+
+// Look up a source's display title — falls back to the corpusSourceName()
+// humanisation of the registry id when the registry hasn't loaded yet, or
+// when an unknown source_id is encountered. Never returns an engineer slug.
+function sourceTitle(sourceId) {
+  const id = String(sourceId || '').trim();
+  if (!id) return 'Unknown source';
+  const s = STATE.sources[id];
+  if (s && s.title) return s.title;
+  // Trigger a background load — the passage renderer is sync; a later view
+  // re-render will pick up the resolved title without disrupting this paint.
+  if (!STATE.sourcesLoaded) loadSources();
+  return corpusSourceName(id);
+}
+
+// Look up a source's canonical URL from the registry. Returns '' (not null)
+// so callers can compare with a truthy check; an unknown / unresolved
+// source simply renders without a "view source" link.
+function sourceUrl(sourceId) {
+  const id = String(sourceId || '').trim();
+  if (!id) return '';
+  const s = STATE.sources[id];
+  return s && s.url ? s.url : '';
+}
 
 // ── hover-tooltip copy — concise, plain-language, terminal-styled ────
 // One source of truth for the non-obvious terms surfaced across views.
@@ -627,10 +1060,10 @@ const tip = {
     },
     corpus: {
       kind: 'awaiting your action',
-      text: 'No approved sources in the corpus yet. The corpus is deliberately '
-        + 'human-gated: the agent states facts but will not cite regulation '
-        + 'until a human approves sources via `sca curate`. A designed gate, '
-        + 'not a failure.',
+      text: 'No ingested source text in the corpus yet. Sources are citable '
+        + 'by default, but a source only carries a citation once its text is '
+        + 'staged and ingested. Stage text under corpus/staging/ to let '
+        + 'judgements cite regulation.',
     },
     coverage: {
       kind: 'awaiting your action',
@@ -645,9 +1078,9 @@ const tip = {
     },
     citation: {
       kind: 'awaiting your action',
-      text: 'A judgement could not be tied to an approved citation. The agent '
-        + 'will not cite a source a human has not approved — approve one via '
-        + '`sca curate` to let the claim carry a citation.',
+      text: 'A judgement cited a source outside the included corpus. The '
+        + 'agent only cites included sources — re-include the source via '
+        + '`sca curate`, or stage its text, to let the claim carry a citation.',
     },
   },
   // ── F5 sanctions / F6 redemptions surface terms ────────────────────
@@ -1124,7 +1557,7 @@ function eventExplainer(l, stageMatch) {
       '1': 'reading live on-chain supply from every chain deployment.',
       '2': 'resolving and extracting the latest reserve attestation.',
       '3': 'running deterministic guardrail checks against the facts.',
-      '4': 'retrieving approved corpus passages for the reasoning frame.',
+      '4': 'retrieving corpus passages for the reasoning frame.',
       '5': 'synthesising the cited analysis narrative.',
     };
     const n = stageMatch[1];
@@ -1292,11 +1725,35 @@ function startMonitor() {
 }
 
 // ── live monitor grid (token table) ──────────────────────────────────
+// Status labels carry a tooltip explaining what each means — so a viewer
+// can hover and know whether WATCH is a polite annotation or something
+// actually warranting investigation.
 function tokenStatus(s) {
-  if (s === 'error') return { tag: 'alert', label: 'ALERT' };
-  if (!s) return { tag: 'idle', label: 'PENDING' };
-  if ((s.warnings || []).length) return { tag: 'watch', label: 'WATCH' };
-  return { tag: 'ok', label: 'LIVE' };
+  if (s === 'error') {
+    return { tag: 'alert', label: 'ALERT',
+      tip: 'The on-chain supply read failed entirely for this token. '
+        + 'No figures available until the next poll succeeds. '
+        + 'Check chain RPC health via `sca canary`.' };
+  }
+  if (!s) {
+    return { tag: 'idle', label: 'PENDING',
+      tip: 'No supply read yet — the monitor cycles through every '
+        + 'instrument; this one hasn\'t been polled in this session.' };
+  }
+  if ((s.warnings || []).length) {
+    const partial = s.complete === false;
+    return { tag: 'watch', label: 'WATCH',
+      tip: partial
+        ? `Partial read — ${s.chains_read}/${s.chains_expected} chains `
+          + `returned. Headline figure understates true circulation. `
+          + `Failed: ${(s.failed_chains || []).join(', ') || '?'}.`
+        : `Supply read succeeded but with ${s.warnings.length} warning(s) — `
+          + `usually an unverified contract address or a supply jump. `
+          + `Hover the row for detail; not necessarily a problem.` };
+  }
+  return { tag: 'ok', label: 'LIVE',
+    tip: 'On-chain supply read succeeded with no warnings across every '
+      + 'expected chain. Multi-RPC corroboration where available.' };
 }
 
 function refreshGrid() {
@@ -1336,7 +1793,8 @@ function refreshGrid() {
       el('td', { class: 'num ' + (verified ? 'v-green' : 'v-amber'),
         title: tip.verifiedRatio },
         `${t.verified_count}/${t.chain_count}`),
-      el('td', {}, el('span', { class: 'stag ' + st.tag, title: tip.status[st.tag] },
+      el('td', {}, el('span', { class: 'stag ' + st.tag,
+        title: st.tip || tip.status[st.tag] },
         st.label)),
       el('td', {}, el('div', { style: 'display:flex;gap:8px' },
         el('a', { class: 'cite', href: '#sanctions/' + t.symbol,
@@ -1737,11 +2195,14 @@ async function startAnalysis(symbol, mount, refresh = false) {
 
   let job;
   try {
+    const tier = getTier();
+    if (tier === 'deep') startDeepCountdown(Date.now() + 120000);
     job = await api('/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol, refresh }),
+      body: JSON.stringify({ symbol, refresh, tier }),
     });
+    if (job.status === 'done') stopDeepCountdown();
   } catch (e) {
     logLine('ERR', 'ANALYZE', [
       seg(symbol.padEnd(5), 'lg-sym'), seg('START-FAIL', 'd-warn'),
@@ -1837,6 +2298,7 @@ async function startAnalysis(symbol, mount, refresh = false) {
     finish();
     stage = stages.length; advance();
     mount.innerHTML = '';
+    stopDeepCountdown();
     if (st.status === 'error') {
       logLine('ERR', 'ANALYZE', [
         seg(symbol.padEnd(5), 'lg-sym'), seg('FAILED', 'd-warn'),
@@ -1883,6 +2345,15 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
     mount.append(freshnessStrip(computedAt, onRefresh));
   }
 
+  // ── DORÉ BRIEF — editorial top-of-view synthesis (when available) ──
+  // Sits above everything else: headline, key points, relevant news.
+  // Distinct gold-bordered hero panel. Omitted entirely if the brief
+  // couldn't be generated (LLM down / quota exhausted) — never renders
+  // a placeholder.
+  if (a.brief && a.brief.headline) {
+    mount.append(aiBriefHero(a.brief));
+  }
+
   // bridged_share is a @property — not in dataclasses.asdict(). Compute it.
   const nativeS = Number(supply.native_supply || 0);
   const bridgedS = Number(supply.bridged_supply || 0);
@@ -1898,26 +2369,32 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
   ));
 
   // ── 01 SNAPSHOT ──
-  // when coverage is n/a, the cell tooltip carries the WHY instead of the
-  // metric definition, and a subtle inline note explains the perceived gap.
+  // when coverage is n/a, the cell copy reads from BACKING MODEL: a
+  // crypto-collateralised token (DAI/USDe/GHO) never has a fiat
+  // attestation by design — the dead-end "no attestation could be
+  // resolved" line is wrong copy for them. Only fiat-backed tokens that
+  // FAILED to fetch get the "see GAPS" framing.
   const naCov = !m;
+  const naCovDesc = naCoverageDesc(a);  // backing-model aware
   const cov = el('div', { class: 'cov-row' },
     el('div', { class: 'cov-cell', title: naCov ? tip.na.coverage : tip.attested },
-      el('div', { class: 'cov-kick' }, 'ATTESTED COVERAGE — HONEST BACKING'),
+      el('div', { class: 'cov-kick' }, naCov
+        ? coverageKickerForNa(a, 'ATTESTED COVERAGE')
+        : 'ATTESTED COVERAGE — HONEST BACKING'),
       el('div', { class: 'cov-big ' + covClass(m && m.attested_coverage) },
-        m ? fmtPct(m.attested_coverage) : 'n/a'),
+        m ? fmtPct(m.attested_coverage) : naCoverageBig(a)),
       el('div', { class: 'cov-desc' }, naCov
-        ? naFieldNote('No current attestation could be resolved — see GAPS '
-            + 'below. On-chain native supply is unaffected.')
+        ? naCovDesc
         : 'Reserves ÷ attested tokens outstanding. The issuer’s stated backing ' +
           'ratio at the attestation date — unaffected by later supply moves.')),
     el('div', { class: 'cov-cell', title: naCov ? tip.na.coverage : tip.live },
-      el('div', { class: 'cov-kick' }, 'LIVE COVERAGE — DRIFT-AFFECTED'),
+      el('div', { class: 'cov-kick' }, naCov
+        ? coverageKickerForNa(a, 'LIVE COVERAGE')
+        : 'LIVE COVERAGE — DRIFT-AFFECTED'),
       el('div', { class: 'cov-big ' + covClass(m && m.live_coverage) },
-        m ? fmtPct(m.live_coverage) : 'n/a'),
+        m ? fmtPct(m.live_coverage) : naCoverageBig(a)),
       el('div', { class: 'cov-desc' }, naCov
-        ? naFieldNote('No current attestation could be resolved — see GAPS '
-            + 'below. On-chain native supply is unaffected.')
+        ? naCovDesc
         : 'Attested reserves ÷ current on-chain supply. Diverges from the attested ' +
           'ratio as supply changes after the attestation date.')),
   );
@@ -1952,9 +2429,20 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
 
   const snapBody = el('div', {}, cov, mgrid);
 
+  // Backing model badge — sits above everything so the reader knows the
+  // lineage before looking at any number.
+  snapBody.prepend(backingModelStrip(a));
+  // Multi-chain DATA LINEAGE banner — prominent (not buried in a stamp)
+  // so the user sees at a glance that the headline came from N chains
+  // with M corroborated. This is the trust artefact of the whole system.
+  snapBody.prepend(dataLineageBanner(supply, m));
+
   // when no attestation could be resolved, the n/a fields above all trace to
-  // the same cause — surface it once, plainly, as honest transparency.
+  // the same cause — surface it once, plainly, as honest transparency. If
+  // we ALSO have AI context filling the gap, point to it explicitly so the
+  // user understands "n/a" and "AI says attestation exists" are coherent.
   if (!att) {
+    const hasAug = (a.augmentations || []).length > 0;
     snapBody.append(el('div', { class: 'prov-note na-prov' },
       icon('i-info'),
       el('div', {},
@@ -1965,7 +2453,17 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
         'configured, or a shared issuer page may carry no token-specific ' +
         'report. The tool reports what it can honestly reach. ',
         el('b', {}, 'The on-chain supply figures are unaffected'),
-        ' — they are direct chain reads, independent of any attestation.')));
+        ' — they are direct chain reads, independent of any attestation.',
+        hasAug ? el('div', { class: 'na-bridge' },
+          icon('i-info'),
+          el('span', {},
+            el('b', {}, 'Coherence note: '),
+            'the AI context below describes the attestation the issuer ' +
+            'publishes (and where to find it manually). That context is ' +
+            'qualitative — Doré refuses to invent the numeric figures, ' +
+            'which is why the cells above stay ',
+            el('code', {}, 'n/a'),
+            '.')) : null)));
   }
 
   // supply provenance
@@ -2023,6 +2521,7 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
           verified ? 'verified' : 'unverified')),
         el('td', { class: 'num dim' }, c.decimals),
         el('td', { class: 'num ' + (isBridged ? 'v-amber' : 'v-paper') }, fmtNum(c.supply, 0)),
+        el('td', {}, consensusBadge(c.consensus || '')),
       );
     });
     snapBody.append(el('table', { class: 'dtable' },
@@ -2030,14 +2529,37 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
         el('th', {}, 'CHAIN'), el('th', {}, 'CONTRACT'),
         el('th', { title: tip.kindNative + '  /  ' + tip.kindBridged }, 'KIND'),
         el('th', { title: tip.verified }, 'VERIFIED'),
-        el('th', { class: 'num' }, 'DECIMALS'), el('th', { class: 'num' }, 'SUPPLY'))),
+        el('th', { class: 'num' }, 'DECIMALS'),
+        el('th', { class: 'num' }, 'SUPPLY'),
+        el('th', { title: 'How many RPC endpoints corroborated this read. '
+          + '2/2 agree = highest confidence; 1/2 single source = fallback '
+          + 'unreachable so the value is uncorroborated; DISAGREEMENT = '
+          + 'endpoints returned different values — investigate before trusting.' },
+          'CONSENSUS'))),
       el('tbody', {}, ...rows)));
+
+    // Partial-result banner — render LOUD if any chain failed entirely.
+    if (supply.complete === false) {
+      snapBody.append(el('div', { class: 'gap gap-critical' },
+        icon('i-warn'),
+        el('div', { class: 'gap-msg' },
+          el('b', {}, 'PARTIAL TOTAL '),
+          `— ${supply.chains_read || 0} of ${supply.chains_expected || 0} chains read. `,
+          `Failed: ${(supply.failed_chains || []).join(', ') || '?'}. `,
+          'The headline figure understates true circulation. '
+          + 'Do not treat as authoritative.')));
+    }
   }
   if ((supply.warnings || []).length) {
     snapBody.append(el('div', { class: 'sub-head' }, 'SUPPLY WARNINGS'));
     supply.warnings.forEach((w) => snapBody.append(
       el('div', { class: 'gap gap-warn' }, icon('i-warn'), el('div', { class: 'gap-msg' }, w))));
   }
+  // Augmentation block — LLM-generated context filling gaps the
+  // deterministic pipeline couldn't. Visually distinct (AI CONTEXT
+  // badge) and never confused with verified figures.
+  (a.augmentations || []).forEach((ctx) => snapBody.append(augmentationCard(ctx)));
+
   mount.append(panel('01', 'SNAPSHOT', 'i-facts', snapBody));
 
   // ── 02 GUARDRAIL CHECKS ──
@@ -2048,13 +2570,14 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
       : el('div', { class: 'empty' }, icon('i-gate'), el('b', {}, 'No checks ran.'))));
 
   // ── 03 REASONING FRAME ──
-  const passages = a.passages || [];
-  mount.append(panel('03', `REASONING FRAME · APPROVED CORPUS · ${passages.length}`, 'i-frame',
+  const passages = rankPassages(a.passages);
+  mount.append(panel('03', `REASONING FRAME · CORPUS · ${passages.length}`, 'i-frame',
     passages.length
-      ? el('div', {}, ...passages.map(renderPassage))
+      ? el('div', { class: 'passage-list' },
+          ...passages.map((p, i) => renderPassage(p, i + 1)))
       : el('div', { class: 'empty' }, icon('i-frame'),
-          el('b', {}, 'No approved corpus passages retrieved'),
-          el('div', {}, 'Judgements remain unsupported until a human approves sources.'))));
+          el('b', {}, 'No corpus passages retrieved'),
+          el('div', {}, 'Judgements remain unsupported until source text is staged and ingested.'))));
 
   // ── 04 ANALYSIS NARRATIVE ──
   mount.append(panel('04', 'ANALYSIS', 'i-agent',
@@ -2163,16 +2686,173 @@ function renderGap(g) {
         el('span', { class: 'gap-sev sev-' + sev }, sev))));
 }
 
-function renderPassage(p) {
-  return el('div', { class: 'passage' },
-    el('div', { class: 'passage-head' },
-      icon('i-frame'),
-      el('span', { class: 'passage-heading' }, p.heading || p.section || p.source_id),
-      el('span', { class: 'passage-section' },
-        [p.source_id, p.section].filter(Boolean).join(' · ')),
-      p.score != null ? el('span', { class: 'score' }, 'score ' + Number(p.score).toFixed(3)) : null),
-    el('div', { class: 'passage-text' }, p.text || ''),
-    el('div', { class: 'cite-row' }, citeChip(p.citation, p.url, p.page != null ? [p.page] : null)));
+// ── REASONING FRAME passage card ─────────────────────────────────────
+// One cited passage = one clean card. The audience is financial /
+// compliance, not engineers, so:
+//   • the source title is the resolved registry name (e.g. "MiCA — Title
+//     III, Article 36"), never an internal slug;
+//   • the relevance score is NEVER shown — it has no scale or audience
+//     meaning. It is used only to order the cards (top = highest).
+//   • the body is a deterministic short summary (first sentence or ~160
+//     chars, ellipsis if truncated) — no LLM, no full-text wall;
+//   • "view source ↗" opens the source's canonical URL in a new tab;
+//   • clicking the card expands the full passage text inline — one click
+//     away when needed, not the default state.
+//   • the existing human-verified / auto-included badge stays — a quality
+//     signal on the citation, not a gate.
+//
+// `rank` (1-indexed) is supplied by the caller so the top card can carry
+// a subtle visual emphasis without ever revealing a numeric score.
+function renderPassage(p, rank) {
+  const rankNum = Number(rank) || 0;
+  const isTop = rankNum === 1;
+  const text = String(p.text || '').trim();
+  const summary = passageSummary(text);
+  const truncated = summary && summary !== text;
+
+  // human-verified vs auto-included — preserved from the corpus opt-out work
+  const vbadge = p.source_verified
+    ? el('span', { class: 'src-verified has-tip',
+        title: 'A human has explicitly reviewed this source.' },
+        icon('i-ok'), 'human-verified')
+    : el('span', { class: 'src-auto has-tip',
+        title: 'Included by default. Citable, not yet human-reviewed.' },
+        'auto-included');
+
+  // resolved source title — registry first, humanised id as fallback
+  const sid = p.source_id || '';
+  const title = sourceTitle(sid);
+  const url = sourceUrl(sid) || p.url || '';
+  const heading = (p.heading || p.section || '').trim();
+  const sectionTag = p.section && p.section !== heading ? p.section : '';
+
+  const cardCls = 'passage' + (isTop ? ' passage-top' : '');
+  const card = el('div', { class: cardCls });
+
+  // header strip — rank · source title · section heading · badge
+  const head = el('div', { class: 'passage-head' });
+  head.append(el('span', { class: 'passage-rank',
+    title: 'Most relevant passage to this analysis' },
+    String(rankNum || '·')));
+  head.append(el('div', { class: 'passage-id' },
+    el('span', { class: 'passage-source' }, title),
+    heading ? el('span', { class: 'passage-heading' }, heading) : null,
+    sectionTag ? el('span', { class: 'passage-section' }, sectionTag) : null));
+  head.append(vbadge);
+  card.append(head);
+
+  // short summary — deterministic, first sentence or ~160 chars
+  if (summary) {
+    card.append(el('div', { class: 'passage-summary' }, summary));
+  } else {
+    card.append(el('div', { class: 'passage-summary passage-empty' },
+      'No passage text staged for this source yet.'));
+  }
+
+  // full text — hidden by default, revealed on click
+  const fullBox = el('div', { class: 'passage-full', hidden: 'hidden' },
+    el('div', { class: 'passage-full-cap' }, 'FULL PASSAGE'),
+    el('div', { class: 'passage-full-text' }, text || '(no text)'));
+  card.append(fullBox);
+
+  // footer — view-source link + health badge + (when there's more text) expand toggle
+  const foot = el('div', { class: 'passage-foot' });
+  const src = STATE.sources[p.source_id] || {};
+  if (url) {
+    const isBroken = src.snapshotStatus === 'broken';
+    const liveHref = url;
+    const snapHref = src.snapshotUrl || '';
+    // When the live link is broken AND we have a snapshot, the primary
+    // link points at the archived copy; the broken live URL becomes a
+    // small secondary affordance.
+    if (isBroken && snapHref) {
+      foot.append(el('a', { class: 'passage-link passage-link-archive',
+        href: snapHref, target: '_blank', rel: 'noopener noreferrer',
+        title: 'live source is broken — open the archived copy we last fetched',
+        onclick: (e) => e.stopPropagation() },
+        'view archived copy ', el('span', { class: 'glyph' }, '⌬')));
+      foot.append(el('a', { class: 'passage-link-dead',
+        href: liveHref, target: '_blank', rel: 'noopener noreferrer',
+        title: 'broken live URL — try the archived copy on the left',
+        onclick: (e) => e.stopPropagation() },
+        'live link (broken)'));
+    } else {
+      foot.append(el('a', { class: 'passage-link',
+        href: liveHref, target: '_blank', rel: 'noopener noreferrer',
+        title: 'open ' + title + ' in a new tab',
+        onclick: (e) => e.stopPropagation() },
+        'view source ', el('span', { class: 'glyph' }, '↗')));
+    }
+    if (src.snapshotStatus && src.snapshotStatus !== 'unknown') {
+      foot.append(sourceHealthBadge(src));
+    }
+  } else {
+    foot.append(el('span', { class: 'passage-link-empty' },
+      'no public URL on file'));
+  }
+  const expandable = truncated || (text && text.length > summary.length);
+  const toggle = expandable
+    ? el('button', { type: 'button', class: 'passage-toggle',
+        'aria-expanded': 'false',
+        title: 'show full passage text inline' },
+        el('span', { class: 'glyph' }, '+'),
+        el('span', { class: 'passage-toggle-lbl' }, 'EXPAND'))
+    : null;
+  if (toggle) foot.append(toggle);
+  card.append(foot);
+
+  // click-the-card to expand — the link inside stops propagation so it
+  // still opens the URL without toggling. The toggle button mirrors the
+  // same action with an explicit affordance.
+  const setOpen = (open) => {
+    card.classList.toggle('passage-open', open);
+    fullBox.hidden = !open;
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.querySelector('.glyph').textContent = open ? '−' : '+';
+      toggle.querySelector('.passage-toggle-lbl').textContent =
+        open ? 'COLLAPSE' : 'EXPAND';
+    }
+  };
+  if (expandable) {
+    card.classList.add('passage-clickable');
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('a, button.passage-toggle')) return;
+      setOpen(card.classList.contains('passage-open') ? false : true);
+    });
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setOpen(!card.classList.contains('passage-open'));
+    });
+  }
+  return card;
+}
+
+// Deterministic short summary for a passage: first sentence if it fits in
+// ~160 chars, else a hard cut on a word boundary with a trailing ellipsis.
+// No LLM, no rewriting — this is a display-side excerpt of the staged text.
+function passageSummary(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  const CAP = 160;
+  if (t.length <= CAP) return t;
+  // first sentence boundary — '.', '!' or '?' followed by space or end
+  const m = t.match(/^(.+?[.!?])(?:\s|$)/);
+  if (m && m[1].length <= CAP + 20) return m[1];
+  // fall back to a clean word-boundary cut
+  const cut = t.slice(0, CAP);
+  const sp = cut.lastIndexOf(' ');
+  return (sp > 80 ? cut.slice(0, sp) : cut).replace(/[,;:\s]+$/, '') + '…';
+}
+
+// Sort passages by score desc — highest relevance first. Stable for the
+// (rare) tied case; engineering identifier (score) never reaches the DOM.
+function rankPassages(passages) {
+  return (passages || []).slice().sort((a, b) => {
+    const sa = Number(a && a.score) || 0;
+    const sb = Number(b && b.score) || 0;
+    return sb - sa;
+  });
 }
 
 function citeChip(citation, url, pages) {
@@ -2382,15 +3062,16 @@ function checksPanel(num, checks) {
 
 // the REASONING FRAME panel — reused renderPassage(), shared by surfaces
 function passagesPanel(num, passages) {
-  passages = passages || [];
-  return panel(num, `REASONING FRAME · APPROVED CORPUS · ${passages.length}`,
+  const ranked = rankPassages(passages);
+  return panel(num, `REASONING FRAME · APPROVED CORPUS · ${ranked.length}`,
     'i-frame',
-    passages.length
-      ? el('div', {}, ...passages.map(renderPassage))
+    ranked.length
+      ? el('div', { class: 'passage-list' },
+          ...ranked.map((p, i) => renderPassage(p, i + 1)))
       : el('div', { class: 'empty' }, icon('i-frame'),
-          el('b', {}, 'No approved corpus passages retrieved'),
-          el('div', {}, 'Judgements remain unsupported until a human '
-            + 'approves sources.')));
+          el('b', {}, 'No corpus passages retrieved'),
+          el('div', {}, 'Judgements remain unsupported until source text '
+            + 'is staged and ingested.')));
 }
 
 // the GAPS & OPEN ITEMS panel — reused renderGap(), shared by surfaces
@@ -2566,11 +3247,14 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
 
   let job;
   try {
+    const tier = getTier();
+    if (tier === 'deep') startDeepCountdown(Date.now() + 120000);
     job = await api(cfg.api, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol, refresh }),
+      body: JSON.stringify({ symbol, refresh, tier }),
     });
+    if (job.status === 'done') stopDeepCountdown();
   } catch (e) {
     logLine('ERR', cfg.logTag, [
       seg(symbol.padEnd(5), 'lg-sym'), seg('START-FAIL', 'd-warn'),
@@ -2660,6 +3344,7 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
     finish();
     stage = stages.length; advance();
     mount.innerHTML = '';
+    stopDeepCountdown();
     if (st.status === 'error') {
       logLine('ERR', cfg.logTag, [
         seg(symbol.padEnd(5), 'lg-sym'), seg('FAILED', 'd-warn'),
@@ -2705,6 +3390,10 @@ function renderSanctions(s, elapsed, mount, computedAt, onRefresh) {
 
   // ── 01 SDN SCREEN RESULT ──
   const screenBody = el('div', {});
+  // Backing-model strip — same placement as ANALYZE: the lineage of every
+  // figure on this surface is named before any number. Surfaces the
+  // 'BACKING MODEL' badge + protocol-docs link.
+  screenBody.append(backingModelStrip(s));
   if (clean) {
     // a clean screen is the norm — render it as a clear green pass
     screenBody.append(el('div', { class: 'clean-state' },
@@ -2770,6 +3459,11 @@ function renderSanctions(s, elapsed, mount, computedAt, onRefresh) {
       el('span', { class: 'glyph' }, '§'),
       'on-chain reads taken at ' + supply.read_at));
   }
+  // AI-context cards — qualitative fill-in when the SDN screen couldn't
+  // run cleanly (list unavailable, critically stale, or no addresses to
+  // screen). Tagged 'AI CONTEXT' and visually distinct from a real hit.
+  (s.augmentations || []).forEach((ctx) =>
+    screenBody.append(augmentationCard(ctx)));
   mount.append(panel('01', 'SDN SCREEN', 'i-sanction', screenBody));
 
   // ── 02 GUARDRAIL CHECKS · 03 REASONING FRAME · 04 NARRATIVE · 05 GAPS ──
@@ -2826,6 +3520,10 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
   // ── 01 REDEMPTION SNAPSHOT ──
   const naLiq = r.liquid_coverage == null;
   const snapBody = el('div', {});
+  // Backing-model strip — names the lineage of every figure on this
+  // surface before any number. Lets the reader see at a glance that a
+  // crypto-collateralized token has no fiat tier breakdown by design.
+  snapBody.append(backingModelStrip(r));
   snapBody.append(el('div', { class: 'cov-row' },
     el('div', { class: 'cov-cell has-tip', title: tip.liquidCoverage },
       el('div', { class: 'cov-kick' }, 'LIQUID COVERAGE — FAST REDEMPTION CAPACITY'),
@@ -2889,6 +3587,11 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
       el('span', { class: 'glyph' }, '§'),
       'on-chain reads taken at ' + supply.read_at));
   }
+  // AI-context cards — fired when there's no attestation to tier OR the
+  // backing model isn't fiat (crypto / synthetic / algorithmic). Tagged
+  // 'AI CONTEXT' and clearly distinct from the deterministic tiers.
+  (r.augmentations || []).forEach((ctx) =>
+    snapBody.append(augmentationCard(ctx)));
   mount.append(panel('01', 'REDEMPTION SNAPSHOT', 'i-facts', snapBody));
 
   // ── 02 RESERVE LIQUIDITY BREAKDOWN ──
@@ -2963,7 +3666,7 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
 async function viewCorpus() {
   app.innerHTML = '';
   app.append(viewHead('F3', 'CORPUS',
-    'the reasoning frame · only human-approved sources are citable'));
+    'the reasoning frame · every source is citable by default · a human can opt one out'));
   const mount = el('div', { class: 'view-body' });
   app.append(mount);
   mount.append(skeletonTable(5));
@@ -2975,48 +3678,71 @@ async function viewCorpus() {
     mount.append(errorBox('Could not load corpus', e.message));
     return;
   }
+  // share the freshly-loaded registry with the passage renderer (F2/F5/F6)
+  // so it never has to re-fetch on its own.
+  const map = {};
+  (data.sources || []).forEach((s) => {
+    if (!s || !s.id) return;
+    map[s.id] = {
+      title: s.title || '', url: s.url || '', tier: s.tier || '',
+      verified: !!s.verified, included: s.included !== false,
+    };
+  });
+  STATE.sources = map;
+  STATE.sourcesLoaded = true;
+  // Back-compat: pre-opt-out API exposed `approved` not `included`. If the
+  // server hasn't restarted into the new shape, derive from `approved` so
+  // the corpus dashboard renders instead of going NaN-empty.
+  if (data.included == null && data.approved != null) {
+    data.included = data.approved;
+  }
+  const excluded = data.count - (data.included || 0);
   logLine('OK', 'CORPUS', [
     seg('registry', 'lg-val'),
     seg('src' + data.count),
-    seg('ok' + data.approved, 'd-up'),
-    seg('gat' + (data.count - data.approved),
-      data.count - data.approved ? 'd-warn' : ''),
+    seg('inc' + data.included, 'd-up'),
+    seg('vfy' + data.verified),
+    seg('exc' + excluded, excluded ? 'd-warn' : ''),
   ]);
   mount.innerHTML = '';
 
   mount.append(el('div', { class: 'strip fade-in' },
     stripCell(data.count, 'REGISTERED SOURCES', 'v-gold'),
-    stripCell(data.approved, 'APPROVED · CITABLE', data.approved ? 'v-green' : 'v-amber'),
-    stripCell(data.count - data.approved, 'PROPOSED · GATED', 'v-amber')));
+    stripCell(data.included, 'INCLUDED · CITABLE', data.included ? 'v-green' : 'v-amber'),
+    stripCell(data.verified, 'HUMAN-VERIFIED', 'v-gold'),
+    stripCell(excluded, 'EXCLUDED · OPTED OUT', excluded ? 'v-amber' : '')));
 
   const list = el('div', { class: 'corpus-list' });
   data.sources.forEach((s) => list.append(corpusCard(s)));
 
-  mount.append(panel(null, 'SOURCE REGISTRY & CURATION GATE', 'i-frame', list));
+  mount.append(panel(null, 'SOURCE REGISTRY · INCLUDED BY DEFAULT', 'i-frame', list));
 }
 
-// ── status → display config ──────────────────────────────────────────
-// proposed amber · approved green · rejected/muted rose.
+// ── status → display config (opt-out model) ──────────────────────────
+// included green (default) · excluded rose.
 function sourceStatus(s) {
-  const raw = String(s.status || (s.approved ? 'approved' : 'proposed'))
+  const raw = String(s.status || (s.included === false ? 'excluded' : 'included'))
     .toLowerCase().trim();
-  if (raw === 'approved') return { key: 'approved', label: 'APPROVED', cls: 'ok' };
-  if (raw === 'rejected') return { key: 'rejected', label: 'REJECTED', cls: 'alert' };
-  return { key: 'proposed', label: 'PROPOSED', cls: 'watch' };
+  if (raw === 'excluded') return { key: 'excluded', label: 'EXCLUDED', cls: 'alert' };
+  return { key: 'included', label: 'INCLUDED', cls: 'ok' };
 }
 
-// one source card — title · tier · status · summary · link · vote controls
+// one source card — title · tier · status · summary · link · toggle controls
 function corpusCard(s) {
   const st = sourceStatus(s);
   const card = el('div', { class: 'corpus-card src-' + st.key, 'data-id': s.id });
 
-  const statusTag = el('span', { class: 'stag ' + st.cls }, st.label);
+  const tags = el('div', { class: 'corpus-tags' },
+    el('span', { class: 'stag ' + st.cls }, st.label));
+  if (s.verified)
+    tags.append(el('span', { class: 'stag ok has-tip',
+      title: 'A human has explicitly reviewed this source.' }, '✦ VERIFIED'));
 
   card.append(el('div', { class: 'corpus-top' },
     el('div', { class: 'corpus-id' },
       el('span', { class: 'corpus-title' }, s.title || s.id),
       el('span', { class: 'corpus-tier' }, (s.tier || 'untiered').toUpperCase())),
-    statusTag));
+    tags));
 
   if (s.summary)
     card.append(el('div', { class: 'corpus-summary' }, s.summary));
@@ -3031,18 +3757,26 @@ function corpusCard(s) {
         'view source ', el('span', { class: 'glyph' }, '↗'))
     : el('span', { class: 'dim' }, 'no source url'));
 
-  const approveBtn = el('button', { class: 'btn vote-btn' }, 'APPROVE');
-  const rejectBtn = el('button', { class: 'btn ghost vote-btn' }, 'REJECT');
+  // Opt-out model: a toggle (exclude / re-include) plus a verify lever.
+  const toggleBtn = s.included === false
+    ? el('button', { class: 'btn vote-btn' }, 'INCLUDE')
+    : el('button', { class: 'btn ghost vote-btn' }, 'EXCLUDE');
+  const verifyBtn = el('button', { class: 'btn ghost vote-btn' },
+    s.verified ? 'VERIFIED ✦' : 'MARK VERIFIED');
+  if (s.verified) verifyBtn.disabled = true;
+  const btns = [toggleBtn, verifyBtn];
+
   const vote = async (decision, btn) => {
     // Curation is a save-type action — gated on an account. Anonymous
     // callers see a friendly invitation instead of firing a doomed 401.
     if (!AUTH.signedIn()) {
-      AUTH.openPanel('in', 'approve or reject corpus sources');
+      AUTH.openPanel('in', 'include, exclude or verify corpus sources');
       logLine('WORK', 'CORPUS', [seg(s.id, 'lg-sym'),
-        seg('sign-in required to record a curation vote')]);
+        seg('sign-in required to record a curation decision')]);
       return;
     }
-    [approveBtn, rejectBtn].forEach((b) => { b.disabled = true; });
+    const labels = btns.map((b) => b.textContent);
+    btns.forEach((b) => { b.disabled = true; });
     btn.replaceChildren(el('span', { class: 'spinner' }));
     try {
       const res = await api('/sources/' + encodeURIComponent(s.id) + '/vote', {
@@ -3052,23 +3786,28 @@ function corpusCard(s) {
       });
       logLine('OK', 'CORPUS', [
         seg(s.id, 'lg-sym'),
-        seg(decision, decision === 'approved' ? 'd-up' : 'd-warn'),
+        seg(decision, decision === 'excluded' ? 'd-warn' : 'd-up'),
         seg(res.ingested ? 'staged text ingested · citeable'
           : res.ingest_error ? 'ingest failed: ' + res.ingest_error
           : 'decision recorded'),
       ]);
-      // refresh this card's row to its new status
-      const next = res.source || Object.assign({}, s, { status: decision });
+      // refresh this card to its new state
+      const next = res.source || Object.assign({}, s, {
+        status: decision === 'excluded' ? 'excluded' : 'included',
+        included: decision !== 'excluded',
+        verified: decision === 'verified' || s.verified,
+      });
       card.replaceWith(corpusCard(next));
     } catch (e) {
-      [approveBtn, rejectBtn].forEach((b) => { b.disabled = false; });
-      btn.replaceChildren(document.createTextNode(
-        btn === approveBtn ? 'APPROVE' : 'REJECT'));
+      btns.forEach((b, i) => {
+        b.disabled = false;
+        b.replaceChildren(document.createTextNode(labels[i]));
+      });
       if (e.status === 401) {
         // session lapsed mid-action — re-invite rather than alarm
-        AUTH.openPanel('in', 'approve or reject corpus sources');
+        AUTH.openPanel('in', 'include, exclude or verify corpus sources');
         logLine('WORK', 'CORPUS', [seg(s.id, 'lg-sym'),
-          seg('session expired · sign in again to save the vote')]);
+          seg('session expired · sign in again to save the decision')]);
         return;
       }
       logLine('ERR', 'CORPUS', [
@@ -3077,9 +3816,10 @@ function corpusCard(s) {
       ]);
     }
   };
-  approveBtn.addEventListener('click', () => vote('approved', approveBtn));
-  rejectBtn.addEventListener('click', () => vote('rejected', rejectBtn));
-  foot.append(el('div', { class: 'corpus-votes' }, approveBtn, rejectBtn));
+  toggleBtn.addEventListener('click', () =>
+    vote(s.included === false ? 'included' : 'excluded', toggleBtn));
+  verifyBtn.addEventListener('click', () => vote('verified', verifyBtn));
+  foot.append(el('div', { class: 'corpus-votes' }, toggleBtn, verifyBtn));
 
   card.append(foot);
   return card;
@@ -3309,7 +4049,7 @@ function analystOfflinePanel() {
   [['i-supply', 'Read live on-chain supply across every deployment'],
    ['i-doc', 'Run the full attestation analysis against claimed reserves'],
    ['i-sanction', 'Screen a token against the OFAC sanctions list'],
-   ['i-frame', 'Ground every judgement in the human-approved corpus, and cite it'],
+   ['i-frame', 'Ground every judgement in the curated corpus, and cite it'],
   ].forEach(([ic, txt]) => {
     cap.append(el('div', { class: 'an-cap' },
       icon(ic, 'an-cap-ic'), el('span', {}, txt)));
@@ -3595,6 +4335,10 @@ async function boot() {
 
   // load the registry, then arm the live monitor
   logLine('WORK', 'BOOT', [seg('session up', 'lg-val'), seg('loading registry')]);
+  // warm the corpus source registry in the background — the REASONING FRAME
+  // passage cards look up source titles + URLs from it. Non-blocking; the
+  // renderer has a humanised-id fallback for the (rare) pre-load case.
+  loadSources();
   try {
     const data = await api('/tokens');
     STATE.tokens = data.tokens;
@@ -3623,3 +4367,108 @@ async function boot() {
 }
 
 window.addEventListener('DOMContentLoaded', boot);
+
+// ── Model-tier toggle ─────────────────────────────────────────────────
+// FAST default (~1-2s LLM hops via deepseek-v4-flash). DEEP opt-in
+// (~5-30s via the reasoning model) — UI shows a 120s countdown badge
+// while a deep run is in flight so the user knows the budget.
+// Persists across reloads in localStorage; surfaced on every request.
+const _TIER_KEY = 'dore.modelTier';
+function getTier() {
+  try { return localStorage.getItem(_TIER_KEY) === 'deep' ? 'deep' : 'fast'; }
+  catch (_e) { return 'fast'; }
+}
+function setTier(tier) {
+  try { localStorage.setItem(_TIER_KEY, tier); } catch (_e) { /* ignore */ }
+  renderTierToggle();
+}
+function renderTierToggle() {
+  const tier = getTier();
+  document.querySelectorAll('.tier-btn').forEach((btn) => {
+    if (btn.dataset.tier === tier) btn.classList.add('tier-active');
+    else btn.classList.remove('tier-active');
+  });
+  const wrap = document.getElementById('topbar-tier');
+  if (wrap) {
+    wrap.classList.toggle('tier-deep-active', tier === 'deep');
+    wrap.title = tier === 'deep'
+      ? 'PRO mode active — uses the deeper-reasoning model (slower; up to '
+        + '120s per LLM hop). Better at multi-step reasoning over the corpus. '
+        + 'Click FLASH to switch back to the default fast model.'
+      : 'FLASH mode (default) — fast model (~1-2s per LLM hop). Click PRO '
+        + 'to opt into the deeper-reasoning model for harder questions.';
+  }
+}
+// Hook up the buttons + initial render.
+function wireTierToggle() {
+  document.querySelectorAll('.tier-btn').forEach((btn) => {
+    btn.addEventListener('click', () => setTier(btn.dataset.tier));
+  });
+  renderTierToggle();
+}
+window.addEventListener('DOMContentLoaded', wireTierToggle);
+
+// ── Theme toggle ──────────────────────────────────────────────────────
+// Sun ↔ moon icon in the topbar; persists to localStorage. Default is
+// dark (Bloomberg-terminal aesthetic). Light mode re-tunes the palette
+// while preserving brand identity (gold accent stays gold, just darker
+// brass for AA contrast on cream).
+const _THEME_KEY = 'dore.theme';
+function getTheme() {
+  try { return localStorage.getItem(_THEME_KEY) === 'light' ? 'light' : 'dark'; }
+  catch (_e) { return 'dark'; }
+}
+function applyTheme(theme) {
+  if (theme === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+}
+function setTheme(theme) {
+  try { localStorage.setItem(_THEME_KEY, theme); } catch (_e) { /* ignore */ }
+  applyTheme(theme);
+}
+// Apply theme BEFORE DOMContentLoaded so there's no white-flash on a
+// dark-mode user's reload.
+(function initTheme() { applyTheme(getTheme()); })();
+function wireThemeToggle() {
+  const btn = document.getElementById('topbar-theme');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    setTheme(getTheme() === 'light' ? 'dark' : 'light');
+  });
+}
+window.addEventListener('DOMContentLoaded', wireThemeToggle);
+
+// Pro-mode countdown ring — when an analyze / sanctions / redemption job is
+// running on DEEP tier, show a 120s countdown badge near the toggle so the
+// user knows the budget. Cleared when the job finishes.
+let _deepCountdownTimer = null;
+function startDeepCountdown(deadlineMs) {
+  const wrap = document.getElementById('topbar-tier');
+  if (!wrap) return;
+  stopDeepCountdown();
+  let badge = document.getElementById('tier-countdown');
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.id = 'tier-countdown';
+    badge.className = 'tier-countdown';
+    wrap.appendChild(badge);
+  }
+  const tick = () => {
+    const remaining = Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000));
+    badge.textContent = remaining + 's';
+    if (remaining <= 0) stopDeepCountdown();
+  };
+  tick();
+  _deepCountdownTimer = setInterval(tick, 1000);
+}
+function stopDeepCountdown() {
+  if (_deepCountdownTimer) {
+    clearInterval(_deepCountdownTimer);
+    _deepCountdownTimer = null;
+  }
+  const badge = document.getElementById('tier-countdown');
+  if (badge) badge.remove();
+}

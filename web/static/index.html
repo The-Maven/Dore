@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Inter+Tight:wght@500;600;700&family=Bodoni+Moda:opsz,wght@6..96,600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/app.css?v=27">
+<link rel="stylesheet" href="/static/app.css?v=43">
 </head>
 <body>
 
@@ -199,6 +199,22 @@
     <span class="tstat"><i class="tk">LLM</i> <b id="ts-llm">--</b></span>
     <span class="tstat conn"><span class="dot" id="ts-dot"></span> <b id="ts-conn">LINK…</b></span>
   </div>
+  <!-- theme toggle — sun (light) / moon (dark). Persists to localStorage. -->
+  <button class="topbar-theme" id="topbar-theme" type="button"
+    title="Toggle light / dark theme">
+    <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"/>
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+    </svg>
+    <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+    </svg>
+  </button>
+  <!-- model-tier toggle — default FAST, opt into DEEP for slower / better reasoning -->
+  <div class="topbar-tier" id="topbar-tier" title="">
+    <button class="tier-btn tier-active" data-tier="fast" type="button">FLASH</button>
+    <button class="tier-btn" data-tier="deep" type="button">PRO</button>
+  </div>
   <div class="topbar-auth" id="topbar-auth">
     <button class="auth-ctl" id="auth-ctl" type="button">
       <span class="dot auth-dot" id="auth-dot"></span>
@@ -300,7 +316,7 @@
       <div class="side-head">ENGINE</div>
       <div class="side-meta">
         <div class="smeta-row"><span>facts</span><b>deterministic tools</b></div>
-        <div class="smeta-row"><span>frame</span><b>human-gated corpus</b></div>
+        <div class="smeta-row"><span>frame</span><b>opt-out corpus</b></div>
         <div class="smeta-row"><span>synth</span><b>cited agent</b></div>
       </div>
     </div>
@@ -320,6 +336,6 @@
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="/static/app.js?v=27"></script>
+<script src="/static/app.js?v=43"></script>
 </body>
 </html>

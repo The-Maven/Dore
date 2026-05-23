@@ -4,16 +4,24 @@ The agent's *facts* come from `tools/` (deterministic). Its *judgement
 frame* comes from here: a curated set of authoritative sources the agent
 must cite whenever it interprets those facts.
 
-## The curation rule
+## The curation lever (opt-out)
 
-The agent may **propose** a source — append it to `sources.yaml` with
-`status: proposed`. Only a **human** may change a source to
-`status: approved`. The agent must never cite a non-approved source, and
-must never reason from general internet knowledge in place of the corpus.
+Every source registered in `sources.yaml` is `status: included` and
+citable by **default**. A human may opt a source OUT — `status: excluded`
+(via `sca curate` or the web F3 Corpus view) — and re-include it at any
+time. A human may also mark a source explicitly **verified** — a
+quality badge surfaced on its citations, never a gate on whether it is
+used. The agent may **propose** a new source; it enters as `included`,
+like any other.
 
-This is deliberate. Deciding what counts as authoritative is domain
-judgement. If the agent picks its own authorities it drifts toward
-popular-but-wrong. The human gate is the point.
+This is a deliberate flip from an earlier opt-in design that left the
+corpus dead weight because nothing got approved. The opt-out default
+activates the reasoning frame; the human keeps the lever to drop a
+source that does not belong.
+
+What still holds: facts are deterministic, judgements are cited, and the
+agent never invents a figure. The opt-out flip changes the corpus
+*inclusion default*, not the citation discipline.
 
 ## Source tiers (most to least authoritative)
 
@@ -28,6 +36,7 @@ examiner reasons from the rules, not from commentary.
 
 ## Ingestion
 
-Sources are ingested with structure preserved — section anchors, headings,
-page numbers — so a citation can point to `genius-act §4(b)`, not just a
-PDF. See `ingest.py`.
+A source only contributes citable text once that text is staged at
+`staging/<id>.md` and ingested. Sources are chunked with structure
+preserved — section anchors, headings, page numbers — so a citation
+can point to `genius-act §4(b)`, not just a PDF. See `ingest.py`.
