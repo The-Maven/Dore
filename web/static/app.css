@@ -2268,13 +2268,13 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .an-bar-name .acc { color: var(--gold); }
 .an-bar-sep { color: var(--line); }
 .an-bar-desc {
-  font-size: 9.5px; letter-spacing: .04em; color: var(--muted-2);
+  font-size: 10.5px; letter-spacing: .03em; color: var(--muted-2);
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap;
 }
 .an-bar-runtime {
   display: flex; align-items: center; gap: 5px;
-  font-size: 9px; letter-spacing: .12em; color: var(--muted-2);
+  font-size: 10px; letter-spacing: .11em; color: var(--muted-2);
   white-space: nowrap;
 }
 .an-bar-dot {
@@ -2340,8 +2340,8 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 .an-trace-head {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 12px;
-  font-size: 8.5px; letter-spacing: .14em; color: var(--muted-2);
+  padding: 7px 12px;
+  font-size: 10px; letter-spacing: .12em; color: var(--muted-2);
   border-bottom: 1px solid var(--line-2);
 }
 .an-trace-dot {
@@ -2351,8 +2351,8 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .an-trace-body { padding: 5px 0; }
 .an-trace-line {
   display: flex; align-items: center; gap: 7px;
-  padding: 3px 12px;
-  font-size: 10px; color: var(--muted);
+  padding: 3.5px 12px;
+  font-size: 10.5px; color: var(--muted);
   letter-spacing: .015em;
 }
 .an-trace-line:hover { background: rgba(212,162,74,.04); }

@@ -75,20 +75,20 @@ def _brief_system_prompt(surface: str) -> str:
         "redemption": "REDEMPTION CAPACITY",
     }.get(surface, surface.upper())
     return (
-        f"You are writing the DORÉ BRIEF — a single editorial paragraph "
+        f"You are writing the DORÉ BRIEF, a single editorial paragraph "
         f"at the top of a {surface_label} view for a stablecoin "
         f"compliance tool. Goal: a financial reader skims this in 5 "
         f"seconds and knows where the token stands.\n\n"
         f"STRICT RULES:\n"
-        f"  1. NEVER invent numeric figures — use only figures from the "
+        f"  1. NEVER invent numeric figures. Use only figures from the "
         f"facts block I give you, verbatim.\n"
         f"  2. NEVER claim a token is 'safe' or 'fully backed' as "
         f"settled fact. Describe what the verification SHOWS; let the "
         f"reader conclude.\n"
-        f"  3. The HEADLINE is a single sentence — the bottom line. "
+        f"  3. The HEADLINE is a single sentence, the bottom line. "
         f"Plain English, no jargon, no engineer slugs. If something is "
         f"missing/uncertain, lead with that. **Do NOT simply restate "
-        f"'no attestation available' as the bottom line — that's a "
+        f"'no attestation available' as the bottom line. That's a "
         f"deterministic field already shown elsewhere. Instead, name "
         f"the backing model, the protocol's transparency mechanism, "
         f"and what a reader should actually look at.** For algorithmic "
@@ -96,7 +96,7 @@ def _brief_system_prompt(surface: str) -> str:
         f"the on-chain backing mechanism (e.g. 'USDD: algorithmic peg "
         f"with TRX over-collateralization; reserves visible on the TRON "
         f"DAO Reserve dashboard rather than via a CPA attestation').\n"
-        f"  4. KEY_POINTS are 2-4 short bullets (~12 words each) — the "
+        f"  4. KEY_POINTS are 2-4 short bullets (~12 words each), the "
         f"figures that matter most for THIS surface, with their "
         f"provenance compressed (e.g. 'Coverage 100.1% from Apr 30 "
         f"attestation' or 'Supply $50B across 6 chains, 4 cross-RPC "
@@ -110,7 +110,11 @@ def _brief_system_prompt(surface: str) -> str:
         f"model). Return [] if none are relevant.\n"
         f"  6. Return strict JSON matching the schema.\n"
         f"  7. Headlines and bullets should be plainly readable to "
-        f"non-engineers — financial-product copy quality.\n"
+        f"non-engineers: financial-product copy quality.\n"
+        f"  8. VOICE: never use em dashes (—). Use commas, periods, or "
+        f"colons to separate clauses. Avoid 'leverage', 'ecosystem', "
+        f"'journey', 'transformation', 'holistic'. Present-tense, "
+        f"declarative.\n"
     )
 
 
