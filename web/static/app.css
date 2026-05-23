@@ -810,9 +810,9 @@ a.addr-link:hover .addr-ext { opacity: 1; }
   font-size: 12px;
 }
 .corpus-tier {
-  flex: none; font-size: 8.5px; letter-spacing: .12em; font-weight: 600;
+  flex: none; font-size: 10px; letter-spacing: .11em; font-weight: 600;
   color: var(--gold); border: 1px solid rgba(212,162,74,.35);
-  padding: 1px 5px;
+  padding: 1.5px 6px;
 }
 .corpus-top .corpus-tags .stag { flex: none; }
 .corpus-summary {
@@ -820,7 +820,7 @@ a.addr-link:hover .addr-ext { opacity: 1; }
   margin-top: 5px;
 }
 .corpus-notes {
-  color: var(--muted-2); font-size: 10px; line-height: 1.5;
+  color: var(--muted-2); font-size: 10.5px; line-height: 1.5;
   margin-top: 4px;
 }
 .corpus-notes-k {
@@ -1238,7 +1238,7 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 .hit-row svg { width: 15px; height: 15px; margin-top: 1px; }
 .hit-name { color: var(--rose); font-weight: 600; }
-.hit-meta { color: var(--muted); font-size: 10px; margin-top: 2px; }
+.hit-meta { color: var(--muted); font-size: 10.5px; margin-top: 3px; line-height: 1.4; }
 
 /* kind + verify marks */
 .kind {

@@ -123,18 +123,18 @@ def _backing_model_brief(model: str) -> str:
     truth shared with `sca.augment._backing_model_brief`."""
     return {
         "fiat_reserves":
-            "Backed by off-chain cash, treasuries, or equivalents — an "
-            "issuer publishes periodic attestations by an independent CPA.",
+            "Backed by off-chain cash, treasuries, or equivalents. "
+            "An issuer publishes periodic attestations by an independent CPA.",
         "crypto_collateral":
             "Backed by on-chain collateral managed by a smart-contract "
-            "protocol — backing is visible on-chain, not via a PDF.",
+            "protocol. Backing is visible on-chain, not via a PDF.",
         "synthetic_delta_neutral":
-            "Backed by delta-neutral positions (e.g. staked ETH + short "
-            "perpetuals) — reserves are dynamic and visible on the issuer's "
+            "Backed by delta-neutral positions (e.g. staked ETH plus short "
+            "perpetuals). Reserves are dynamic and visible on the issuer's "
             "live dashboard, not via a periodic PDF.",
         "algorithmic":
             "Stabilised by an algorithmic mechanism plus partial "
-            "collateral — backing composition varies; live data on the "
+            "collateral. Backing composition varies; live data on the "
             "protocol dashboard, not via a CPA attestation.",
         "new_or_unverified":
             "Recently launched. No mature published attestation system "
