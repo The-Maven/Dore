@@ -1864,11 +1864,11 @@ function tickItem(t) {
   if (isErr) {
     item.append(el('span', { class: 'tick-delta d-flat' },
       el('span', { class: 'tick-arrow' }, '×'),
-      el('span', { class: 'tick-pct' }, 'RPC')));
+      el('span', { class: 'tick-pct' }, 'OFFLINE')));
   } else if (pending) {
     item.append(el('span', { class: 'tick-delta d-flat' },
       el('span', { class: 'tick-arrow' }, '◇'),
-      el('span', { class: 'tick-pct' }, 'AWAIT')));
+      el('span', { class: 'tick-pct' }, 'LOADING')));
   } else {
     // a flat reading shows a calm, deliberate "FLAT" label; a real move
     // shows the signed percentage.
