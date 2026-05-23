@@ -1066,9 +1066,12 @@ const tip = {
         + 'judgements cite regulation.',
     },
     coverage: {
-      kind: 'awaiting your action',
-      text: 'A contract address has not been human-verified yet. Its figure is '
-        + 'still used but flagged. Verify it via `sca curate` to clear this.',
+      kind: 'pending verification',
+      text: 'A contract address hasn\'t passed on-chain identity verification ' +
+        'yet. Its figure is included but flagged as provisional. The ' +
+        'background canary attempts to auto-verify every six hours by calling ' +
+        'the contract\'s own symbol() and decimals(); a curator can also ' +
+        'mark it verified directly from the Corpus view.',
     },
     guardrail: {
       kind: 'honest disclosure',
@@ -1077,10 +1080,11 @@ const tip = {
         + 'machine-reachable. The staleness is reported honestly, not hidden.',
     },
     citation: {
-      kind: 'awaiting your action',
-      text: 'A judgement cited a source outside the included corpus. The '
-        + 'agent only cites included sources — re-include the source via '
-        + '`sca curate`, or stage its text, to let the claim carry a citation.',
+      kind: 'pending verification',
+      text: 'A judgement cited a source outside the included corpus. Only ' +
+        'included sources are accepted as citations — re-include the ' +
+        'source from the Corpus view, or stage its text, to let the claim ' +
+        'carry a citation.',
     },
   },
   // ── F5 sanctions / F6 redemptions surface terms ────────────────────

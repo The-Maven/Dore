@@ -567,6 +567,64 @@ def _qa_fresh(entry: dict) -> bool:
     return (date.today() - d).days <= _ISSUER_QA_TTL_DAYS
 
 
+def find_replacement_source(
+    source_id: str, broken_url: str, *, title: str = "",
+) -> str | None:
+    """Search for a replacement URL when a canary source flips broken.
+
+    Used by `health_thread` on `health.source.flipped` (broken). Builds
+    a query from the source title + slug, runs the configured search
+    backend, and returns the first HEAD-checked candidate that's NOT
+    the broken URL. Returns None if nothing better than the original
+    is found.
+
+    Same primitives as attestation discovery: searches once, HEAD-
+    checks every candidate, caches the winner. Result is best-effort;
+    a curator should still confirm before relying on it.
+    """
+    if not _provider() or _provider() == "off":
+        return None
+    backend = _BACKENDS.get(_provider())
+    if backend is None:
+        return None
+    # Build a query: prefer the title, fall back to the slug.
+    base = title or source_id.replace("-", " ").replace("_", " ")
+    query = f"{base} stablecoin regulation 2026 site"
+    log_event(
+        "canary.recovery.start", level="info",
+        source_id=source_id, broken_url=broken_url, query=query,
+    )
+    try:
+        candidates = backend(query)
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "canary.recovery.failed", level="warn",
+            source_id=source_id, error_class=type(exc).__name__,
+        )
+        return None
+    for url in candidates:
+        if url == broken_url:
+            continue
+        # Light HEAD check — accept anything that returns 200.
+        try:
+            r = requests.head(
+                url, allow_redirects=True, timeout=_HTTP_TIMEOUT, headers=_UA,
+            )
+            if r.status_code == 200:
+                log_event(
+                    "canary.recovery.hit", level="info",
+                    source_id=source_id, replacement_url=url,
+                )
+                return url
+        except requests.RequestException:
+            continue
+    log_event(
+        "canary.recovery.no_match", level="info",
+        source_id=source_id, candidates_count=len(candidates),
+    )
+    return None
+
+
 def issuer_status_context(
     symbol: str, issuer: str = "", *, refresh: bool = False, limit: int = 4,
 ) -> list[dict]:

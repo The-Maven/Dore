@@ -144,6 +144,30 @@ def run_health_cycle() -> dict[str, int]:
                 from_status=prev, to_status=check.status,
                 error=check.error or "",
             )
+        # Brave-backed recovery: when a source has just flipped to broken
+        # (or is still broken this sweep), search the web for a
+        # replacement URL. Best-effort, never propagates exceptions. A
+        # hit is LOGGED for a curator to confirm — we don't auto-mutate
+        # the registry, just surface the candidate so the human is
+        # prompted with "we think you should update source X to this URL".
+        if check.status == "broken":
+            try:
+                from sca.web_discovery import find_replacement_source
+                replacement = find_replacement_source(
+                    check.id, check.url,
+                    title=getattr(check, "title", "") or check.id,
+                )
+                if replacement:
+                    log_event(
+                        "canary.replacement.proposed", level="info",
+                        source_id=check.id, broken_url=check.url,
+                        replacement_url=replacement,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    "canary.recovery.unexpected_error", level="warn",
+                    source_id=check.id, error_class=type(exc).__name__,
+                )
 
     _save_state(new_state)
     counts = {
@@ -239,6 +263,29 @@ def _loop() -> None:
                 log_event(
                     "attestation.gap_sweep.failed", level="error",
                     error_class=type(exc).__name__, error_message=str(exc),
+                )
+            # Also run contract-address auto-verification — calls each
+            # contract's own symbol() / decimals() and clears the
+            # "unverified address" flag on a clean match. This is what
+            # makes TUSD-on-ethereum-style "pending verification"
+            # warnings clear themselves over time without an operator
+            # running `sca verify` by hand. Honours human votes (a
+            # human-rejected deployment is never auto-verified).
+            try:
+                from sca.tools.address_verify import verify_all
+                summary = verify_all()
+                log_event(
+                    "address.auto_verify.sweep_done", level="info",
+                    auto_verified=summary.get("auto_verified", 0),
+                    skipped_human=summary.get("skipped_human", 0),
+                    mismatch=summary.get("mismatch", 0),
+                    errored=summary.get("errored", 0),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    "address.auto_verify.failed", level="error",
+                    error_class=type(exc).__name__,
+                    error_message=str(exc),
                 )
     except Exception as exc:  # noqa: BLE001 - thread terminates cleanly
         log_event(

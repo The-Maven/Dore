@@ -136,14 +136,17 @@ stablecoins:
   - symbol: TUSD
     name: TrueUSD
     issuer: Techteryx
+    # TUSD runs a DYNAMIC attestation model: Moore Hong Kong's
+    # VeriNumus system feeds a Chainlink Proof-of-Reserves oracle
+    # (data.chain.link/feeds/ethereum/mainnet/tusd-por) rather than
+    # publishing monthly PDFs. The tusd.io transparency page loads
+    # the live snapshot via JS; our static scraper can't reach it.
+    # The Jan 2025 Protos-mirrored PDF below is the most recent
+    # ARCHIVED CPA report — it's the historical pattern, not the
+    # current state. Staleness is honest; the live state is on-chain
+    # via the Chainlink feed.
     transparency_url: https://tusd.io/transparency
-    # The tusd.io transparency page advertises daily attestations but does
-    # not statically link them (loaded via JS). The most recent reachable
-    # Moore HK attestation is mirrored on Protos's S3. Staleness will be
-    # flagged honestly by the guardrail layer when this is older than the
-    # monthly cadence. TUSD also publishes a live Chainlink Proof-of-Reserves
-    # feed (data.chain.link/feeds/ethereum/mainnet/tusd-por) — future work
-    # to wire that as a parallel reserves source.
+    protocol_url: https://data.chain.link/feeds/ethereum/mainnet/tusd-por
     latest_attestation_url: "https://protos-media.s3.eu-west-2.amazonaws.com/wp-content/uploads/2025/01/09173311/trueusd-attestation-2025-01-09.pdf"
     deployments:
       - {chain: ethereum, contract: "0x0000000000085d4780B73119b644AE5ecd22b376", verified: false}
