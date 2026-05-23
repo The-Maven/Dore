@@ -226,6 +226,64 @@ def _search_anthropic(query: str) -> list[str]:
     return out[:_MAX_RESULTS]
 
 
+def _search_duckduckgo(query: str) -> list[str]:
+    """DuckDuckGo HTML search — no API key required, no signup, free.
+
+    Scrapes the lightweight HTML endpoint at html.duckduckgo.com.
+    Returns ordered result URLs. Rate-limited by DuckDuckGo (a few
+    requests per second tops) so the discovery thread doesn't hammer
+    it: every hit is cached per-symbol for 25 days.
+
+    This is the default backend so the system works out of the box
+    without the user needing to sign up for Brave / Serper / Anthropic.
+    """
+    import html as _html
+    import re as _re
+    from urllib.parse import unquote as _unquote
+    try:
+        resp = requests.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query},  # `kl` locale filter empties the response set
+            headers={**_UA, "Accept": "text/html"},
+            timeout=_HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        log_event(
+            "web_discovery.backend_error", level="warn",
+            backend="duckduckgo", error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return []
+    # Result anchors have class="result__a" and href="...".
+    # DuckDuckGo sometimes wraps URLs through their redirector
+    # ("/l/?uddg=...") — decode if so.
+    out: list[str] = []
+    seen: set[str] = set()
+    pattern = _re.compile(
+        r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"',
+        _re.IGNORECASE,
+    )
+    for raw_href in pattern.findall(resp.text)[:_MAX_RESULTS * 2]:
+        href = _html.unescape(raw_href)
+        if "/l/?" in href and "uddg=" in href:
+            # Pull the underlying URL out of the redirector.
+            m = _re.search(r"uddg=([^&]+)", href)
+            if m:
+                href = _unquote(m.group(1))
+        if href.startswith("//"):
+            href = "https:" + href
+        if not href.startswith(("http://", "https://")):
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        out.append(href)
+        if len(out) >= _MAX_RESULTS:
+            break
+    return out
+
+
 def _search_llm(query: str) -> list[str]:
     """LLM-as-search — uses the configured LLM (DeepSeek by default).
 
@@ -280,6 +338,7 @@ def _search_llm(query: str) -> list[str]:
 
 
 _BACKENDS = {
+    "duckduckgo": _search_duckduckgo,
     "brave": _search_brave,
     "serper": _search_serper,
     "anthropic": _search_anthropic,
@@ -337,10 +396,14 @@ def discover_attestation_url(
             return cached
 
     # Build a typed query that targets reserve-attestation PDFs.
+    # DuckDuckGo's HTML endpoint sometimes returns empty for the
+    # `filetype:pdf` operator, so we leave it off and let the HEAD-check
+    # below filter for PDFs. Other providers (Brave / Serper) accept it
+    # but it costs us nothing to omit.
     year = date.today().year
-    issuer_term = f' "{issuer}"' if issuer else ""
+    issuer_term = f' {issuer}' if issuer else ""
     query = (
-        f'"{symbol}" reserves attestation{issuer_term} {year} filetype:pdf'
+        f'{symbol} reserves attestation{issuer_term} {year} report'
     )
     log_event(
         "web_discovery.search.start", level="info",
@@ -458,6 +521,62 @@ def _search_serper_news(query: str) -> list[dict]:
             "age": r.get("date", ""),
         })
     return [s for s in out if s["url"]]
+
+
+def _search_duckduckgo_news(query: str) -> list[dict]:
+    """DuckDuckGo HTML — pull recent results with their snippet text.
+
+    Same scraping path as `_search_duckduckgo` but harvests the title,
+    URL, and result snippet so the LLM augmentation gets useful
+    context. No API key required.
+    """
+    import html as _html
+    import re as _re
+    from urllib.parse import unquote as _unquote
+    try:
+        resp = requests.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query, "df": "m"},  # past month, no locale lock
+            headers={**_UA, "Accept": "text/html"},
+            timeout=_HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        log_event(
+            "web_discovery.news_backend_error", level="warn",
+            backend="duckduckgo", error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
+        return []
+    # Each result block contains a result__a (URL + title) and
+    # result__snippet sibling. Parse pairs in document order.
+    block_re = _re.compile(
+        r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>'
+        r'(.*?)</a>.*?'
+        r'<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>',
+        _re.IGNORECASE | _re.DOTALL,
+    )
+    tag_re = _re.compile(r"<[^>]+>")
+    out: list[dict] = []
+    for href, title_html, snip_html in block_re.findall(resp.text)[:5]:
+        href = _html.unescape(href)
+        if "/l/?" in href and "uddg=" in href:
+            m = _re.search(r"uddg=([^&]+)", href)
+            if m:
+                href = _unquote(m.group(1))
+        if href.startswith("//"):
+            href = "https:" + href
+        if not href.startswith(("http://", "https://")):
+            continue
+        title = _html.unescape(tag_re.sub("", title_html)).strip()
+        snippet = _html.unescape(tag_re.sub("", snip_html)).strip()
+        out.append({
+            "title": title[:160],
+            "url": href,
+            "snippet": snippet[:300],
+            "age": "recent",
+        })
+    return out
 
 
 def _search_anthropic_news(query: str) -> list[dict]:
@@ -602,6 +721,7 @@ def _search_llm_news(query: str) -> list[dict]:
 
 
 _NEWS_BACKENDS = {
+    "duckduckgo": _search_duckduckgo_news,
     "brave": _search_brave_news,
     "serper": _search_serper_news,
     "anthropic": _search_anthropic_news,

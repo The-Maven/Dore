@@ -226,11 +226,15 @@ stablecoins:
 
   - symbol: USD1
     name: World Liberty Financial USD
-    issuer: World Liberty Financial
-    backing_model: new_or_unverified
-    protocol_url: https://www.worldlibertyfinancial.com
-    transparency_url: ""
-    latest_attestation_url: ""
+    # Issued by BitGo Trust Company; branded by World Liberty Financial.
+    # Monthly Crowe LLP attestations published since Aug 2025; backing
+    # model upgraded to fiat_reserves now that a CPA attestation source
+    # is on file.
+    issuer: BitGo Trust (WLF brand)
+    backing_model: fiat_reserves
+    protocol_url: https://docs.worldlibertyfinancial.com/usd1-token/attestation-reports
+    transparency_url: https://www.bitgo.com/usd1/attestations/
+    latest_attestation_url: "https://landing.bitgo.com/rs/552-OGK-141/images/USD1_Reserve_Attestation_Report_January_2026.pdf?version=0"
     deployments:
       # Source: WLFI docs (docs.worldlibertyfinancial.com/usd1-token/contract-addresses)
       - {chain: ethereum, contract: "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d", verified: false}
