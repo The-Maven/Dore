@@ -882,6 +882,65 @@ def set_attestation_url(
     }
 
 
+# ── on-demand Compendium refresh ─────────────────────────────────────
+# The Compendium page auto-refreshes its DISPLAY every 30s, but the
+# underlying data only changes when the background canary sweep runs
+# (every 6h). REFRESH used to just re-pull the same snapshot — clicking
+# it felt like nothing happened. This endpoint actually kicks the
+# attestation-gap sweep in a background thread so new URLs / re-checked
+# health can appear. GET returns whether a sweep is currently running.
+_COMPENDIUM_REFRESH: dict[str, Any] = {
+    "running": False, "started_at": None, "completed_at": None,
+    "summary": None,
+}
+_COMPENDIUM_REFRESH_LOCK = threading.Lock()
+
+
+@app.post("/api/compendium/refresh")
+def trigger_compendium_refresh() -> dict[str, Any]:
+    """Kick the attestation-gap sweep + source-health canary in the
+    background. Idempotent while a sweep is already running."""
+    with _COMPENDIUM_REFRESH_LOCK:
+        if _COMPENDIUM_REFRESH["running"]:
+            return dict(_COMPENDIUM_REFRESH)
+        _COMPENDIUM_REFRESH.update({
+            "running": True,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
+            "summary": None,
+        })
+
+    def _runner() -> None:
+        summary = None
+        try:
+            from sca.health_thread import run_attestation_gap_sweep
+            summary = run_attestation_gap_sweep()
+        except Exception as exc:  # noqa: BLE001
+            from sca.observability import log_event
+            log_event(
+                "compendium.refresh.failed", level="error",
+                error_class=type(exc).__name__,
+                error_message=str(exc)[:200],
+            )
+        finally:
+            with _COMPENDIUM_REFRESH_LOCK:
+                _COMPENDIUM_REFRESH.update({
+                    "running": False,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "summary": summary,
+                })
+
+    threading.Thread(target=_runner, daemon=True).start()
+    with _COMPENDIUM_REFRESH_LOCK:
+        return dict(_COMPENDIUM_REFRESH)
+
+
+@app.get("/api/compendium/refresh")
+def compendium_refresh_status() -> dict[str, Any]:
+    with _COMPENDIUM_REFRESH_LOCK:
+        return dict(_COMPENDIUM_REFRESH)
+
+
 # ── background source-health canary ───────────────────────────────────
 # Periodically re-runs `sca canary` so the snapshot store stays fresh
 # and the UI's "broken" badges reflect reality without an operator ever

@@ -906,13 +906,40 @@ async function tick() {
   }
 }
 
+// Manual REFRESH actually kicks the canary sweep server-side so new
+// data can appear. The sweep takes ~30-90s (re-resolves every fiat
+// token's attestation URL); during that window we keep re-fetching
+// the snapshot every 6s so the user sees partial updates as they
+// land. When the server reports the sweep done, one final fetch
+// renders the settled state.
 $('btn-refresh').addEventListener('click', async (ev) => {
   ev.target.disabled = true;
   ev.target.textContent = 'refreshing…';
-  setNext(Date.now());  // shows "refreshing…" in the countdown too
-  await tick();
-  ev.target.disabled = false;
-  ev.target.textContent = 'REFRESH';
+  dot.classList.add('refreshing');
+  setNext(Date.now());
+  try {
+    await fetch('/api/compendium/refresh',
+      { method: 'POST', cache: 'no-store' });
+    // Poll the sweep status; re-fetch the snapshot in between so
+    // partial updates land as the sweep finishes each token.
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      await tick();
+      await new Promise(r => setTimeout(r, 6000));
+      let status;
+      try {
+        status = await (await fetch('/api/compendium/refresh',
+          { cache: 'no-store' })).json();
+      } catch { break; }
+      if (!status.running) break;
+    }
+    await tick();
+  } finally {
+    dot.classList.remove('refreshing');
+    ev.target.disabled = false;
+    ev.target.textContent = 'REFRESH';
+    setNext(Date.now() + REFRESH_MS);
+  }
 });
 
 tick();
