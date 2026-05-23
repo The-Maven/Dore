@@ -75,6 +75,7 @@ def _isolate_state(monkeypatch, tmp_path):
         lambda **kw: _FileStore(
             corpus_dir=tmp_path / "corpus_data",
             attestation_overrides_path=tmp_path / "attestation_overrides.json",
+            verified_facts_path=tmp_path / "verified_facts.jsonl",
             **kw,
         ),
     )

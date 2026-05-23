@@ -4448,6 +4448,52 @@ function renderCompendium(data, mount) {
   );
   mount.append(panel('03', 'WEB DISCOVERY — gap-closure log', 'i-eval', discBody));
 
+  // ── Verified facts (audit trail) ───────────────────────────────────
+  const facts = data.verified_facts || [];
+  const factsBody = facts.length === 0
+    ? el('div', { class: 'cp-na pb-pad' },
+        'No verified facts recorded yet in this process. The audit trail ' +
+        'populates on every successful analysis — supply and reserves rows ' +
+        'land here append-only with full provenance.')
+    : el('div', { class: 'cp-table' },
+        el('div', { class: 'cp-row cp-head' },
+          el('div', { class: 'cp-c1' }, 'CLAIM'),
+          el('div', { class: 'cp-c2' }, 'SUBJECT'),
+          el('div', { class: 'cp-c3' }, 'VALUE'),
+          el('div', { class: 'cp-c4' }, 'STATUS'),
+          el('div', { class: 'cp-c5' }, 'OBSERVED'),
+        ),
+        ...facts.map((f) => {
+          const v = f.value || {};
+          let summary = '';
+          if (f.claim_type === 'supply') {
+            summary = (v.supply !== undefined
+              ? Number(v.supply).toLocaleString(undefined,
+                  { maximumFractionDigits: 0 })
+              : '—') + ' on ' + (f.chain || '?');
+          } else if (f.claim_type === 'reserves') {
+            summary = '$' + (v.total_reserves_usd !== undefined
+              ? Number(v.total_reserves_usd).toLocaleString(undefined,
+                  { maximumFractionDigits: 0 })
+              : '—') + ' as of ' + (v.as_of_date || '?');
+          } else {
+            summary = JSON.stringify(v).slice(0, 60);
+          }
+          return el('div', { class: 'cp-row' },
+            el('div', { class: 'cp-c1' },
+              el('span', { class: 'cp-via cp-via-' + f.claim_type },
+                f.claim_type)),
+            el('div', { class: 'cp-c2' }, f.subject),
+            el('div', { class: 'cp-c3' }, summary),
+            el('div', { class: 'cp-c4' },
+              el('span', { class: 'cp-via cp-via-' + f.status }, f.status)),
+            el('div', { class: 'cp-c5' }, _fmtTs(f.observed_at)),
+          );
+        }),
+    );
+  mount.append(panel('04', 'VERIFIED FACTS — immutable audit trail',
+    'i-eval', factsBody));
+
   // ── Event tail ─────────────────────────────────────────────────────
   const evBody = data.events.length === 0
     ? el('div', { class: 'cp-na pb-pad' },
@@ -4465,7 +4511,7 @@ function renderCompendium(data, mount) {
             (e.symbol ? '[' + e.symbol + '] ' : '') +
             (e.detail || e.error_message || e.url || '')),
         )));
-  mount.append(panel('04', 'EVENT STREAM — most recent background work',
+  mount.append(panel('05', 'EVENT STREAM — most recent background work',
     'i-eval', evBody));
 }
 

@@ -403,6 +403,118 @@ class SupabaseStore(Store):
             out.append(row)
         return out
 
+    # ── verified facts (immutable audit trail) ────────────────────────
+    # Schema-drift fallback identical to attestation_url_overrides above:
+    # if migration 0004 hasn't been applied yet, methods degrade so the
+    # resolver / store callers keep working.
+    def _verified_facts_missing(self, exc: Exception) -> bool:
+        msg = str(exc)
+        return "verified_facts" in msg and (
+            "schema cache" in msg or "does not exist" in msg
+        )
+
+    def record_verified_fact(
+        self,
+        *,
+        claim_type: str,
+        subject: str,
+        value: dict,
+        sources: list,
+        status: str,
+        block_number: int | None = None,
+        chain: str | None = None,
+        as_of: str | None = None,
+        notes: str = "",
+    ) -> str:
+        import hashlib
+        import json as _json
+        if status not in ("verified", "unverified", "assumed"):
+            raise ValueError(
+                f"status must be verified|unverified|assumed, got {status!r}"
+            )
+        canonical = _json.dumps(
+            {"value": value, "sources": sources},
+            sort_keys=True, separators=(",", ":"),
+        )
+        content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        row = {
+            "claim_type": claim_type,
+            "subject": subject,
+            "value": value,
+            "sources": sources,
+            "block_number": block_number,
+            "chain": chain,
+            "as_of": as_of,
+            "status": status,
+            "content_hash": content_hash,
+            "notes": notes,
+        }
+        try:
+            resp = (
+                self._client.table("verified_facts").insert(row).execute()
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self._verified_facts_missing(exc):
+                from sca.observability import log_event
+                log_event(
+                    "verified_facts.table_missing", level="warn",
+                    detail="run supabase/migrations/0004_verified_facts.sql",
+                )
+                return ""
+            raise
+        return resp.data[0]["id"] if resp.data else ""
+
+    def latest_verified_fact(
+        self,
+        claim_type: str,
+        subject: str,
+        *,
+        as_of_lte: str | None = None,
+    ) -> dict | None:
+        try:
+            q = (
+                self._client.table("verified_facts")
+                .select("*")
+                .eq("claim_type", claim_type)
+                .eq("subject", subject)
+                .order("observed_at", desc=True)
+                .limit(1)
+            )
+            if as_of_lte:
+                q = q.lte("observed_at", as_of_lte)
+            resp = q.execute()
+        except Exception as exc:  # noqa: BLE001
+            if self._verified_facts_missing(exc):
+                return None
+            raise
+        rows = resp.data or []
+        return rows[0] if rows else None
+
+    def list_verified_facts(
+        self,
+        *,
+        claim_type: str | None = None,
+        subject: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        try:
+            q = (
+                self._client.table("verified_facts")
+                .select("*")
+                .order("observed_at", desc=True)
+                .limit(limit)
+            )
+            if claim_type:
+                q = q.eq("claim_type", claim_type)
+            if subject:
+                q = q.eq("subject", subject)
+            resp = q.execute()
+        except Exception as exc:  # noqa: BLE001
+            if self._verified_facts_missing(exc):
+                return []
+            raise
+        return resp.data or []
+
     # ── monitor ───────────────────────────────────────────────────────
     def save_snapshot(
         self,

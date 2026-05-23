@@ -148,6 +148,52 @@ class Store(ABC):
     def list_attestation_url_overrides(self) -> list[dict]:
         """All current overrides, newest first — for the Compendium UI."""
 
+    # ── verified facts (immutable, time-series, object-agnostic) ─────
+    # The audit trail. `analyses` and `monitor_snapshots` are the
+    # operational cache; this is the immutable record. Lens 2 will use
+    # the same table — `claim_type` is the discriminator. Append-only.
+    @abstractmethod
+    def record_verified_fact(
+        self,
+        *,
+        claim_type: str,
+        subject: str,
+        value: dict,
+        sources: list,
+        status: str,
+        block_number: int | None = None,
+        chain: str | None = None,
+        as_of: str | None = None,
+        notes: str = "",
+    ) -> str:
+        """Append one verified fact. Returns its id.
+
+        Content-hashes (value || sources) so a re-confirmation that
+        produces an identical row is skipped at the writer side. Status
+        must be 'verified' | 'unverified' | 'assumed'.
+        """
+
+    @abstractmethod
+    def latest_verified_fact(
+        self,
+        claim_type: str,
+        subject: str,
+        *,
+        as_of_lte: str | None = None,
+    ) -> dict | None:
+        """Most recent fact for (claim_type, subject). Optional point-in-
+        time: only consider rows with `observed_at <= as_of_lte`."""
+
+    @abstractmethod
+    def list_verified_facts(
+        self,
+        *,
+        claim_type: str | None = None,
+        subject: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Recent facts, newest first, optionally filtered."""
+
     # ── monitor ───────────────────────────────────────────────────────
     @abstractmethod
     def save_snapshot(

@@ -756,12 +756,20 @@ def compendium() -> dict[str, Any]:
         or e.get("level") in ("warn", "error")
     ][:120]
 
+    # Verified facts (audit trail) — most recent rows so the UI shows
+    # the system actually IS recording the immutable history it claims.
+    try:
+        facts = store.list_verified_facts(limit=40)
+    except Exception:  # noqa: BLE001 - never break the compendium
+        facts = []
+
     return {
         "attestations": attestations,
         "sources_health": sources_health,
         "supply_history": history_snapshot,
         "discoveries": discoveries,
         "events": events,
+        "verified_facts": facts,
         "discovery_provider": os.environ.get(
             "SCA_WEB_SEARCH_PROVIDER", "",
         ).strip().lower() or None,

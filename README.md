@@ -294,19 +294,51 @@ or lie. Concretely:
 - **User-friendly errors.** Pipeline failures (HTTP 404, JS-gated pages,
   timeouts) produce clean human-readable gap messages; raw exceptions go
   to structured logs for ops, never to the user.
+- **Atomic writes.** Every durable state file (ledgers, caches, SDN file,
+  health state, corpus passages, attestation overrides) goes through
+  `sca.persist.atomic_write_*` — temp + fsync + `os.replace`. A crash
+  mid-write leaves the original intact; tests in `test_persist.py` prove
+  it.
+- **LLM fallback ladder.** DeepSeek (primary) → Anthropic (secondary) →
+  raise visibly. Production NEVER silently falls back to a fake LLM —
+  `LLMNotConfigured` is loud.
+- **Web discovery (gap closure).** When the locator can't reach a
+  JS-rendered transparency page, `sca.web_discovery` searches the web
+  for a fresh attestation PDF and HEAD-checks every candidate.
+  Configurable via `SCA_WEB_SEARCH_PROVIDER` (`brave` | `serper`); a
+  no-op when unset (logs once so the gap is visible).
+- **Attestation URL overrides.** Operational source of truth for each
+  token's attestation URL lives in the store (`attestation_url_overrides`
+  table — migration 0003) — survives redeploys. The YAML
+  `latest_attestation_url` becomes a bootstrap seed only. Curators set
+  overrides via `POST /api/attestations/{symbol}/url`.
+- **Background gap-sweep.** The canary thread runs every 6h; in the same
+  cycle it walks every fiat-backed token through `resolve_url()` so any
+  newly-discovered URL lands in the store automatically.
+- **Immutable, time-series fact store.** Migration 0004 introduces
+  `verified_facts` — an append-only, object-agnostic audit trail. Every
+  successful analysis records supply + reserves rows with full provenance
+  (claim, sources, timestamp, block, status). Point-in-time replay is a
+  SQL window query. The same shape will hold Lens 2 (agent payments)
+  facts later — no schema rewrite needed.
 
 ## Status
 
 Three working compliance surfaces · multi-chain supply with cross-RPC
-corroboration · resilient attestation locator · deterministic guardrails +
-citation verification · Supabase persistence + optional auth · the terminal
-web app · the Hermes analyst integration · the corpus flipped to opt-out
-(included by default, human excludes / verifies) · snapshot fallback for
-every external source · structured logging foundation. **222 hermetic
-tests (201 Python + 21 JS).** Pending: deployment, more attestation sources for JS-gated
-issuers, staged text for the remaining registry-only sources, a compliance
-operator expanding `evals/cases.yaml`, daily auto-discovery of new sources,
-LLM fallback ladder beyond DeepSeek.
+corroboration · resilient attestation locator with web-search gap closure ·
+deterministic guardrails + citation verification · immutable time-series
+fact store + Supabase persistence + optional auth · the terminal web app
+with a Data Compendium page surfacing freshness/provenance · the Hermes
+analyst integration · the corpus flipped to opt-out (included by default,
+human excludes / verifies) · snapshot fallback for every external source
+· structured logging with an in-process ring buffer · attestation URL
+overrides durable in the store · background canary + gap-sweep thread
+every 6h · per-IP rate limit on every paid endpoint · paranoid trust-
+proxy default · LLM fallback ladder (DeepSeek → Anthropic). **321 hermetic
+tests (291 Python + 30 JS).** Pending: deployment behind Cloudflare,
+applying migrations 0003 + 0004 against the live database, more
+attestation sources for the remaining 8 fiat tokens with no seed URL,
+expanding `evals/cases.yaml`, Lens 2 (agent payments) ingestion connectors.
 
 ---
 

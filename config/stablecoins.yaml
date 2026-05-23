@@ -173,7 +173,7 @@ stablecoins:
     issuer: Circle
     peg: EUR
     transparency_url: https://www.circle.com/transparency
-    latest_attestation_url: ""
+    latest_attestation_url: "https://6778953.fs1.hubspotusercontent-na1.net/hubfs/6778953/EURC%20Attestations/2026%20EURC_Examination%20Report%20March%2026.pdf"
     deployments:
       - {chain: ethereum, contract: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c", verified: false}
 

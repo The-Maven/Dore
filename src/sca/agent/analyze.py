@@ -295,6 +295,11 @@ def _persist_analysis(
 
     Behaviour-neutral: persistence is best-effort and never affects the
     returned Analysis. The in-memory AnalysisCache remains the speed cache.
+
+    Also writes a row through to the immutable, object-agnostic fact store
+    (`verified_facts`) — the audit trail that makes point-in-time replay
+    possible. The `analyses` table is the operational cache; the fact
+    store is the permanent record.
     """
     from dataclasses import asdict
 
@@ -313,3 +318,58 @@ def _persist_analysis(
         )
     except Exception:  # noqa: BLE001 - persistence must never break analysis
         pass
+
+    # Audit trail: every successful analysis records one or more verified
+    # facts. Each is one append-only row with full provenance — the same
+    # shape that will hold Lens 2 (agent payments) facts later.
+    try:
+        store = get_store()
+        # Supply facts — per chain. The most fine-grained observation we
+        # make. Reading a chain's supply IS a fact about that chain.
+        for d in (result.supply.per_chain or []):
+            if not getattr(d, "supply", None):
+                continue
+            store.record_verified_fact(
+                claim_type="supply",
+                subject=f"{symbol}:{d.chain}",
+                value={
+                    "supply": float(d.supply),
+                    "contract": d.contract,
+                    "consensus": getattr(d, "consensus", ""),
+                },
+                sources=[{"kind": "rpc", "chain": d.chain,
+                          "endpoint": getattr(d, "endpoint", "")}],
+                status="verified" if getattr(d, "consensus", "")
+                        not in ("", "DISAGREEMENT") else "unverified",
+                chain=d.chain,
+            )
+        # Reserves fact — exists only when extraction succeeded.
+        if result.attestation is not None:
+            store.record_verified_fact(
+                claim_type="reserves",
+                subject=symbol,
+                value={
+                    "total_reserves_usd": float(
+                        result.attestation.total_reserves
+                    ),
+                    "tokens_outstanding": float(
+                        result.attestation.tokens_outstanding
+                    ),
+                    "as_of_date": result.attestation.as_of_date,
+                    "extraction_confidence": float(
+                        result.attestation.confidence or 0.0
+                    ),
+                },
+                sources=[{
+                    "kind": "attestation",
+                    "url": result.attestation.source_url or "",
+                }],
+                status="verified",
+                as_of=result.attestation.as_of_date,
+            )
+    except Exception:  # noqa: BLE001 - audit trail is best-effort
+        from sca.observability import log_event
+        log_event(
+            "verified_facts.write_failed", level="warn",
+            symbol=symbol,
+        )

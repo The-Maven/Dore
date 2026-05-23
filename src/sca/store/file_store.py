@@ -37,6 +37,7 @@ class FileStore(Store):
         sources_path: Path | None = None,
         corpus_dir: Path | None = None,
         attestation_overrides_path: Path | None = None,
+        verified_facts_path: Path | None = None,
     ) -> None:
         # Paths default to the repo layout; overridable for hermetic tests.
         self._votes_path = votes_path or (config.ROOT / "votes.yaml")
@@ -45,6 +46,10 @@ class FileStore(Store):
         self._att_overrides_path = (
             attestation_overrides_path
             or (config.DATA_DIR / "attestation_overrides.json")
+        )
+        self._verified_facts_path = (
+            verified_facts_path
+            or (config.DATA_DIR / "verified_facts.jsonl")
         )
         # analyses + monitor have no on-disk equivalent: keep them in memory.
         self._analyses: dict[str, dict] = {}
@@ -322,6 +327,114 @@ class FileStore(Store):
         rows = list(data.values())
         rows.sort(key=lambda r: r.get("set_at", ""), reverse=True)
         return [dict(r) for r in rows]
+
+    # ── verified facts (append-only JSONL) ────────────────────────────
+    # JSONL chosen over JSON-array so each append is one line write — no
+    # full-file rewrite per fact, naturally append-only. The file IS the
+    # audit trail; readers parse it line by line.
+    def _verified_facts_iter(self):
+        import json as _json
+        if not self._verified_facts_path.exists():
+            return
+        with self._verified_facts_path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+
+    def record_verified_fact(
+        self,
+        *,
+        claim_type: str,
+        subject: str,
+        value: dict,
+        sources: list,
+        status: str,
+        block_number: int | None = None,
+        chain: str | None = None,
+        as_of: str | None = None,
+        notes: str = "",
+    ) -> str:
+        import hashlib
+        import json as _json
+        if status not in ("verified", "unverified", "assumed"):
+            raise ValueError(
+                f"status must be verified|unverified|assumed, got {status!r}"
+            )
+        canonical = _json.dumps(
+            {"value": value, "sources": sources},
+            sort_keys=True, separators=(",", ":"),
+        )
+        content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        row = {
+            "id": str(uuid.uuid4()),
+            "claim_type": claim_type,
+            "subject": subject,
+            "value": value,
+            "sources": sources,
+            "block_number": block_number,
+            "chain": chain,
+            "observed_at": _now(),
+            "as_of": as_of,
+            "status": status,
+            "content_hash": content_hash,
+            "superseded_by": None,
+            "notes": notes,
+        }
+        # Append-only write — JSONL line. atomic_write isn't appropriate
+        # here (it rewrites the whole file); instead open in append mode
+        # with fsync so a crash mid-write leaves only a partial line that
+        # the JSONDecodeError handler skips.
+        self._verified_facts_path.parent.mkdir(parents=True, exist_ok=True)
+        line = _json.dumps(row, sort_keys=True, default=str) + "\n"
+        import os as _os
+        with self._verified_facts_path.open("a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
+            _os.fsync(f.fileno())
+        return row["id"]
+
+    def latest_verified_fact(
+        self,
+        claim_type: str,
+        subject: str,
+        *,
+        as_of_lte: str | None = None,
+    ) -> dict | None:
+        best = None
+        for row in self._verified_facts_iter():
+            if row.get("claim_type") != claim_type:
+                continue
+            if row.get("subject") != subject:
+                continue
+            if as_of_lte and row.get("observed_at", "") > as_of_lte:
+                continue
+            if best is None or row.get("observed_at", "") > best.get(
+                "observed_at", ""
+            ):
+                best = row
+        return dict(best) if best else None
+
+    def list_verified_facts(
+        self,
+        *,
+        claim_type: str | None = None,
+        subject: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        rows = []
+        for row in self._verified_facts_iter():
+            if claim_type and row.get("claim_type") != claim_type:
+                continue
+            if subject and row.get("subject") != subject:
+                continue
+            rows.append(row)
+        rows.sort(key=lambda r: r.get("observed_at", ""), reverse=True)
+        return [dict(r) for r in rows[:limit]]
 
     # ── monitor ───────────────────────────────────────────────────────
     def save_snapshot(
