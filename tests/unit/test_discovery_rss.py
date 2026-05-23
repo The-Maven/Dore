@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 import requests
 
-from sca import discovery_rss, snapshots
+from sca import discovery, discovery_rss, snapshots
 from sca.discovery import DiscoveredSource
 from sca.corpus import sources as corpus_sources
 

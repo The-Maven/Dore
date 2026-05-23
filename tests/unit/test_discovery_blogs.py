@@ -58,6 +58,17 @@ def isolated_registry(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(corpus_sources, "_path", lambda: sources_yaml)
 
+    # Redirect corpus + ledger paths so staging writes land in tmp_path
+    # instead of leaking fixture markdown into the live corpus/staging/.
+    from sca import config
+    tmp_corpus = tmp_path / "corpus"
+    (tmp_corpus / "staging").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "CORPUS_DIR", tmp_corpus)
+    monkeypatch.setattr(
+        discovery, "DISCOVERED_PATH",
+        tmp_path / "discovered_sources.json",
+    )
+
     from sca.store.file_store import FileStore
     import sca.store as store_mod
 

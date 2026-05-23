@@ -76,6 +76,18 @@ def isolated_registry(monkeypatch, tmp_path):
     # easier to swap the helper that exposes the path.
     monkeypatch.setattr(corpus_sources, "_path", lambda: sources_yaml)
 
+    # Redirect the corpus + data dirs so discovery's staging writes and
+    # ledger journals land in tmp_path, not the live repo. Without this,
+    # every discovery test leaks fixture markdown into corpus/staging/.
+    from sca import config
+    tmp_corpus = tmp_path / "corpus"
+    (tmp_corpus / "staging").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "CORPUS_DIR", tmp_corpus)
+    monkeypatch.setattr(
+        discovery, "DISCOVERED_PATH",
+        tmp_path / "discovered_sources.json",
+    )
+
     # The Store also reads sources.yaml directly — point it at the same file.
     from sca.store.file_store import FileStore
     import sca.store as store_mod
