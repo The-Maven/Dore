@@ -840,6 +840,10 @@ const STATE = {
   feedSeq: 0,
   activeSymbol: '',      // selected instrument
   activeSurface: '',     // 'analyze' | 'sanctions' | 'redemptions' | other
+  // The foreground job we're currently waiting on, if any. route()
+  // reads this on navigation to hand off mid-flight jobs to the
+  // background tracker. Shape: { jobId, kind, symbol } or null.
+  activeJobInFlight: null,
   monitorRunning: false,
   sources: {},           // source_id → { title, url, tier, verified, included }
   sourcesLoaded: false,  // becomes true on first successful /api/sources fetch
@@ -2629,6 +2633,12 @@ async function startAnalysis(symbol, mount, refresh = false) {
     return;
   }
 
+  // Register the in-flight job so route() can hand it to the
+  // background tracker if the user navigates away before it finishes.
+  STATE.activeJobInFlight = {
+    jobId: job.job_id, kind: 'analyze', symbol,
+  };
+
   const stages = job.stages || [];
   const t0 = Date.now();
   const clockSpan = el('span', { class: 'rs-tk' }, '0s');
@@ -2741,6 +2751,12 @@ async function startAnalysis(symbol, mount, refresh = false) {
     clearInterval(stageTimer); clearInterval(clockTimer);
     clearInterval(pollTimer); pollTimer = null;
     if (subTimer) { clearInterval(subTimer); subTimer = null; }
+    // Clear the in-flight descriptor only if it still names THIS job;
+    // a faster hand-off via route() may have already nulled it.
+    if (STATE.activeJobInFlight &&
+        STATE.activeJobInFlight.jobId === job.job_id) {
+      STATE.activeJobInFlight = null;
+    }
   };
 
   pollTimer = setInterval(async () => {
@@ -3782,6 +3798,12 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
     return;
   }
 
+  // Register the in-flight job so route() can hand it to the
+  // background tracker if the user navigates away mid-run.
+  STATE.activeJobInFlight = {
+    jobId: job.job_id, kind, symbol,
+  };
+
   const stages = job.stages || [];
   const t0 = Date.now();
   const stageNodes = stages.map((label, i) =>
@@ -3879,6 +3901,10 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
     clearInterval(stageTimer); clearInterval(clockTimer);
     clearInterval(surfacePollTimer); surfacePollTimer = null;
     if (subTimer) { clearInterval(subTimer); subTimer = null; }
+    if (STATE.activeJobInFlight &&
+        STATE.activeJobInFlight.jobId === job.job_id) {
+      STATE.activeJobInFlight = null;
+    }
   };
 
   surfacePollTimer = setInterval(async () => {
@@ -4188,24 +4214,27 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
         'v-paper',
         `${(supply.per_chain || []).length} deployment(s) · excludes bridged`,
         'i-supply'),
-      mcell('ATTESTED RESERVES', att ? fmtUSD(att.total_reserves) : 'n/a',
+      mcell('ATTESTED RESERVES', att ? fmtUSD(att.total_reserves) : '—',
         'v-gold',
         att ? 'from the latest attestation'
-            : naFieldNote('no attestation resolved — hover'),
+            : naFieldNote('see AI Context above'),
         'i-doc', att ? null : tip.na.reserves),
-      mcell('LIQUID RESERVES', fmtUSD(r.liquid_reserves),
+      mcell('LIQUID RESERVES',
+        r.liquid_reserves > 0 ? fmtUSD(r.liquid_reserves) : '—',
         r.liquid_reserves > 0 ? 'v-green' : 'v-muted',
-        'reserves redeemable fast', 'i-metric', tip.liquidReserves),
+        r.liquid_reserves > 0 ? 'reserves redeemable fast'
+            : naFieldNote('populates when an attestation resolves'),
+        'i-metric', tip.liquidReserves),
       mcell('NET REDEMPTION FLOW',
-        flow != null ? fmtUSD(flow) : 'n/a',
+        flow != null ? fmtUSD(flow) : '—',
         flow == null ? 'v-paper' : flow < 0 ? 'v-rose' : 'v-green',
         flow != null ? 'on-chain supply minus attested tokens outstanding'
-                     : naFieldNote('no attestation baseline — hover'),
+                     : naFieldNote('needs an attestation baseline'),
         'i-metric', flow != null ? tip.netRedemptionFlow : tip.na.drift),
-      mcell('STALENESS', m && att ? m.staleness_days + ' days' : 'n/a',
+      mcell('STALENESS', m && att ? m.staleness_days + ' days' : '—',
         m && att && m.staleness_days > 35 ? 'v-amber' : 'v-paper',
         m && att ? 'age of the attestation'
-                 : naFieldNote('no attestation date — hover'),
+                 : naFieldNote('populates when an attestation resolves'),
         'i-gate', m && att ? tip.staleness : tip.na.staleness),
     ));
 
@@ -5713,6 +5742,16 @@ function renderCompendium(data, mount) {
 function route() {
   const hash = location.hash.replace(/^#/, '') || 'monitor';
   const [view, arg] = hash.split('/');
+  // If there's an in-flight foreground job and this navigation moves
+  // away from it, hand it to the background tracker BEFORE we kill
+  // the poll timers below. Without this the poll never gets a chance
+  // to detect the abort + register the toast.
+  const inflight = STATE.activeJobInFlight;
+  const targetSym = (arg || '').toUpperCase();
+  if (inflight && (view !== inflight.kind || targetSym !== inflight.symbol)) {
+    trackJob(inflight.jobId, inflight.kind, inflight.symbol);
+    STATE.activeJobInFlight = null;
+  }
   document.querySelectorAll('.side-row').forEach((l) =>
     l.classList.toggle('active', l.dataset.route === view));
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
