@@ -219,10 +219,19 @@ class Store(ABC):
     def insert_peg_tick(
         self, *, symbol: str, source: str,
         price: float, deviation_bps: float,
+        consensus_kind: str | None = None,
+        sources: list | None = None,
+        max_disagreement_bps: float | None = None,
     ) -> None:
-        """Persist one peg-price tick. Default no-op so backends that
-        haven't yet implemented the simulator schema don't crash callers
-        — the ticker logs the persist failure and keeps going."""
+        """Persist one peg-price tick. The multi-source orchestrator
+        passes consensus_kind ('single' | 'agreed' | 'disputed'),
+        the per-source sources array, and the max-disagreement-in-bps
+        spread; backends that haven't yet implemented those columns
+        (migration 0008 not applied) ignore the extra kwargs.
+
+        Default no-op so backends that haven't implemented the
+        simulator schema don't crash callers — the ticker logs the
+        persist failure and keeps going."""
         return None
 
     def list_peg_ticks(

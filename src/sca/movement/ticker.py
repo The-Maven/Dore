@@ -349,8 +349,11 @@ def _tick_once(cfg: Optional[dict] = None) -> dict:
         summary["disabled"] = True
         return summary
 
-    # 1. Refresh peg ticks for every tracked symbol.
-    peg_tick_runner.refresh_for_symbols(cfg["symbols"])
+    # 1. Refresh peg ticks for every tracked symbol. The orchestrator
+    # returns a consensus-kind histogram so the simulator state
+    # surface can show source agreement at a glance.
+    summary["peg_tick_refresh"] = peg_tick_runner.refresh_for_symbols(
+        cfg["symbols"])
 
     # 2. Emit predictions per symbol/kind. The in-flight cap is
     # honored per-symbol so a single misconfigured token can't drag

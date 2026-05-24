@@ -3852,13 +3852,13 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 .sim-error { color: #d49d6a; }
 
-/* SOTU strip — five-cell horizontal row above the per-token panels.
+/* SOTU strip — six-cell horizontal row above the per-token panels.
    Tight, monospace-numbered, identical layout to the analyze
-   freshness strip so the visual rhythm carries. Five cells: STATE,
-   LAST TICK, CADENCE, LAST CYCLE, BRAVE QUOTA. */
+   freshness strip so the visual rhythm carries. Six cells: STATE,
+   LAST TICK, CADENCE, LAST CYCLE, PEG SOURCES, BRAVE QUOTA. */
 .sim-sotu {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 1px;
   background: rgba(212, 162, 74, 0.18);
   border: 1px solid rgba(212, 162, 74, 0.3);

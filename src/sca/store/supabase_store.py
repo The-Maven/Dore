@@ -571,15 +571,46 @@ class SupabaseStore(Store):
     def insert_peg_tick(
         self, *, symbol: str, source: str,
         price: float, deviation_bps: float,
+        consensus_kind: str | None = None,
+        sources: list | None = None,
+        max_disagreement_bps: float | None = None,
     ) -> None:
         # numeric columns accept Python float; Supabase serialises to
         # JSON with full precision so a sub-bp price doesn't round.
-        self._client.table("peg_ticks").insert({
+        # The consensus fields land in the columns added by migration
+        # 0008; pre-0008 deployments degrade gracefully — Supabase
+        # raises on unknown columns, so we retry without them once.
+        row = {
             "symbol": symbol,
             "source": source,
             "price": price,
             "deviation_bps": deviation_bps,
-        }).execute()
+            "consensus_kind": consensus_kind,
+            "sources": sources,
+            "max_disagreement_bps": max_disagreement_bps,
+        }
+        try:
+            self._client.table("peg_ticks").insert(row).execute()
+        except Exception as exc:  # noqa: BLE001
+            # If the migration hasn't been applied yet, the consensus
+            # columns don't exist; retry with the legacy shape so the
+            # single-source path keeps working until 0008 lands.
+            msg = str(exc).lower()
+            if any(t in msg for t in (
+                "column", "does not exist", "could not find",
+            )):
+                legacy = {k: v for k, v in row.items()
+                          if k in ("symbol", "source", "price",
+                                   "deviation_bps")}
+                self._client.table("peg_ticks").insert(legacy).execute()
+                from sca.observability import log_event
+                log_event(
+                    "peg_price.insert.legacy_shape", level="info",
+                    note="migration 0008 not yet applied; consensus "
+                         "columns dropped on insert",
+                )
+            else:
+                raise
 
     def list_peg_ticks(
         self, symbol: str, *, limit: int = 200,

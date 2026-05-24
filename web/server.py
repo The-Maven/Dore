@@ -1747,6 +1747,32 @@ def simulator_state() -> dict[str, Any]:
         # see exactly how much of their free-tier budget the
         # simulator is burning. Cap is configurable via env.
         "brave_quota": brave_quota_state(),
+        # Peg-source consensus summary (audit #7) — counts of agreed
+        # / single / disputed ticks from the last ticker cycle so
+        # operators can see source-health at a glance.
+        "peg_consensus": _peg_consensus_summary(),
+    }
+
+
+def _peg_consensus_summary() -> dict[str, Any]:
+    """Pull consensus counts from the most recent ticker cycle's
+    summary. Falls back to a zero-state when no cycle has run."""
+    from sca.movement.ticker import state as ticker_state
+    s = ticker_state() or {}
+    last = (s.get("last_summary") or {})
+    resolver = last.get("resolver") or {}
+    # The peg_tick refresh summary is keyed under 'per_symbol' /
+    # alongside resolver; in current ticker impl we stash the
+    # consensus counts in last_summary.peg_tick_refresh if present.
+    # Default zero state.
+    refresh = last.get("peg_tick_refresh") or {}
+    kinds = refresh.get("consensus_kinds") or {
+        "agreed": 0, "single": 0, "disputed": 0,
+    }
+    return {
+        "consensus_kinds": kinds,
+        "sources_known": ["coinbase", "kraken"],
+        "agreement_tolerance_bps": 5.0,
     }
 
 

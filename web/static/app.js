@@ -6456,6 +6456,7 @@ function simStateStrip(state) {
   const t = state.ticker || {};
   const c = state.config || {};
   const q = state.brave_quota || {};
+  const peg = state.peg_consensus || {};
   const lastTickAgo = t.last_tick_at ? agoLabel(t.last_tick_at) : '—';
   const summary = t.last_summary || {};
   const perSym = summary.per_symbol || [];
@@ -6468,6 +6469,16 @@ function simStateStrip(state) {
   const qPct = q.cap ? (q.calls || 0) / q.cap : 0;
   const qCls = qPct < 0.5 ? 'sim-quota-ok'
     : qPct < 0.9 ? 'sim-quota-warn' : 'sim-quota-tight';
+  // Peg consensus colour cue: any disputed tick goes red, all agreed
+  // goes green, mixed single+agreed goes gold.
+  const ck = peg.consensus_kinds || {};
+  const disputed = ck.disputed || 0;
+  const agreed = ck.agreed || 0;
+  const single = ck.single || 0;
+  const pegCls = disputed > 0 ? 'sim-quota-tight'
+    : (single > 0 && agreed === 0) ? 'sim-quota-warn'
+    : 'sim-quota-ok';
+  const pegSourcesLabel = (peg.sources_known || []).join('+') || 'none';
   return el('section', { class: 'sim-sotu fade-in' },
     el('div', { class: 'sim-sotu-row' },
       el('div', { class: 'sim-sotu-cell' },
@@ -6489,6 +6500,18 @@ function simStateStrip(state) {
           String(symbolsEmitted) + ' emitted · ',
           String(graded) + ' graded · ',
           String(waiting) + ' waiting')),
+      el('div', { class: 'sim-sotu-cell' },
+        el('div', { class: 'sim-sotu-label' }, 'PEG SOURCES'),
+        el('div', { class: 'sim-sotu-val ' + pegCls,
+            title: 'Multi-source peg consensus. ' + pegSourcesLabel +
+                   ' polled in parallel, agreement tolerance ' +
+                   (peg.agreement_tolerance_bps || 5) + 'bp. ' +
+                   'Disputed ticks land in the archive with a flag ' +
+                   'so the calibration story stays honest.' },
+          pegSourcesLabel,
+          el('span', { style: 'margin-left:6px; color: var(--muted-2)' },
+            '· ', String(agreed), '✓ ', String(single), '○ ',
+            String(disputed), '✕'))),
       el('div', { class: 'sim-sotu-cell' },
         el('div', { class: 'sim-sotu-label' }, 'BRAVE QUOTA'),
         el('div', { class: 'sim-sotu-val ' + qCls,

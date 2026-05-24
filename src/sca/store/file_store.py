@@ -484,6 +484,9 @@ class FileStore(Store):
     def insert_peg_tick(
         self, *, symbol: str, source: str,
         price: float, deviation_bps: float,
+        consensus_kind: str | None = None,
+        sources: list | None = None,
+        max_disagreement_bps: float | None = None,
     ) -> None:
         row = {
             "id": str(uuid.uuid4()),
@@ -491,6 +494,9 @@ class FileStore(Store):
             "source": source,
             "price": price,
             "deviation_bps": deviation_bps,
+            "consensus_kind": consensus_kind,
+            "sources": sources,
+            "max_disagreement_bps": max_disagreement_bps,
             "read_at": _now(),
         }
         with self._sim_lock:

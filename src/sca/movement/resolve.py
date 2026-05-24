@@ -99,11 +99,26 @@ def realized_peg_deviation_at(symbol: str,
 
     Tolerance: ±5 minutes around the target. Tighter than the
     horizon_minutes window so we don't grade against a stale tick.
+
+    Thin wrapper over realized_peg_at_with_meta — kept for callers
+    that don't care about consensus provenance."""
+    meta = realized_peg_at_with_meta(symbol, target_ts_iso)
+    return meta.get("deviation_bps") if meta else None
+
+
+def realized_peg_at_with_meta(symbol: str,
+                                target_ts_iso: str) -> Optional[dict]:
+    """Same as realized_peg_deviation_at but also returns the
+    consensus_kind + sources of the chosen peg tick. The resolver
+    uses this so a disputed tick is flagged in the resolution
+    narrative ('ground truth contested across sources').
+
+    Returns None when no tick lies within tolerance.
     """
     from sca.store import get_store
     try:
         ticks = get_store().list_peg_ticks(symbol, limit=400) or []
-    except Exception as exc:  # noqa: BLE001 - degrade gracefully
+    except Exception as exc:  # noqa: BLE001
         log_event(
             "movement.resolver.peg_lookup_failed", level="warn",
             symbol=symbol, error_class=type(exc).__name__,
@@ -128,7 +143,14 @@ def realized_peg_deviation_at(symbol: str,
             best_tick = t
     if best_tick is None:
         return None
-    return float(best_tick.get("deviation_bps") or 0.0)
+    return {
+        "deviation_bps": float(best_tick.get("deviation_bps") or 0.0),
+        "consensus_kind": best_tick.get("consensus_kind") or "single",
+        "sources": best_tick.get("sources") or [],
+        "max_disagreement_bps": float(
+            best_tick.get("max_disagreement_bps") or 0.0),
+        "read_at": best_tick.get("read_at"),
+    }
 
 
 def realized_net_flow_at(symbol: str, made_at_iso: str,
@@ -265,9 +287,12 @@ def grade_one(prediction: dict) -> Optional[dict]:
     """
     kind = prediction.get("kind")
     symbol = prediction.get("symbol")
+    peg_meta = None  # set when kind=peg_deviation so the narrative
+                     # can surface dispute info
     if kind == "peg_deviation":
-        actual = realized_peg_deviation_at(
+        peg_meta = realized_peg_at_with_meta(
             symbol, prediction.get("resolves_at"))
+        actual = peg_meta.get("deviation_bps") if peg_meta else None
     elif kind in ("net_flow_direction", "net_flow_magnitude"):
         actual = realized_net_flow_at(
             symbol, prediction.get("made_at"), prediction.get("resolves_at"))
@@ -321,7 +346,8 @@ def grade_one(prediction: dict) -> Optional[dict]:
                 prediction, actual_was_positive(actual)
             )
 
-    narrative = _narrate_outcome(prediction, actual, outcome, brier, crps)
+    narrative = _narrate_outcome(prediction, actual, outcome, brier, crps,
+                                   peg_meta=peg_meta)
     return {
         "prediction_id": prediction.get("id"),
         "actual_value": actual,
@@ -350,7 +376,9 @@ def _maybe_half(low: Optional[float],
 
 def _narrate_outcome(prediction: dict, actual: float, outcome: str,
                       brier: Optional[float],
-                      crps: Optional[float]) -> str:
+                      crps: Optional[float],
+                      *,
+                      peg_meta: Optional[dict] = None) -> str:
     """Honest, deterministic post-mortem prose. No LLM here — the
     resolver writes the same sentence the calibration page would; if
     we ever want richer narration we put it in attribute.py at
@@ -383,7 +411,26 @@ def _narrate_outcome(prediction: dict, actual: float, outcome: str,
         score_tail = f" Brier {brier:.3f}."
     elif crps is not None:
         score_tail = f" CRPS {crps:.3f}."
-    return (head + tail + score_tail).strip()
+    # Consensus tail (audit #7): when the peg tick we resolved
+    # against was 'disputed' across sources, name it in the
+    # narrative so an investor reading the calibration archive
+    # knows the ground truth itself was uncertain. 'single' is
+    # also surfaced honestly so a reader doesn't assume
+    # triangulation when only one source answered.
+    consensus_tail = ""
+    if peg_meta:
+        ck = peg_meta.get("consensus_kind")
+        if ck == "disputed":
+            gap = peg_meta.get("max_disagreement_bps", 0)
+            consensus_tail = (
+                f" Ground truth contested across sources "
+                f"(spread {gap:.1f}bp)."
+            )
+        elif ck == "single":
+            sources = peg_meta.get("sources") or []
+            src_name = sources[0].get("name") if sources else "unknown"
+            consensus_tail = f" Single-source ground truth ({src_name})."
+    return (head + tail + score_tail + consensus_tail).strip()
 
 
 # ── runner ───────────────────────────────────────────────────────────

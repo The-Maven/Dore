@@ -1,54 +1,60 @@
-"""Spot price + peg deviation source — the movement simulator's clock.
+"""Spot price + peg deviation — the movement simulator's clock, hardened.
 
-LAYER: facts. Deterministic, no LLM. Single chokepoint for fetching a
-spot price for a stablecoin against its quoted peg (USD, EUR). The
-price is the resolution rail for peg-deviation predictions, and the
-deviation series is one of the leading signals the engine attributes
-calls to.
+LAYER: facts. Deterministic, no LLM. Multi-source orchestrator that
+fetches the same symbol from every configured upstream in parallel,
+agrees on a consensus price, and flags disputes that exceed the
+tolerance. The two-source rule that governs the rest of Doré now
+applies to the ground truth too.
 
-Source discipline: Coinbase's public v2 spot endpoint is our v1 because
-it is (a) free, (b) needs no auth, (c) is the most-cited reference
-price among the cited industry research (Kaiko / Coin Metrics tend to
-use it as a quote anchor). Adding Kraken / Binance / a DEX-derived
-quote is a future migration — peg_ticks.source captures which adapter
-wrote the row so the calibration story can compare across.
+Sources (v2 — both free, no auth, complementary):
+  - Coinbase v2 spot   (https://api.coinbase.com/v2/prices/{pair}/spot)
+  - Kraken public ticker (https://api.kraken.com/0/public/Ticker)
+
+Agreement gate:
+  - Both sources responded, |gap| ≤ 5 bp → consensus_kind='agreed';
+    consensus_price = mean.
+  - Both sources responded, |gap| > 5 bp → consensus_kind='disputed';
+    consensus_price = mean, but the row is flagged and the resolver
+    surfaces the dispute in the resolution narrative.
+  - One source responded → consensus_kind='single'; the row is
+    written with that source's price and a hedged narrative.
+  - Zero sources responded → no row written (we stay silent over
+    serving false ground truth).
 
 Hermetic discipline: every test path is offline. Live HTTP is gated
-behind `_HTTP_DISABLED` (set in conftest); when disabled, `fetch_price`
-returns None and the caller persists nothing. The persistence layer
-treats None as "no tick this cycle" — not "the price is zero".
+behind SCA_PEG_PRICE_DISABLED; when disabled, fetch_consensus
+returns None and the caller persists nothing.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import time
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 from sca.observability import log_event
 
-# 60s in-memory cache so a flurry of /api/supply polls doesn't burn
-# Coinbase rate limit. The ticker thread writes the persistent row at
-# its own cadence (default once per minute per symbol).
-_CACHE: dict[str, tuple[float, float]] = {}  # symbol -> (price, fetched_at)
+# Tolerance for treating two source prices as "agreed". Stablecoins
+# routinely trade within 1-5 bp of each other across reputable spot
+# venues. A gap above 5 bp means at least one source is wrong or
+# stale; flag it loudly.
+AGREEMENT_TOLERANCE_BPS = 5.0
+
+# Per-symbol cache so a UI poll burst doesn't burn upstream rate
+# limits. The ticker writes the persistent row at its own cadence.
 _CACHE_TTL_S = 60.0
+_CACHE: dict[str, "ConsensusTick"] = {}
 
-# Tests / hermetic CI set this to disable network. Set by conftest.
 _HTTP_DISABLED_ENV = "SCA_PEG_PRICE_DISABLED"
-
-# Coinbase v2 spot — no auth, ~5 req/sec public budget, JSON shape:
-#   {"data": {"base": "USDC", "currency": "USD", "amount": "0.99987"}}
-_COINBASE_URL = "https://api.coinbase.com/v2/prices/{base}-{quote}/spot"
 _HTTP_TIMEOUT = 5.0
 
 
+# ── data shapes ──────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class PegTick:
-    """One sampled spot price. price is the actual quote; deviation_bps
-    is the signed gap from peg in basis points (price 1.0001 vs USD
-    peg = +1.0 bps, price 0.9985 = -15.0 bps). The bps unit is the
-    natural quote for stablecoin micro-deviations — sub-100bps is
-    routine, >100bps is news."""
+    """One single-source spot reading. The orchestrator builds a
+    ConsensusTick from a list of these."""
     symbol: str
     source: str
     price: float
@@ -56,46 +62,45 @@ class PegTick:
     fetched_at: float  # unix seconds
 
 
+@dataclass
+class ConsensusTick:
+    """Multi-source agreed (or disputed) reading for one symbol.
+    `consensus_price` is the canonical value used for resolution;
+    `sources` carries every per-source reading so the audit trail
+    shows exactly who said what."""
+    symbol: str
+    consensus_price: float
+    deviation_bps: float
+    consensus_kind: str  # 'single' | 'agreed' | 'disputed'
+    sources: list[dict] = field(default_factory=list)
+    max_disagreement_bps: float = 0.0
+    fetched_at: float = 0.0
+
+
+# ── helpers ──────────────────────────────────────────────────────────
 def _peg_target(peg: str) -> tuple[str, float]:
-    """Return (quote currency, target price). Defaults to USD = 1.0.
-    Honest non-USD support is a future move; for now we name the gap
-    and assume parity. The deviation calculation uses this anchor."""
+    """Return (quote currency, target price). USD = 1.0 by default;
+    EUR support is honest about parity assumption."""
     if peg.upper() == "EUR":
         return "EUR", 1.0
     return "USD", 1.0
 
 
 def _disabled() -> bool:
-    return os.environ.get(_HTTP_DISABLED_ENV, "").lower() in ("1", "true", "yes")
+    return os.environ.get(_HTTP_DISABLED_ENV, "").lower() in (
+        "1", "true", "yes",
+    )
 
 
-def fetch_price(symbol: str, *, peg: str = "USD") -> Optional[PegTick]:
-    """Fetch a single spot price tick for `symbol`. None on any failure
-    — caller persists nothing on None and the row simply doesn't exist.
+# ── source adapters ──────────────────────────────────────────────────
+# Each adapter is a function: (symbol, quote) -> Optional[float]
+# returning the spot price or None on any failure. Adapters log their
+# own failures so the orchestrator just sees the result.
 
-    Cached for 60s so repeated calls within a UI refresh window don't
-    re-hit the upstream. The cache is keyed by symbol so two symbols
-    update independently.
-    """
-    if _disabled():
-        return None
-
-    now = time.time()
-    cache_key = f"{symbol.upper()}:{peg.upper()}"
-    cached = _CACHE.get(cache_key)
-    if cached is not None and (now - cached[1]) < _CACHE_TTL_S:
-        price = cached[0]
-        _, anchor = _peg_target(peg)
-        return PegTick(
-            symbol=symbol.upper(),
-            source="coinbase_cached",
-            price=price,
-            deviation_bps=(price - anchor) * 10_000.0,
-            fetched_at=cached[1],
-        )
-
-    quote, anchor = _peg_target(peg)
-    url = _COINBASE_URL.format(base=symbol.upper(), quote=quote.upper())
+def _coinbase_spot(symbol: str, quote: str) -> Optional[float]:
+    """Coinbase v2 public spot — no auth, ~5 req/sec public budget."""
+    url = (f"https://api.coinbase.com/v2/prices/"
+           f"{symbol.upper()}-{quote.upper()}/spot")
     try:
         import requests
         resp = requests.get(
@@ -104,62 +109,276 @@ def fetch_price(symbol: str, *, peg: str = "USD") -> Optional[PegTick]:
         )
         if resp.status_code != 200:
             log_event(
-                "peg_price.fetch.non_200", level="info",
+                "peg_price.coinbase.non_200", level="info",
                 symbol=symbol, status=resp.status_code,
             )
             return None
         data = resp.json() or {}
         amount = (data.get("data") or {}).get("amount")
-        if amount is None:
-            return None
-        price = float(amount)
-    except (ImportError, ValueError, KeyError, TypeError) as exc:
+        return float(amount) if amount is not None else None
+    except (ValueError, KeyError, TypeError) as exc:
         log_event(
-            "peg_price.fetch.parse_failed", level="warn",
+            "peg_price.coinbase.parse_failed", level="warn",
             symbol=symbol, error_class=type(exc).__name__,
-            error_message=str(exc)[:160],
         )
         return None
-    except Exception as exc:  # noqa: BLE001 - network failures are best-effort
+    except Exception as exc:  # noqa: BLE001
         log_event(
-            "peg_price.fetch.failed", level="info",
+            "peg_price.coinbase.failed", level="info",
             symbol=symbol, error_class=type(exc).__name__,
-            error_message=str(exc)[:160],
         )
         return None
 
-    _CACHE[cache_key] = (price, now)
-    deviation_bps = (price - anchor) * 10_000.0
-    return PegTick(
+
+# Kraken pair naming follows old/new conventions. The pair lookup
+# below covers the major stablecoin pairs we care about. Anything not
+# in the map falls back to the canonical SYMBOL+QUOTE which works for
+# most newer listings.
+_KRAKEN_PAIR_MAP = {
+    ("USDC", "USD"): "USDCUSD",
+    ("USDT", "USD"): "USDTUSD",
+    ("DAI", "USD"): "DAIUSD",
+    ("PYUSD", "USD"): "PYUSDUSD",
+    ("EURC", "EUR"): "EURCEUR",
+    # Kraken's USDP pair is listed as PYUSDUSD historically and isn't
+    # always available; we degrade gracefully when the pair isn't found.
+}
+
+
+def _kraken_spot(symbol: str, quote: str) -> Optional[float]:
+    """Kraken public ticker — no auth, conservative rate limit.
+
+    Response shape:
+      {"error":[], "result":{"USDCUSD":{"c":["price","volume"], ...}}}
+    `c[0]` is the last-trade-closed price, which is what we want as a
+    spot reading.
+    """
+    pair = _KRAKEN_PAIR_MAP.get(
+        (symbol.upper(), quote.upper()),
+        f"{symbol.upper()}{quote.upper()}",
+    )
+    url = f"https://api.kraken.com/0/public/Ticker?pair={pair}"
+    try:
+        import requests
+        resp = requests.get(
+            url, timeout=_HTTP_TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0 (Dore/peg-tick)"},
+        )
+        if resp.status_code != 200:
+            log_event(
+                "peg_price.kraken.non_200", level="info",
+                symbol=symbol, status=resp.status_code,
+            )
+            return None
+        data = resp.json() or {}
+        # Kraken returns errors in the body, not the HTTP status.
+        if data.get("error"):
+            # Quietly drop unknown-pair errors (we may have hit a
+            # symbol Kraken doesn't list).
+            log_event(
+                "peg_price.kraken.api_error", level="info",
+                symbol=symbol, pair=pair,
+                error_head=str(data.get("error"))[:120],
+            )
+            return None
+        result = data.get("result") or {}
+        # Kraken occasionally aliases the pair name in the response
+        # (e.g. requesting USDCUSD may come back as USDCUSD or
+        # USDC/USD); accept the first key in result.
+        if not result:
+            return None
+        first_key = next(iter(result))
+        c = (result[first_key] or {}).get("c") or []
+        if not c:
+            return None
+        return float(c[0])
+    except (ValueError, KeyError, TypeError) as exc:
+        log_event(
+            "peg_price.kraken.parse_failed", level="warn",
+            symbol=symbol, error_class=type(exc).__name__,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "peg_price.kraken.failed", level="info",
+            symbol=symbol, error_class=type(exc).__name__,
+        )
+        return None
+
+
+# Registered source adapters. Order matters for tie-breaking when
+# only one source responds — first-in-list wins the consensus_kind=
+# 'single' attribution.
+_SOURCES: list[tuple[str, Callable[[str, str], Optional[float]]]] = [
+    ("coinbase", _coinbase_spot),
+    ("kraken", _kraken_spot),
+]
+
+
+# ── public API ───────────────────────────────────────────────────────
+def fetch_consensus(symbol: str, *, peg: str = "USD") -> Optional[ConsensusTick]:
+    """Fetch the same symbol from every configured source in parallel,
+    build a consensus reading. Returns None when ZERO sources responded
+    (the orchestrator stays silent rather than serve false truth).
+
+    Cached for 60s per symbol; a cached ConsensusTick is returned
+    verbatim (including its consensus_kind + sources) so a UI poll
+    doesn't trigger fresh fetches inside the cadence window.
+    """
+    if _disabled():
+        return None
+
+    now = time.time()
+    cache_key = f"{symbol.upper()}:{peg.upper()}"
+    cached = _CACHE.get(cache_key)
+    if cached is not None and (now - cached.fetched_at) < _CACHE_TTL_S:
+        return cached
+
+    quote, anchor = _peg_target(peg)
+    # Parallel fetch across sources — each is a network call; running
+    # them concurrently keeps the orchestrator's wall time close to
+    # the slowest single source instead of the sum.
+    results: dict[str, Optional[float]] = {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(_SOURCES),
+    ) as executor:
+        future_to_name = {
+            executor.submit(adapter, symbol, quote): name
+            for name, adapter in _SOURCES
+        }
+        for future in concurrent.futures.as_completed(future_to_name):
+            name = future_to_name[future]
+            try:
+                results[name] = future.result()
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    "peg_price.adapter_crashed", level="warn",
+                    source=name, symbol=symbol,
+                    error_class=type(exc).__name__,
+                )
+                results[name] = None
+
+    # Build per-source records for the audit trail. Sources that
+    # returned None are not included — the row only shows who
+    # actually answered.
+    sources_recorded: list[dict] = []
+    valid_prices: list[tuple[str, float]] = []
+    for name, _ in _SOURCES:
+        price = results.get(name)
+        if price is None:
+            continue
+        sources_recorded.append({
+            "name": name, "price": price, "fetched_at": now,
+        })
+        valid_prices.append((name, price))
+
+    if not valid_prices:
+        log_event(
+            "peg_price.no_source_responded", level="warn",
+            symbol=symbol,
+        )
+        return None
+
+    # Consensus math.
+    prices_only = [p for _, p in valid_prices]
+    consensus_price = sum(prices_only) / len(prices_only)
+    deviation_bps = (consensus_price - anchor) * 10_000.0
+    if len(valid_prices) == 1:
+        consensus_kind = "single"
+        max_disagreement_bps = 0.0
+    else:
+        max_disagreement_bps = (max(prices_only) - min(prices_only)) * 10_000.0
+        if max_disagreement_bps <= AGREEMENT_TOLERANCE_BPS:
+            consensus_kind = "agreed"
+        else:
+            consensus_kind = "disputed"
+            log_event(
+                "peg_price.dispute", level="warn",
+                symbol=symbol,
+                max_disagreement_bps=round(max_disagreement_bps, 2),
+                sources=sources_recorded,
+            )
+
+    tick = ConsensusTick(
         symbol=symbol.upper(),
-        source="coinbase",
-        price=price,
+        consensus_price=consensus_price,
         deviation_bps=deviation_bps,
+        consensus_kind=consensus_kind,
+        sources=sources_recorded,
+        max_disagreement_bps=max_disagreement_bps,
         fetched_at=now,
+    )
+    _CACHE[cache_key] = tick
+    return tick
+
+
+def fetch_price(symbol: str, *, peg: str = "USD") -> Optional[PegTick]:
+    """Backwards-compatible thin wrapper returning a single-source-
+    shaped PegTick. Used by callers that haven't been updated to
+    handle ConsensusTick yet. The `source` field collapses to a
+    name like 'coinbase+kraken' when both responded so the legacy
+    audit trail still names what answered."""
+    consensus = fetch_consensus(symbol, peg=peg)
+    if consensus is None:
+        return None
+    source_label = "+".join(s["name"] for s in consensus.sources) or "unknown"
+    return PegTick(
+        symbol=consensus.symbol,
+        source=source_label,
+        price=consensus.consensus_price,
+        deviation_bps=consensus.deviation_bps,
+        fetched_at=consensus.fetched_at,
     )
 
 
-def persist_tick(tick: PegTick) -> None:
-    """Write a peg_tick row through the store. Best-effort: a store
-    failure is logged but never raised, so the ticker thread keeps
-    running. Idempotent at the table level — the schema doesn't
-    deduplicate, so the caller decides cadence (default: once per
-    minute per symbol in the ticker thread)."""
+def persist_consensus(tick: Optional[ConsensusTick]) -> None:
+    """Write a multi-source consensus row through the store. Best-
+    effort: a store failure is logged but never raised. The store's
+    insert_peg_tick signature is extended to accept the new columns;
+    backends that haven't been updated still accept the call (the
+    new kwargs fall through their **kwargs)."""
     if tick is None:
         return
     try:
         from sca.store import get_store
         store = get_store()
         if hasattr(store, "insert_peg_tick"):
+            # Compose the legacy `source` label as the dominant
+            # source for backwards-compatible single-source readers.
+            source_label = "+".join(
+                s["name"] for s in tick.sources) or "unknown"
             store.insert_peg_tick(
                 symbol=tick.symbol,
-                source=tick.source,
-                price=tick.price,
+                source=source_label,
+                price=tick.consensus_price,
                 deviation_bps=tick.deviation_bps,
+                consensus_kind=tick.consensus_kind,
+                sources=tick.sources,
+                max_disagreement_bps=tick.max_disagreement_bps,
             )
-    except Exception as exc:  # noqa: BLE001 - persistence never breaks the run
+    except Exception as exc:  # noqa: BLE001
         log_event(
             "peg_price.persist_failed", level="warn",
             symbol=tick.symbol, error_class=type(exc).__name__,
             error_message=str(exc)[:160],
         )
+
+
+def persist_tick(tick: Optional[PegTick]) -> None:
+    """Legacy callers: keep working with the single-source signature.
+    Internally routes through persist_consensus to preserve the audit
+    trail. New code should call fetch_consensus + persist_consensus
+    directly."""
+    if tick is None:
+        return
+    consensus = ConsensusTick(
+        symbol=tick.symbol,
+        consensus_price=tick.price,
+        deviation_bps=tick.deviation_bps,
+        consensus_kind="single",
+        sources=[{"name": tick.source, "price": tick.price,
+                   "fetched_at": tick.fetched_at}],
+        max_disagreement_bps=0.0,
+        fetched_at=tick.fetched_at,
+    )
+    persist_consensus(consensus)

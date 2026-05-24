@@ -227,6 +227,85 @@ def test_concurrent_insert_and_resolve_no_duplicates():
     assert len(set(res_ids)) == n_iterations  # no duplicates
 
 
+def test_resolver_narrates_disputed_peg_ground_truth():
+    """Audit #7: when the peg tick we resolve against is 'disputed',
+    the resolution narrative must flag it so investors reading the
+    archive know the ground truth itself was uncertain."""
+    store = get_store()
+    resolves_at = _past_iso(5)
+    # Plant a disputed peg tick.
+    store._peg_ticks.append({  # noqa: SLF001 - test injection
+        "id": "tick-1",
+        "symbol": "USDC",
+        "source": "coinbase+kraken",
+        "price": 1.00025,
+        "deviation_bps": 2.5,
+        "consensus_kind": "disputed",
+        "sources": [
+            {"name": "coinbase", "price": 1.0001, "fetched_at": 0},
+            {"name": "kraken", "price": 1.0004, "fetched_at": 0},
+        ],
+        "max_disagreement_bps": 3.0,
+        "read_at": resolves_at,
+    })
+    pid = store.insert_prediction({
+        "symbol": "USDC", "kind": "peg_deviation",
+        "horizon_minutes": 60,
+        "made_at": _past_iso(65),
+        "resolves_at": resolves_at,
+        "point": 1.0,
+        "p50_low": 0, "p50_high": 4,
+        "p80_low": -3, "p80_high": 7,
+        "p95_low": -8, "p95_high": 12,
+        "prob_positive": None,
+        "confidence_word": "likely",
+        "drivers": [], "model": "test_model", "notes": "",
+    })
+    pred = store.list_predictions(symbol="USDC")[0]
+    res = grade_one(pred)
+    assert res is not None
+    assert "contested across sources" in res["narrative"].lower() \
+        or "Ground truth contested" in res["narrative"]
+
+
+def test_resolver_narrates_single_source_peg_ground_truth():
+    """Single-source peg ticks are honestly named in the narrative
+    so a reader knows triangulation wasn't possible."""
+    store = get_store()
+    resolves_at = _past_iso(5)
+    store._peg_ticks.append({  # noqa: SLF001 - test injection
+        "id": "tick-2",
+        "symbol": "USDC",
+        "source": "coinbase",
+        "price": 1.0001,
+        "deviation_bps": 1.0,
+        "consensus_kind": "single",
+        "sources": [
+            {"name": "coinbase", "price": 1.0001, "fetched_at": 0},
+        ],
+        "max_disagreement_bps": 0.0,
+        "read_at": resolves_at,
+    })
+    pid = store.insert_prediction({
+        "symbol": "USDC", "kind": "peg_deviation",
+        "horizon_minutes": 60,
+        "made_at": _past_iso(65),
+        "resolves_at": resolves_at,
+        "point": 0.0,
+        "p50_low": -2, "p50_high": 2,
+        "p80_low": -5, "p80_high": 5,
+        "p95_low": -10, "p95_high": 10,
+        "prob_positive": None,
+        "confidence_word": "likely",
+        "drivers": [], "model": "test_model", "notes": "",
+    })
+    pred = store.list_predictions(symbol="USDC")[0]
+    res = grade_one(pred)
+    assert res is not None
+    assert "single-source" in res["narrative"].lower()
+    assert "coinbase" in res["narrative"].lower()
+
+
 def test_climatology_baseline_falls_back_to_half_when_thin():
     """With fewer than 5 prior resolutions the climatology baseline
     falls back to 50/50 (honest 'we have no rate to read')."""
