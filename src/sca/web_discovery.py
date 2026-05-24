@@ -36,9 +36,14 @@ from sca import config
 from sca.observability import log_event
 
 _CACHE = config.DATA_DIR / "web_discoveries.json"
-# A discovery URL is trusted for the attestation cadence; after that we
-# re-search so a freshly-published report is never missed.
-_CACHE_MAX_AGE_DAYS = 25
+# How long a discovered attestation URL is trusted before the canary
+# re-searches. Issuers publish monthly (Circle, Paxos, etc.) so a TTL
+# at or beyond the publishing cadence means we routinely miss the
+# newest report. 7 days catches a freshly-published report within
+# 1-2 weeks of publication while still keeping the canary cheap.
+# A USDC case study: 25-day TTL meant we served the Feb 26 report
+# for 86 days while the March 26 report sat undiscovered.
+_CACHE_MAX_AGE_DAYS = 7
 _HTTP_TIMEOUT = 25.0
 _MAX_RESULTS = 8
 _UA = {"User-Agent": "Mozilla/5.0"}
