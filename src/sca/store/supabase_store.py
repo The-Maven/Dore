@@ -21,6 +21,36 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Schema-missing detection — pushed into the store layer so the audit
+# trail records WHICH table is missing, and callers don't have to
+# rebuild this logic. PostgREST 11+ returns code PGRST205 with a
+# 'Could not find the table' message; older versions return PGRST204
+# or '42P01' from PostgreSQL. We accept all three.
+_SCHEMA_MISSING_TOKENS = (
+    "pgrst205", "pgrst204", "42p01",
+    "could not find the table", "relation does not exist",
+)
+
+
+def _is_schema_missing_error(exc: BaseException) -> bool:
+    """True if the exception looks like a missing-table error.
+    Matches by message substring (case-insensitive) because the
+    APIError object's structure varies across supabase-py versions."""
+    msg = str(exc).lower()
+    return any(token in msg for token in _SCHEMA_MISSING_TOKENS)
+
+
+def _log_schema_missing(table: str, exc: BaseException) -> None:
+    """Emit a single observability event for a missing-table state.
+    Callers fall through to an empty result; the event is the trail."""
+    from sca.observability import log_event
+    log_event(
+        "store.schema_missing", level="warn",
+        table=table, error_class=type(exc).__name__,
+        error_message=str(exc)[:200],
+    )
+
+
 class SupabaseStore(Store):
     """Postgres-backed store via supabase-py v2. See module docstring."""
 
@@ -605,13 +635,26 @@ class SupabaseStore(Store):
         self, *, symbol: str | None = None, kind: str | None = None,
         limit: int = 200,
     ) -> list[dict]:
-        q = self._client.table("predictions").select("*")
-        if symbol is not None:
-            q = q.eq("symbol", symbol)
-        if kind is not None:
-            q = q.eq("kind", kind)
-        resp = q.order("made_at", desc=True).limit(limit).execute()
-        return resp.data or []
+        try:
+            q = self._client.table("predictions").select("*")
+            if symbol is not None:
+                q = q.eq("symbol", symbol)
+            if kind is not None:
+                q = q.eq("kind", kind)
+            resp = q.order("made_at", desc=True).limit(limit).execute()
+            return resp.data or []
+        except Exception as exc:  # noqa: BLE001
+            # Audit #18: detect the predictions-table-missing error
+            # at the store layer so a direct caller (agent bridge,
+            # future tools) gets the same honest 'no data because
+            # the schema isn't provisioned yet' signal the API
+            # already provides. PGRST205 = relation does not exist
+            # in PostgREST 11+. Other errors re-raise so genuine
+            # store failures aren't silently swallowed.
+            if not _is_schema_missing_error(exc):
+                raise
+            _log_schema_missing("predictions", exc)
+            return []
 
     def unresolved_predictions(
         self, *, before_ts: str | None = None, limit: int = 500,
@@ -680,10 +723,16 @@ class SupabaseStore(Store):
         # PostgREST embedded resource: pull resolutions and embed the
         # parent prediction row. Then flatten into the dict shape the
         # FileStore returns so callers stay backend-agnostic.
-        q = self._client.table("resolutions").select(
-            "*, prediction:predictions(*)"
-        )
-        resp = q.order("resolved_at", desc=True).limit(limit).execute()
+        try:
+            q = self._client.table("resolutions").select(
+                "*, prediction:predictions(*)"
+            )
+            resp = q.order("resolved_at", desc=True).limit(limit).execute()
+        except Exception as exc:  # noqa: BLE001
+            if not _is_schema_missing_error(exc):
+                raise
+            _log_schema_missing("resolutions", exc)
+            return []
         out = []
         for row in (resp.data or []):
             pred = row.get("prediction") or {}
@@ -712,6 +761,26 @@ class SupabaseStore(Store):
         self, *, symbol: str | None = None, kind: str | None = None,
         horizon_minutes: int | None = None,
     ) -> dict:
+        # Probe the resolutions table directly so a missing-schema
+        # state surfaces with an explicit marker — callers can tell
+        # 'no rows yet' from 'table doesn't exist'. The list_resolutions
+        # path below would also catch this, but we need the marker on
+        # the empty struct, not just an empty list.
+        try:
+            (self._client.table("resolutions")
+             .select("id").limit(1).execute())
+        except Exception as exc:  # noqa: BLE001
+            if _is_schema_missing_error(exc):
+                _log_schema_missing("resolutions", exc)
+                return {
+                    "count": 0, "brier_mean": None, "crps_mean": None,
+                    "outcome_histogram": {}, "reliability_bins": [],
+                    "baseline_persistence_brier_mean": None,
+                    "baseline_climatology_brier_mean": None,
+                    "schema_missing": True,
+                }
+            raise
+
         # Single-pass aggregation in Python over the joined resolutions
         # because PostgREST aggregation is limited and the calibration
         # math (reliability bins) needs the per-row data anyway.

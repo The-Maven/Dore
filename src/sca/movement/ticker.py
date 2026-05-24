@@ -226,8 +226,17 @@ def _emit_for_symbol(symbol: str, kinds: list[str],
     # in-process aggregation — fine to call inside the ticker.
     try:
         calibration = store.calibration_summary(symbol=symbol)
-    except Exception:  # noqa: BLE001
-        calibration = {"count": 0}
+    except Exception as exc:  # noqa: BLE001
+        # Audit #15: a store exception is NOT 'no resolutions yet';
+        # the judge needs to tell them apart so it can say 'no track
+        # record on this target' vs 'calibration backend unavailable
+        # — treat this call with extra caution'. Mark explicitly.
+        log_event(
+            "movement.ticker.calibration_unavailable", level="warn",
+            symbol=symbol, error_class=type(exc).__name__,
+        )
+        calibration = {"count": 0, "unavailable": True,
+                        "error_class": type(exc).__name__}
 
     # Coalesce Brave context: ONE call per symbol, shared across all
     # kinds. The interest gate uses the most-uncertain confidence

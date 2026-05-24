@@ -1819,9 +1819,16 @@ def simulator_calibration(
     renders the 'waiting for resolutions to accumulate' state.
     """
     try:
-        return get_store().calibration_summary(
+        result = get_store().calibration_summary(
             symbol=symbol, kind=kind, horizon_minutes=horizon_minutes,
         )
+        # The store now sets schema_missing=True directly; translate
+        # the boolean into the descriptive string the UI expects.
+        if result.get("schema_missing") is True:
+            result["schema_missing"] = (
+                "resolutions table not yet provisioned"
+            )
+        return result
     except Exception as exc:  # noqa: BLE001
         log_event(
             "simulator.api.calibration.degraded", level="warn",

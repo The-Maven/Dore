@@ -235,7 +235,14 @@ def _build_prompt(forecast_summary: dict, attribution_sentence: str,
         lines.append("  (none)")
     lines.append("")
     lines.append("CALIBRATION (recent track record for this target):")
-    if calibration_record and calibration_record.get("count", 0) > 0:
+    if calibration_record and calibration_record.get("unavailable"):
+        # Audit #15: distinguish 'no resolutions yet' from 'backend
+        # unavailable' — the LLM must hedge differently in each case.
+        lines.append("  (calibration backend unavailable — name this "
+                     "in the synthesis as 'track record could not be "
+                     "read this cycle' and add extra hedging to the "
+                     "pitch)")
+    elif calibration_record and calibration_record.get("count", 0) > 0:
         cb = calibration_record
         lines.append(f"  resolved_count: {cb.get('count')}")
         if cb.get("brier_mean") is not None:
@@ -246,7 +253,7 @@ def _build_prompt(forecast_summary: dict, attribution_sentence: str,
             lines.append("  climatology_brier_baseline: "
                          f"{cb['baseline_climatology_brier_mean']:.3f}")
     else:
-        lines.append("  (no resolutions yet — be explicit that the "
+        lines.append("  (no resolutions yet, be explicit that the "
                      "track record is empty so the call carries less "
                      "weight)")
     lines.append("")
