@@ -1,11 +1,11 @@
 # Doré — autonomous work notes
 
-> **Historical document.** This file is a scratch log from a single
-> autonomous work session. It captures the reasoning at that point in
-> time and is preserved for context, not as current truth. Most items
-> below have since been delivered, superseded, or revised — read
-> `ARCHITECTURE.md`, `README.md`, and `AGENTS.md` for the canonical
-> current state. Don't act on this file directly.
+> **Chronological work log.** Each round below is a snapshot of one
+> autonomous session at the time it was written, preserved for
+> archaeological context. The canonical current state lives in
+> `ARCHITECTURE.md`, `README.md`, and `AGENTS.md` — read those for
+> what the system actually does today. The "Where we stand right
+> now" block at the end of this file always reflects today.
 
 User stepped away ~05:50 UTC with a broad mandate: fix everything, audit-grade, AI as wedge, corpus enrichment, un-stale data. This file documents what I'm changing and why, so you can scan my reasoning when you're back instead of reading the diff cold.
 
@@ -149,3 +149,167 @@ What an external auditor (e.g. GPT-5) would call out today:
 - JS: 30 passing
 - **309 hermetic tests** total.
 
+---
+
+## Round 5 (UX polish push + persistence-layer completion)
+
+A multi-day collaborative session focused on closing operator-pendings
+and bringing the user-facing surface to SF-grade polish. Reflects the
+state at session end.
+
+**Persistence layer — fully closed.**
+- Migration `0003_attestation_url_overrides.sql` applied to live
+  Supabase. Curator-set URLs and canary-discovered URLs now persist
+  across redeploys via `_record_override` writing through the store.
+  `set_by` column is a typed UUID — anonymous writes pass `None`.
+- Migration `0004_verified_facts.sql` applied. The immutable
+  time-series fact store is live in production; `_persist_analysis`
+  writes one `reserves` claim + one `supply` claim per chain per
+  completed analyze run, content-addressed via sha256.
+- Migration `0002_corpus_opt_out.sql` finally applied. The status
+  CHECK now enforces `{included, excluded}` exclusively. The legacy
+  status-coercion shim in `_ensure_source_row` (which had been
+  mapping every status to `approved` to satisfy the pre-0002 CHECK)
+  is stripped. Status flows through verbatim from the YAML. Tier
+  coercion stays in place — migration 0002 didn't touch the tier
+  CHECK and `tier1_official` / `tier2_industry` from auto-discovery
+  still need to coerce to `research`.
+
+**Discovery / data quality.**
+- Three-hop attestation discovery chain (Brave → DDG → domain-scoped
+  follow-up) with origin filter rejecting unknown S3 buckets, retry
+  on transient errors. Canary auto-resolves 11/14 fiat tokens.
+- Web search proposes → DB caches/disposes → YAML bootstrap-only.
+- Empty attestation-date crash fixed in `tools/metrics._as_date`
+  (returns `None` instead of raising on blank); guardrails surface
+  the missing field as a proper gap instead of a 500.
+- Test-fixture leak in `corpus/staging/` traced + plugged
+  (`isolated_registry` now hermetic — was writing fixture markdown
+  into the live corpus).
+
+**LLM voice + prompt hygiene.**
+- Em-dashes purged from `brief.py` + `augment.py` prompts (LLM was
+  picking them up); explicit voice rule (no em-dashes, banned
+  marketing words) added.
+- `_backing_model_brief` cleaned in both modules (duplicate missed
+  first round).
+- "secondary references" framing replacing the harsher "untrusted".
+- Verified live: USDC / AEUR / PYUSD all emit em-dash-free briefs.
+
+**Empty-state copy rewrite.**
+- "ATTESTATION — FETCH UNAVAILABLE / n/a / could not be resolved —
+  see GAPS" replaced everywhere. The AI Context serves the answer; a
+  quiet `<details>` disclosure tucks deterministic placeholders; a
+  dashed-rule footnote names the raw-parsing limitation without
+  leading the page. Same pattern across analyze + redemption +
+  sanctions.
+- Mcell values switched from `n/a` to `—`; hover notes neutralised
+  ("see AI Context above", "populates when an attestation resolves").
+- Stack traces no longer visible in the UI; `friendlyErrorCopy`
+  stops leaking raw exception text; one-line `ERR · TRACE` entry to
+  F1 feed preserves operator discoverability.
+
+**Snappier UX — cached-first render across all four result surfaces.**
+- New `GET /api/cached/{surface}/{symbol}` returns any-age cached
+  result. `renderCachedOrRun` mounts analyze / sanctions / redemption
+  from cache instantly (~1s, no spinner).
+- Evals view aligned: `GET /api/evals` cached, `POST /api/evals`
+  runs. `freshnessStrip` extended to evals; latency UX matched.
+- Sidebar token-clicks respect the current surface
+  (`currentSurfaceHash`) instead of always bouncing to analyze.
+
+**Latency UX.**
+- Per-(surface, symbol) `localStorage` memory of last 8 real
+  durations. Clock shows "8s / ~22s"; past 1.5× → amber + "A little
+  past typical, still on track"; past 2.5× → "Taking longer than
+  usual. Still working".
+- Scanbar gains a real progress fill driven by elapsed/expected.
+- RE-RUN tooltip ends with "A recompute typically takes about N
+  seconds (averaged over your last X runs)".
+
+**Backgrounded-job toasts.**
+- When the user switches token or surface mid-run, `route()` hands
+  the job off to a 4s background tracker via the
+  `STATE.activeJobInFlight` descriptor (this is the fix for a bug
+  where `route()`'s `clearInterval(surfacePollTimer)` was killing
+  the poll before its abort path could fire `trackJob`).
+- Toast lands in bottom-right on completion: "USDP sanctions screen
+  finished — Click to view the result". Click jumps to the surface;
+  auto-dismisses after 12s. Failed jobs surface as a rose-bordered
+  "Click to retry" toast.
+
+**Compendium standalone page.**
+- Lives at `/compendium`, opens in a new tab from the sidebar
+  (sidebar click handler respects `target="_blank"` + modifier keys).
+- Live-feeling header: green dot idle → pulsing gold during fetch →
+  rose on error; "next refresh in Ns" countdown.
+- Manual REFRESH actually triggers the canary's gap sweep via
+  `POST /api/compendium/refresh` (not just a snapshot re-render),
+  polls every 6s until done.
+
+**Type-scale + mobile.**
+- 9+ sub-floor CSS labels lifted from 8.5/9/9.5px → 10/10.5/11
+  across the whole UI.
+- WCAG AA contrast pass on 4 measured defects.
+- Mobile button rhythm standardised (40px touch height for all
+  primary buttons); freshness strip wraps cleanly instead of yawning
+  empty band.
+
+**Eval surface.**
+- `humanizeEvalPoint()` maps every check kind to a sentence
+  ("Live supply resolved from on-chain reads", 'Expected gap
+  mentioning "X" was reported', etc.).
+- Running state gets stage narration + scanbar + latency UX like the
+  other result surfaces.
+
+**Decisions closed in this round.**
+- **Headless browser for JS-rendered issuer pages (USDP, USDG, EURC):
+  do not build.** Documented as closed in `AGENTS.md`. The AI Context
+  card already handles these tokens well; a ~200MB Chromium dep + a
+  separate worker process + retry/timeout surface + selector-drift
+  failure mode is not worth three tokens. Reopens only if the
+  JS-rendered set grows materially.
+- **Stack traces never appear in user-facing UI.** Operator-mode
+  discoverability via the F1 feed only.
+
+**Tests at session end**
+- Python: 291 passing
+- JS: 30 passing
+- **321 hermetic tests** total.
+
+---
+
+## Where we stand right now
+
+Updated as of the end of Round 5. Always rewrite this block, never
+append to it.
+
+**Live, healthy, no open work:**
+- All four Supabase migrations applied (0001 initial, 0002 corpus
+  opt-out, 0003 attestation URL overrides, 0004 verified facts).
+- Curator-set + canary-discovered attestation URLs persist across
+  redeploys.
+- Time-series `verified_facts` writes on every completed analyze run.
+- All four result surfaces (analyze, sanctions, redemption, evals)
+  share the cached-first + freshness-strip + latency-UX + backgrounded-
+  toast + friendly-error pattern.
+- Compendium REFRESH triggers the actual canary sweep.
+- 11/14 fiat tokens auto-resolve to a verified attestation through
+  the static discovery chain on the 6-hourly canary cycle.
+- LLM-emitted briefs are em-dash-free and follow the voice rule.
+
+**Settled decisions (do not reopen without a real trigger):**
+- Three JS-rendered issuer pages (USDP, USDG, EURC) stay on the AI
+  Context fallback. Headless browser is not coming. See `AGENTS.md`.
+- Stack traces stay out of the user-facing UI; operators find them
+  in server logs + the F1 ops feed.
+
+**Genuinely still open:**
+- Tier CHECK on `sources.tier` still legacy (only accepts the
+  pre-discovery vocabulary). `_ensure_source_row` coerces unknown
+  tiers to `research`. A future `0005_tier_widening.sql` migration
+  would close this analogously to how 0002 closed the status side.
+- Snapshot store is still local-disk. Real durability tier (S3 /
+  Supabase Storage) remains the next infra step.
+- Eval harness is still thin (1-2 cases per surface). Hasn't bitten
+  anyone yet, but it's a known shallow guardrail.
