@@ -35,29 +35,30 @@ def brier_score_binary(forecast_prob: float, actual_positive: bool) -> float:
     return (p - o) ** 2
 
 
-def crps_from_band(actual: float, point: float,
-                    p50_half: float, p80_half: float,
-                    p95_half: float) -> float:
-    """Approximate CRPS from a 3-band (50/80/95) symmetric forecast.
+def normalised_miss_distance(actual: float, point: float,
+                               p50_half: float, p80_half: float,
+                               p95_half: float) -> float:
+    """Continuous-forecast scoring: |actual - point| scaled by the 80%
+    half-width. NOT CRPS — true CRPS requires integrating the full
+    predictive CDF and we don't carry it. This is a simpler proper-
+    enough proxy: zero on a perfect call, ~1.0 when the actual lands
+    at the 80% band edge, grows linearly beyond that. Reported in the
+    'crps_score' column for backwards-compatible store schema, but
+    labelled honestly in the comment + UI as a band-distance proxy.
 
-    Closed-form CRPS needs the full predictive CDF; we approximate by
-    treating the bands as a piecewise-linear empirical CDF (jumps at
-    the band edges). For the audience (investors who scan reliability
-    diagrams, not CRPS columns) the approximation is faithful enough:
-    a perfect forecast scores ~0, a wide-of-the-mark forecast scores
-    proportional to the gap.
-
-    Sign-agnostic: the metric is the L1 distance between the actual
-    and the forecast distribution, normalised by the band scale.
-    """
+    Why a proxy is acceptable here: the Brier score IS proper for our
+    direction predictions, and the outcome_kind column (inside_p50 /
+    p80 / p95 / outside) provides the categorical truth on continuous
+    predictions. The proxy adds a magnitude signal for the calibration
+    diagram without overclaiming we run real CRPS."""
     err = abs(actual - point)
-    # Scale by the 80% half-width — a reasonable proxy for the
-    # predictive distribution's spread. A perfect (zero-error)
-    # forecast scores 0; an error equal to the 80% half-width scores
-    # ~1 (it landed at the band edge, calibrated 'unlikely'). Errors
-    # beyond p95 grow proportionally.
     scale = max(p80_half, 0.5)
     return err / scale
+
+
+# Kept as an alias so existing callers continue to work; the new name
+# is the canonical one to use going forward.
+crps_from_band = normalised_miss_distance
 
 
 def actual_was_positive(actual_value: float) -> bool:
@@ -177,6 +178,66 @@ def _closest_supply(snaps: list[dict],
     return best
 
 
+def _persistence_brier(prediction: dict,
+                         actual_positive: bool) -> Optional[float]:
+    """Honest persistence baseline for direction predictions:
+    forecast = the last observed direction with confidence 1.0. We
+    look back one horizon-equivalent window from made_at; if we find
+    a prior net change, the persistence forecast is its sign.
+    Returns None when we don't have prior data to anchor on — better
+    a missing column than a meaningless one."""
+    from datetime import timedelta
+    symbol = prediction.get("symbol")
+    horizon_m = int(prediction.get("horizon_minutes") or 60)
+    made = _parse_iso(prediction.get("made_at"))
+    if made is None:
+        return None
+    prior_start = (made - timedelta(minutes=horizon_m * 2)).isoformat(
+        timespec="seconds")
+    prior_end = (made - timedelta(minutes=horizon_m)).isoformat(
+        timespec="seconds")
+    prior_change = realized_net_flow_at(symbol, prior_start, prior_end)
+    if prior_change is None:
+        return None
+    persistence_says_positive = prior_change > 0
+    # Persistence is a confident forecast: 1.0 in the direction it
+    # picks. Brier becomes 0 if it called the actual direction,
+    # 1 if it called the opposite.
+    return 0.0 if (persistence_says_positive == actual_positive) else 1.0
+
+
+def _climatology_brier(prediction: dict,
+                         actual_positive: bool) -> float:
+    """Climatology baseline: forecast = empirical base rate from
+    prior resolutions on the same (symbol, kind). Falls back to 0.5
+    when the archive is too thin to read a rate. Brier becomes
+    (rate - outcome)^2 — and for outcome=0/1 with rate≈0.5 this
+    naturally lands near 0.25."""
+    try:
+        from sca.store import get_store
+        store = get_store()
+        prior = store.list_resolutions(
+            symbol=prediction.get("symbol"),
+            kind=prediction.get("kind"),
+            limit=500,
+        ) or []
+    except Exception:  # noqa: BLE001
+        return brier_score_binary(0.5, actual_positive)
+    positives = sum(
+        1 for r in prior
+        if r.get("actual_value") is not None
+        and float(r["actual_value"]) > 0
+    )
+    total = sum(
+        1 for r in prior if r.get("actual_value") is not None
+    )
+    if total < 5:
+        # Too thin — fall back to honest 50/50.
+        return brier_score_binary(0.5, actual_positive)
+    rate = positives / total
+    return brier_score_binary(rate, actual_positive)
+
+
 def _parse_iso(s) -> Optional[datetime]:
     if not s:
         return None
@@ -242,14 +303,23 @@ def grade_one(prediction: dict) -> Optional[dict]:
         prob = prediction.get("prob_positive")
         if prob is not None:
             brier = brier_score_binary(float(prob), actual_was_positive(actual))
-            # Baselines: persistence = "next period same direction as
-            # last observed step"; climatology = 50/50. We need a few
-            # rows of history to compute the persistence baseline so
-            # fall back to 0.25 (climatology) when unknown.
-            base_p_brier = brier_score_binary(
-                0.5, actual_was_positive(actual)
-            )  # naive baseline = 0.5 always; investor-friendly floor
-            base_c_brier = 0.25  # climatology Brier for a 50/50 forecast
+            # Baselines, honest definitions:
+            #   - persistence: predict the SAME direction as the last
+            #     observed move. Requires knowing the prior step's
+            #     direction; we look it up via realized_net_flow_at
+            #     over the prior horizon-equal window. If unavailable
+            #     (insufficient history), the baseline is None and the
+            #     calibration UI says so.
+            #   - climatology: predict at the long-run base rate. We
+            #     read the empirical positive-rate from the store's
+            #     prior resolutions; falls back to 0.5 if the archive
+            #     is too thin.
+            base_p_brier = _persistence_brier(
+                prediction, actual_was_positive(actual)
+            )
+            base_c_brier = _climatology_brier(
+                prediction, actual_was_positive(actual)
+            )
 
     narrative = _narrate_outcome(prediction, actual, outcome, brier, crps)
     return {

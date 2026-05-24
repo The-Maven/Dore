@@ -41,6 +41,48 @@ def test_brier_climatology_baseline():
     assert brier_score_binary(0.5, False) == 0.25
 
 
+def test_normalised_miss_distance_is_zero_on_perfect_call():
+    """Continuous-forecast band-distance scoring: a perfect point
+    estimate scores 0 regardless of band width."""
+    from sca.movement.resolve import normalised_miss_distance
+    assert normalised_miss_distance(5.0, 5.0, 1.0, 2.0, 3.0) == 0.0
+
+
+def test_normalised_miss_distance_scales_with_band():
+    """An identical absolute error should score lower against a wider
+    forecast — wider bands explicitly say 'we expect noise', so a
+    given miss is less of a failure."""
+    from sca.movement.resolve import normalised_miss_distance
+    tight = normalised_miss_distance(0.0, 1.0, 0.3, 0.5, 0.8)
+    wide = normalised_miss_distance(0.0, 1.0, 1.5, 2.5, 4.0)
+    assert tight > wide  # same error, smaller band = bigger relative miss
+
+
+def test_persistence_baseline_returns_none_when_no_history():
+    """The honest persistence baseline must report None (not 0.25)
+    when there's no prior data to anchor on — better a missing column
+    than a meaningless one."""
+    from sca.movement.resolve import _persistence_brier
+    pred = {
+        "symbol": "USDC", "kind": "net_flow_direction",
+        "horizon_minutes": 60,
+        "made_at": "2026-05-24T12:00:00+00:00",
+    }
+    # No snapshots in store — _persistence_brier must return None
+    assert _persistence_brier(pred, True) is None
+
+
+def test_climatology_baseline_falls_back_to_half_when_thin():
+    """With fewer than 5 prior resolutions the climatology baseline
+    falls back to 50/50 (honest 'we have no rate to read')."""
+    from sca.movement.resolve import _climatology_brier
+    pred = {"symbol": "USDC", "kind": "net_flow_direction"}
+    # Empty archive → fallback
+    score = _climatology_brier(pred, True)
+    # Brier(0.5, 1) = 0.25
+    assert abs(score - 0.25) < 1e-9
+
+
 def test_outcome_band_walks_from_tight_to_wide():
     """Actual inside p50 -> 'inside_p50'; only inside p80 ->
     'inside_p80'; etc. Each band wins over wider ones."""

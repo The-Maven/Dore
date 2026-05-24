@@ -6777,9 +6777,10 @@ function simCalibrationPanel(calibration) {
       simCalMetric('BRIER (model)', c.brier_mean,
         'Lower is better. Range [0,1].'),
       simCalMetric('BRIER (climatology)', c.baseline_climatology_brier_mean,
-        'Baseline: always-50/50 forecast.'),
+        'Baseline: empirical base rate (falls back to 50/50 ' +
+        'when archive is thin).'),
       simCalMetric('BRIER (persistence)', c.baseline_persistence_brier_mean,
-        'Baseline: forecast = last seen.'),
+        'Baseline: forecast = last observed direction.'),
       simCalMetric('CRPS (model)', c.crps_mean,
         'Continuous Ranked Probability Score.')),
     simReliabilityBins(c.reliability_bins || []),
