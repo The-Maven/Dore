@@ -99,6 +99,59 @@ def _cache_entry_current(entry: dict, today: date) -> bool:
     return when.year == today.year and when.month == today.month
 
 
+# ── Within-month validation ────────────────────────────────────────
+# The calendar-month cache rule guarantees re-probing at month roll-over.
+# It does NOT catch the case where Paxos publishes their next monthly
+# report early in the month (say, mid-month, before the calendar rolls).
+# The validator runs once per cached entry per cooldown window: it
+# probes next month's URL pattern; if it returns 200, we upgrade.
+
+_PAXOS_VALIDATION_COOLDOWN_HOURS = 12
+
+
+def _paxos_should_validate(entry: dict) -> bool:
+    """True if this cached Paxos entry hasn't been validated within the
+    cooldown. Falls back to resolved_at when validated_at is missing —
+    a freshly-discovered URL is effectively validated."""
+    from datetime import datetime as _dt, timezone as _tz
+    last = entry.get("validated_at")
+    if last:
+        try:
+            when = _dt.fromisoformat(last.replace("Z", "+00:00"))
+            age_h = (_dt.now(_tz.utc) - when).total_seconds() / 3600
+            return age_h >= _PAXOS_VALIDATION_COOLDOWN_HOURS
+        except (ValueError, AttributeError):
+            pass
+    resolved = entry.get("resolved_at")
+    if resolved:
+        try:
+            when_d = date.fromisoformat(resolved)
+            age_h = (date.today() - when_d).days * 24
+            return age_h >= _PAXOS_VALIDATION_COOLDOWN_HOURS
+        except ValueError:
+            pass
+    return True
+
+
+def _validate_paxos_currency(symbol: str, today: date) -> str | None:
+    """Probe the next-publication-month URL for `symbol`. Returns the
+    new URL if a newer report has dropped early, else None.
+
+    Cheap: one HEAD probe. Designed for the case where the calendar
+    cache is still 'current' but Paxos has published the next month
+    ahead of the month roll. Without this, we'd serve last month's
+    report for up to ~30 days longer than needed."""
+    # Next publication month = today's month + 1 (publication month MM
+    # contains the report dated MM-1 per Paxos's URL convention)
+    if today.month == 12:
+        next_pub = date(today.year + 1, 1, 1)
+    else:
+        next_pub = date(today.year, today.month + 1, 1)
+    url, _ = _candidate_url(symbol, next_pub)
+    status = _probe(url)
+    return url if status == 200 else None
+
+
 # ── URL construction ──────────────────────────────────────────────────
 def _candidate_url(symbol: str, publication: date) -> tuple[str, str]:
     """Build the (url, attestation_month) for a given publication month.
@@ -221,6 +274,43 @@ def resolve_paxos_attestation_url(symbol: str) -> str | None:
     cache = _load_cache()
     entry = cache.get(symbol_u)
     if entry and entry.get("url") and _cache_entry_current(entry, today):
+        # Validate against the issuer if we haven't checked recently.
+        # Catches the case where Paxos publishes the next monthly
+        # report ahead of the calendar roll (the cache would otherwise
+        # hold last month's report for the rest of the calendar month).
+        if _paxos_should_validate(entry):
+            from datetime import datetime as _dt, timezone as _tz
+            newer = _validate_paxos_currency(symbol_u, today)
+            now_iso = _dt.now(_tz.utc).isoformat(timespec="seconds")
+            entry["validated_at"] = now_iso
+            if newer and newer != entry["url"]:
+                log_event(
+                    "paxos.resolver.upgraded",
+                    symbol=symbol_u,
+                    cached_url=entry["url"],
+                    newer_url=newer,
+                )
+                from sca.tools.attestation_fetch import _record_override
+                # Compute the attestation_month of the new URL (the
+                # publication-month logic in _candidate_url: pub MM
+                # contains the report dated MM-1).
+                pub_month = (today.month % 12) + 1
+                pub_year = today.year + (1 if today.month == 12 else 0)
+                att_month_n = today.month
+                att_year_n = today.year
+                cache[symbol_u] = {
+                    "url": newer,
+                    "attestation_month": f"{att_year_n:04d}-{att_month_n:02d}",
+                    "resolved_at": today.isoformat(),
+                    "validated_at": now_iso,
+                }
+                _save_cache(cache)
+                # Write through the store as an auto_validate override
+                # so the central pipeline picks up the new URL too.
+                _record_override(symbol_u, newer, "auto_validate")
+                return newer
+            cache[symbol_u] = entry
+            _save_cache(cache)
         log_event(
             "paxos.resolver.hit",
             symbol=symbol_u,
