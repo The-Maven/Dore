@@ -5815,53 +5815,40 @@ function renderMarket(data, mount) {
     mount.append(marketHeroFallback(data.summary, data.computed_at));
   }
 
-  // ═══════════════════════════════════════════════════════════════════
-  // PANEL 01 — SUPPLY CONCENTRATION
-  // ═══════════════════════════════════════════════════════════════════
+  // Per-panel LLM insights, when the brief returned them. Each insight
+  // replaces the templated lede in its panel so a refresh genuinely
+  // re-surfaces fresh analytical reads, not a hardcoded paragraph.
+  const insights = (data.brief && data.brief.panel_insights) || {};
+
   mount.append(panel('01',
     'SUPPLY CONCENTRATION · WHO HOLDS THE MARKET',
     'i-supply',
-    concentrationPanel(data)));
+    concentrationPanel(data, insights.concentration)));
 
-  // ═══════════════════════════════════════════════════════════════════
-  // PANEL 02 — BACKING-MODEL MIX
-  // ═══════════════════════════════════════════════════════════════════
   mount.append(panel('02',
     'WHAT BACKS THE SUPPLY · BY MODEL',
     'i-doc',
-    backingModelPanel(data)));
+    backingModelPanel(data, insights.backing)));
 
-  // ═══════════════════════════════════════════════════════════════════
-  // PANEL 03 — VERIFICATION HEALTH
-  // ═══════════════════════════════════════════════════════════════════
   mount.append(panel('03',
     'VERIFICATION HEALTH · ATTESTATION COVERAGE',
     'i-gate',
-    verificationHealthPanel(data)));
+    verificationHealthPanel(data, insights.verification)));
 
-  // ═══════════════════════════════════════════════════════════════════
-  // PANEL 04 — DRIFT LEADERBOARD
-  // ═══════════════════════════════════════════════════════════════════
   mount.append(panel('04',
     'SUPPLY DRIFT · ON-CHAIN VS LAST ATTESTATION',
     'i-metric',
-    driftPanel(data)));
+    driftPanel(data, insights.drift)));
 
-  // ═══════════════════════════════════════════════════════════════════
-  // PANEL 05 — PER-CHAIN MAP
-  // ═══════════════════════════════════════════════════════════════════
   mount.append(panel('05',
     'WHERE THE SUPPLY LIVES · BY CHAIN',
     'i-chain',
-    chainMapPanel(data)));
+    chainMapPanel(data, insights.chains)));
 
-  // ═══════════════════════════════════════════════════════════════════
-  // PANEL 06 — RECENT SIGNALS
-  // ═══════════════════════════════════════════════════════════════════
   mount.append(panel('06',
     'RECENT SIGNALS · CORPUS + DISCOVERY',
     'i-frame',
-    recentSignalsPanel(data)));
+    recentSignalsPanel(data, insights.signals)));
 
   // Foot — provenance + jump-off
   mount.append(el('div', { class: 'mkt-foot' },
@@ -5947,15 +5934,18 @@ function mktHeroStat(value, label, prefix) {
 }
 
 // ─── PANEL 01 — concentration ────────────────────────────────────────
-function concentrationPanel(data) {
+function concentrationPanel(data, llmInsight) {
   const c = data.concentration;
   const issuers = data.by_issuer;
-  // Editorial lede above the data.
-  const lede = el('p', { class: 'mkt-lede' },
-    'Three issuers hold ', el('b', {}, c.top3_share_pct.toFixed(1) + '%'),
-    ' of the tracked supply; five hold ', el('b', {}, c.top5_share_pct.toFixed(1) + '%'),
-    '. The Herfindahl index is ', el('b', {}, c.hhi.toFixed(2)),
-    ' — anything above 0.25 reads as a heavily concentrated market.');
+  // Editorial lede: prefer the LLM's analytical read; fall back to the
+  // templated narrative so the panel always carries a connective line.
+  const lede = llmInsight
+    ? marketInsightLede(llmInsight)
+    : el('p', { class: 'mkt-lede' },
+        'Three issuers hold ', el('b', {}, c.top3_share_pct.toFixed(1) + '%'),
+        ' of the tracked supply; five hold ', el('b', {}, c.top5_share_pct.toFixed(1) + '%'),
+        '. The Herfindahl index is ', el('b', {}, c.hhi.toFixed(2)),
+        ', anything above 0.25 reads as a heavily concentrated market.');
 
   // Horizontal stacked bar with the top issuers + an "other" segment.
   const segments = [];
@@ -5999,18 +5989,20 @@ function concentrationPanel(data) {
 }
 
 // ─── PANEL 02 — backing-model mix ────────────────────────────────────
-function backingModelPanel(data) {
+function backingModelPanel(data, llmInsight) {
   const models = data.by_backing_model;
   const fiat = models.find((m) => m.model === 'fiat_reserves');
   const fiatPct = fiat ? fiat.share_pct : 0;
-  const lede = el('p', { class: 'mkt-lede' },
-    fiat ? [
-      'Fiat-reserve tokens carry ',
-      el('b', {}, fiatPct.toFixed(1) + '%'),
-      ' of the tracked supply. The rest is split between on-chain '
-      + 'collateralized, synthetic delta-neutral, and algorithmic '
-      + 'designs — each with a different attestation contract.',
-    ] : 'Backing-model mix across every tracked stablecoin.');
+  const lede = llmInsight
+    ? marketInsightLede(llmInsight)
+    : el('p', { class: 'mkt-lede' },
+        fiat ? [
+          'Fiat-reserve tokens carry ',
+          el('b', {}, fiatPct.toFixed(1) + '%'),
+          ' of the tracked supply. The rest is split between on-chain '
+          + 'collateralized, synthetic delta-neutral, and algorithmic '
+          + 'designs, each with a different attestation contract.',
+        ] : 'Backing-model mix across every tracked stablecoin.');
   const cards = models.map((m) => {
     const cls = ({
       fiat_reserves: 'bk-fiat',
@@ -6036,20 +6028,22 @@ function backingModelPanel(data) {
 }
 
 // ─── PANEL 03 — verification health ──────────────────────────────────
-function verificationHealthPanel(data) {
+function verificationHealthPanel(data, llmInsight) {
   const h = data.verification_health;
   const s = data.summary;
   const fiatTotal = s.verified_count + s.stale_count + s.blocked_count;
-  const lede = el('p', { class: 'mkt-lede' },
-    el('b', {}, s.verified_count + ' of ' + fiatTotal),
-    ' fiat tokens have a resolved attestation right now. ',
-    s.stale_count > 0 ? [el('b', {}, String(s.stale_count)),
-      ' are stale (last canary run > 24h ago); '] : null,
-    s.blocked_count > 0 ? [el('b', {}, String(s.blocked_count)),
-      ' are blocked behind JavaScript-rendered issuer pages and '
-      + 'fall back to the AI Context (see AGENTS.md). '] : null,
-    el('b', {}, String(s.by_design_count)),
-    ' non-fiat tokens have no CPA attestation by design.');
+  const lede = llmInsight
+    ? marketInsightLede(llmInsight)
+    : el('p', { class: 'mkt-lede' },
+        el('b', {}, s.verified_count + ' of ' + fiatTotal),
+        ' fiat tokens have a resolved attestation right now. ',
+        s.stale_count > 0 ? [el('b', {}, String(s.stale_count)),
+          ' are stale (last canary run > 24h ago); '] : null,
+        s.blocked_count > 0 ? [el('b', {}, String(s.blocked_count)),
+          ' are blocked behind JavaScript-rendered issuer pages and '
+          + 'fall back to the AI Context (see AGENTS.md). '] : null,
+        el('b', {}, String(s.by_design_count)),
+        ' non-fiat tokens have no CPA attestation by design.');
 
   const buckets = [
     { key: 'fresh', label: 'Resolved', tone: 'good', items: h.fresh },
@@ -6073,19 +6067,23 @@ function verificationHealthPanel(data) {
 }
 
 // ─── PANEL 04 — drift leaderboard ────────────────────────────────────
-function driftPanel(data) {
+function driftPanel(data, llmInsight) {
   const rows = data.drift_leaderboard || [];
   if (!rows.length) {
     return el('div', { class: 'mkt-panel-body' },
-      el('p', { class: 'mkt-lede' },
-        'No drift readings yet. Drift appears once an attestation '
-        + 'extraction completes and we have a baseline to compare '
-        + 'on-chain supply against.'));
+      llmInsight
+        ? marketInsightLede(llmInsight)
+        : el('p', { class: 'mkt-lede' },
+            'No drift readings yet. Drift appears once an attestation '
+            + 'extraction completes and we have a baseline to compare '
+            + 'on-chain supply against.'));
   }
-  const lede = el('p', { class: 'mkt-lede' },
-    'Tokens whose on-chain supply has moved most since their last '
-    + 'attested figure. Big drift either way means the on-chain '
-    + 'picture is materially different from the audited snapshot.');
+  const lede = llmInsight
+    ? marketInsightLede(llmInsight)
+    : el('p', { class: 'mkt-lede' },
+        'Tokens whose on-chain supply has moved most since their last '
+        + 'attested figure. Big drift either way means the on-chain '
+        + 'picture is materially different from the audited snapshot.');
   const head = el('div', { class: 'mkt-drift-row mkt-drift-head' },
     el('span', {}, 'TOKEN'),
     el('span', {}, 'ATTESTED AS OF'),
@@ -6116,19 +6114,22 @@ function driftPanel(data) {
 }
 
 // ─── PANEL 05 — per-chain map ────────────────────────────────────────
-function chainMapPanel(data) {
+function chainMapPanel(data, llmInsight) {
   const rows = data.by_chain || [];
   if (!rows.length) {
     return el('div', { class: 'mkt-panel-body' },
-      el('p', { class: 'mkt-lede' },
-        'Chain breakdown unavailable.'));
+      llmInsight
+        ? marketInsightLede(llmInsight)
+        : el('p', { class: 'mkt-lede' }, 'Chain breakdown unavailable.'));
   }
   const top = rows[0];
-  const lede = el('p', { class: 'mkt-lede' },
-    el('b', {}, top.chain),
-    ' carries the largest share at ', el('b', {}, top.share_pct.toFixed(1) + '%'),
-    ' of tracked supply across ', el('b', {}, top.token_count + ' tokens'),
-    '. The full distribution:');
+  const lede = llmInsight
+    ? marketInsightLede(llmInsight)
+    : el('p', { class: 'mkt-lede' },
+        el('b', {}, top.chain),
+        ' carries the largest share at ', el('b', {}, top.share_pct.toFixed(1) + '%'),
+        ' of tracked supply across ', el('b', {}, top.token_count + ' tokens'),
+        '. The full distribution:');
   const maxPct = rows[0].share_pct || 100;
   const items = rows.map((r) => el('div', { class: 'mkt-chain-row' },
     el('div', { class: 'mkt-chain-name' },
@@ -6146,18 +6147,22 @@ function chainMapPanel(data) {
 }
 
 // ─── PANEL 06 — recent signals ───────────────────────────────────────
-function recentSignalsPanel(data) {
+function recentSignalsPanel(data, llmInsight) {
   const signals = data.recent_signals || [];
   if (!signals.length) {
     return el('div', { class: 'mkt-panel-body' },
-      el('p', { class: 'mkt-lede' },
-        'No new discovery signals in the recent window. The 6-hourly '
-        + 'canary will surface fresh items on its next sweep.'));
+      llmInsight
+        ? marketInsightLede(llmInsight)
+        : el('p', { class: 'mkt-lede' },
+            'No new discovery signals in the recent window. The 6-hourly '
+            + 'canary will surface fresh items on its next sweep.'));
   }
-  const lede = el('p', { class: 'mkt-lede' },
-    'Recent events the background discovery thread has surfaced from '
-    + 'the corpus — regulator publications, attestation drops, source '
-    + 'health flips. Each links to the underlying source.');
+  const lede = llmInsight
+    ? marketInsightLede(llmInsight)
+    : el('p', { class: 'mkt-lede' },
+        'Recent events the background discovery thread has surfaced from '
+        + 'the corpus, regulator publications, attestation drops, source '
+        + 'health flips. Each links to the underlying source.');
   const rows = signals.map((s) => el('div', { class: 'mkt-signal-row' },
     el('span', { class: 'mkt-signal-kind' },
       (s.kind || '').replace(/^.*\./, '').replace('_', ' ')),
@@ -6174,6 +6179,17 @@ function recentSignalsPanel(data) {
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────
+// LLM-composed panel insight — rendered with a small AI marker so the
+// reader knows this lede is generated, not a hardcoded paragraph. The
+// marker also visually distinguishes a fresh observation from the
+// templated fallback prose below it.
+function marketInsightLede(text) {
+  return el('p', { class: 'mkt-lede mkt-lede-llm' },
+    el('span', { class: 'mkt-lede-mark', title: 'composed by the LLM from the live market state' },
+      '◇ AI'),
+    el('span', { class: 'mkt-lede-text' }, text));
+}
+
 function fmtComposedAt(iso) {
   if (!iso) return 'just now';
   try {

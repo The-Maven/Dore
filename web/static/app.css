@@ -3297,6 +3297,39 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 .mkt-lede b { color: var(--paper); font-weight: 500; }
 
+/* LLM-composed insight lede: small gold marker + slightly indented body
+   so the reader can see at a glance that this paragraph is generated,
+   not a hardcoded template. The marker carries a tooltip explaining the
+   provenance. Italics is intentional — signals "narrative", not "data". */
+.mkt-lede-llm {
+  display: flex; gap: 12px; align-items: baseline;
+  padding-left: 0;
+  position: relative;
+}
+.mkt-lede-mark {
+  flex: none;
+  display: inline-flex; align-items: center; gap: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px; letter-spacing: .12em;
+  color: var(--gold);
+  padding: 2px 7px 2px 6px;
+  border: 1px solid rgba(212,162,74,.35);
+  border-radius: 1px;
+  text-transform: uppercase;
+  cursor: help;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.mkt-lede-text {
+  flex: 1; min-width: 0;
+  color: var(--paper);
+  font-style: italic;
+  line-height: 1.6;
+}
+@media (max-width: 600px) {
+  .mkt-lede-llm { flex-direction: column; gap: 6px; }
+}
+
 /* ── PANEL 01 stacked bar + issuer list ────────────────────────────── */
 .mkt-stacked-bar {
   display: flex; height: 36px;
@@ -3627,3 +3660,72 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   .mkt-chain-count { display: none; }
   .mkt-signal-row { grid-template-columns: 1fr; gap: 4px; }
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   DISPLAY-TEXT READABILITY HEAL — research findings:
+   1. Bodoni Moda is a high-stroke-contrast modern serif. At ≥24px on
+      dark backgrounds its hairlines vanish into the screen. Bump weight
+      from 600 to 700 on display headlines; the opsz axis still scales
+      strokes per size.
+   2. Tight negative letter-spacing (-.01em / -.005em) works in print
+      but crowds glyphs on screen; reset to 0 on display sizes.
+   3. Pure-white text on near-black creates halation on giant numbers;
+      a slightly softened paper colour (~6% darker, still 14:1 contrast)
+      reads cleaner without losing AAA compliance.
+   4. font-variant-numeric: lining-nums tabular-nums explicit on giant
+      numerical displays so figures sit on consistent baselines.
+   5. text-rendering: optimizeLegibility on the biggest display rules
+      enables kerning + ligatures at the cost of paint speed; fine for
+      a handful of headline elements.
+   ════════════════════════════════════════════════════════════════════ */
+:root {
+  /* Softened paper tone for displays ≥28px sitting on solid ink.
+     0.97 alpha reduces halation on giant numbers without crossing
+     into washed-out territory. Still well past AAA contrast against
+     #0A0B0E. NOT applied to headlines on tinted hero backgrounds —
+     they need full paper opacity to read against the gold wash. */
+  --paper-display: rgba(239, 234, 224, 0.97);
+}
+
+/* Bodoni hero/brief display heads — heavier weight + relaxed tracking.
+   Colour stays at full --paper because these sit on tinted backgrounds
+   where any alpha reduction reads as washed-out. */
+.brief-headline {
+  font-weight: 700;
+  letter-spacing: 0;
+  text-rendering: optimizeLegibility;
+}
+.mkt-hero-head {
+  font-weight: 700;
+  letter-spacing: 0;
+  text-rendering: optimizeLegibility;
+}
+.cp-doc-title {
+  font-weight: 700;
+  letter-spacing: 0;
+  text-rendering: optimizeLegibility;
+}
+
+/* Giant numerical displays — explicit lining tabular + slight softened
+   tone + loosened tracking. These sit on solid panel backgrounds where
+   the small alpha reduction quiets halation cleanly. */
+.mkt-stat-val,
+.mkt-model-share,
+.mkt-health-count,
+.cov-big {
+  font-variant-numeric: lining-nums tabular-nums;
+  color: var(--paper-display);
+  letter-spacing: 0;
+  text-rendering: optimizeLegibility;
+}
+/* mcell-val and strip-val are smaller but share the same screen-glare
+   pattern when they carry big dollar figures. Use lining-nums but keep
+   the original full-paper tone since they sit under panel chrome. */
+.mcell-val,
+.strip-val {
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+/* Inter Tight is generally robust at display sizes, but bumping weight
+   on the hero strip stat values matches the new Bodoni weight visually. */
+.mkt-stat-val { font-weight: 700; }

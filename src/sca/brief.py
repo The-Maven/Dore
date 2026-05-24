@@ -39,7 +39,7 @@ class AiBrief:
     """Editorial brief at the top of a view. Stays distinct from a
     deterministic figure — the UI must render it under a clearly-tagged
     'DORÉ BRIEF' header so an auditor can never confuse it with a check."""
-    surface: str            # 'analyze' | 'sanctions' | 'redemption'
+    surface: str            # 'analyze' | 'sanctions' | 'redemption' | 'market'
     symbol: str
     headline: str           # one-line bottom-line, e.g. "USDC: fully backed, screening clean, multi-chain supply corroborated"
     key_points: list[str] = field(default_factory=list)
@@ -47,6 +47,10 @@ class AiBrief:
     citations: list[str] = field(default_factory=list)
     confidence: str = "training-data-only"
     generated_at: str = ""
+    # Per-panel analytical observations (market surface only). Empty
+    # on per-token briefs. Keyed by panel slug; the frontend renders
+    # each as the editorial lede above the matching panel's data.
+    panel_insights: dict[str, str] = field(default_factory=dict)
 
 
 _BRIEF_SCHEMA = {
@@ -293,11 +297,11 @@ def generate_brief(
         except json.JSONDecodeError:
             return None
 
-    headline = (data.get("headline") or "").strip()
+    headline = _strip_em_dashes((data.get("headline") or "").strip())
     if not headline:
         return None
     key_points = [
-        p.strip() for p in (data.get("key_points") or [])
+        _strip_em_dashes(p.strip()) for p in (data.get("key_points") or [])
         if isinstance(p, str) and p.strip()
     ]
     # The LLM returns indices into news_candidates — resolve to dicts.
@@ -333,6 +337,22 @@ def generate_brief(
     )
 
 
+def _strip_em_dashes(text: str) -> str:
+    """LLMs ignore the voice rule occasionally. Replace em / en dashes
+    with a comma + space so the user-facing copy honours the project's
+    no-em-dash rule regardless. Standalone hyphen-minus is preserved
+    (numeric ranges, compound adjectives)."""
+    if not text:
+        return text
+    # Em dash (U+2014) → ", "; en dash (U+2013) used as a separator
+    # similarly. Collapse any double spaces the substitution introduces.
+    out = text.replace(" — ", ", ").replace("—", ", ")
+    out = out.replace(" – ", ", ").replace("–", ", ")
+    while "  " in out:
+        out = out.replace("  ", " ")
+    return out
+
+
 def _passage_url(p: CorpusPassage) -> str:
     """Resolve the source URL for a passage, via the source registry."""
     try:
@@ -357,6 +377,23 @@ _MARKET_BRIEF_SCHEMA = {
             "type": "array",
             "items": {"type": "integer"},
         },
+        # Per-panel observations. Each is a 1-2 sentence specific
+        # analytical read of THIS slice of the data, not a summary.
+        # The frontend renders each as the editorial lede above the
+        # corresponding panel's data, replacing a hardcoded template.
+        # All keys optional — the panel falls back to its template
+        # when the LLM omits an insight.
+        "panel_insights": {
+            "type": "object",
+            "properties": {
+                "concentration": {"type": "string"},
+                "backing": {"type": "string"},
+                "verification": {"type": "string"},
+                "drift": {"type": "string"},
+                "chains": {"type": "string"},
+                "signals": {"type": "string"},
+            },
+        },
     },
     "required": ["headline", "key_points"],
 }
@@ -365,7 +402,8 @@ _MARKET_BRIEF_SCHEMA = {
 def _market_system_prompt() -> str:
     return (
         "You are writing the DORÉ MARKET BRIEF: a single editorial "
-        "paragraph at the top of a cross-token market overview page. "
+        "paragraph at the top of a cross-token market overview page, "
+        "plus a one-line analytical observation per panel beneath. "
         "Audience: a financial reader (analyst, compliance lead, fund "
         "treasurer) who wants the state of the stablecoin market in 5 "
         "seconds.\n\n"
@@ -386,10 +424,31 @@ def _market_system_prompt() -> str:
         "indices of items that genuinely shape the market view (a "
         "regulator action, a standard publication, an issuer event "
         "with cross-market read-through). Return [] if nothing fits.\n"
-        "  6. Return strict JSON matching the schema.\n"
-        "  7. Headlines and bullets should read at financial-product "
-        "copy quality, not as a status report.\n"
-        "  8. VOICE: never use em dashes. Commas, periods, or colons. "
+        "  6. PANEL_INSIGHTS: 1-2 sentence specific observations for "
+        "each panel slice — NOT summaries of the data, INSIGHTS the "
+        "data supports. Surface what is unusual, what concentrates, "
+        "what shifts. Each insight must name concrete numbers or "
+        "tokens from the facts block. Tone: a sharp analyst writing "
+        "for peers, not a dashboard caption. Required panels:\n"
+        "       - concentration: read of the issuer-concentration "
+        "         picture (HHI, top-3 share, what this means).\n"
+        "       - backing: read of the backing-model mix and what "
+        "         it implies for verification surface area.\n"
+        "       - verification: read of the attestation coverage gap "
+        "         (who's blocked, what's stale, what concentrates).\n"
+        "       - drift: read of the supply-vs-attestation gap (which "
+        "         tokens, how stale, what direction).\n"
+        "       - chains: read of the chain distribution (which chain "
+        "         carries the load, single-chain concentration risk).\n"
+        "       - signals: brief read of the recent corpus events "
+        "         (most material item; return empty string if none).\n"
+        "     Each insight is 1-2 sentences MAX. If a panel's data is "
+        "thin or empty (e.g. no drift readings yet), the insight can "
+        "be a candid note about that gap rather than padding.\n"
+        "  7. Return strict JSON matching the schema.\n"
+        "  8. Headlines, bullets, and insights should read at "
+        "financial-product copy quality, not as a status report.\n"
+        "  9. VOICE: never use em dashes. Commas, periods, or colons. "
         "Avoid 'leverage', 'ecosystem', 'journey', 'transformation', "
         "'holistic'. Present-tense, declarative.\n"
     )
@@ -434,11 +493,11 @@ def generate_market_brief(
         except json.JSONDecodeError:
             return None
 
-    headline = (data.get("headline") or "").strip()
+    headline = _strip_em_dashes((data.get("headline") or "").strip())
     if not headline:
         return None
     key_points = [
-        p.strip() for p in (data.get("key_points") or [])
+        _strip_em_dashes(p.strip()) for p in (data.get("key_points") or [])
         if isinstance(p, str) and p.strip()
     ]
     relevant_news: list[dict] = []
@@ -460,6 +519,19 @@ def generate_market_brief(
             if url:
                 cites.append(url)
 
+    # Per-panel insights — optional, keyed by panel slug. We accept any
+    # of the documented keys (concentration, backing, verification,
+    # drift, chains, signals); strip empties so the frontend can use
+    # `if insight:` without surfacing whitespace blanks. Em-dashes
+    # slip through the voice rule sometimes; post-process them out so
+    # the surface holds the project voice regardless.
+    panel_insights: dict[str, str] = {}
+    raw_insights = data.get("panel_insights") or {}
+    if isinstance(raw_insights, dict):
+        for k, v in raw_insights.items():
+            if isinstance(v, str) and v.strip():
+                panel_insights[k] = _strip_em_dashes(v.strip())
+
     from datetime import datetime, timezone
     return AiBrief(
         surface="market",
@@ -470,4 +542,5 @@ def generate_market_brief(
         citations=cites,
         confidence="training-data-only",
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        panel_insights=panel_insights,
     )
