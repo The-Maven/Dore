@@ -43,7 +43,20 @@ OFAC_SDN_URL = OFAC_SDN_URLS[0]
 _CACHE_DIR = config.DATA_DIR / "ofac"
 _SDN_FILE = _CACHE_DIR / "sdn.xml"
 _SDN_HASH_FILE = _CACHE_DIR / "sdn.sha256"
+# Last-Modified header captured on the most recent successful fetch.
+# Used by the within-window validator to ask Treasury "is the SDN
+# you'd give me older or same as what I already have?" via
+# If-Modified-Since. None when we've never captured one.
+_SDN_LASTMOD_FILE = _CACHE_DIR / "sdn.last_modified"
+# ISO timestamp of the most recent validation event (HEAD probe that
+# confirmed the cached SDN is current OR a full re-fetch). Distinct
+# from the file mtime, which only moves on a re-fetch.
+_SDN_VALIDATED_FILE = _CACHE_DIR / "sdn.validated_at"
 _MAX_AGE_SECONDS = 86_400  # refresh the SDN list daily
+# Within the daily-refresh window, validate via If-Modified-Since at
+# most once per cooldown so a sanctions screen doesn't hammer
+# Treasury on every call.
+_SDN_VALIDATION_COOLDOWN_S = 1800  # 30 minutes
 
 _parsed: "SdnList | None" = None
 _parsed_mtime: float = 0.0
@@ -67,13 +80,114 @@ class SanctionsUnavailable(RuntimeError):
     """The OFAC SDN list could not be fetched or parsed."""
 
 
+def _sdn_should_validate() -> bool:
+    """True if the cached SDN hasn't been validated against Treasury
+    within the cooldown. Falls back to file mtime when no validation
+    timestamp exists (fresh fetch is effectively validated)."""
+    try:
+        if _SDN_VALIDATED_FILE.exists():
+            last = float(_SDN_VALIDATED_FILE.read_text().strip())
+            return (time.time() - last) >= _SDN_VALIDATION_COOLDOWN_S
+    except (OSError, ValueError):
+        pass
+    if _SDN_FILE.exists():
+        return (time.time() - _SDN_FILE.stat().st_mtime) >= _SDN_VALIDATION_COOLDOWN_S
+    return True
+
+
+def _mark_sdn_validated() -> None:
+    """Record a successful validation event (cache confirmed current
+    by Treasury OR a full re-fetch). Distinct from the file mtime."""
+    try:
+        from sca.persist import atomic_write_text
+        atomic_write_text(_SDN_VALIDATED_FILE, str(time.time()))
+    except Exception:  # noqa: BLE001
+        pass  # validation tracking is best-effort, never blocks the sweep
+
+
+def _validate_sdn_against_treasury() -> str | None:
+    """HEAD-probe Treasury with If-Modified-Since to ask whether the
+    cached SDN is current. Returns:
+      "current"   → Treasury says nothing newer; bump validated_at
+      "updated"   → Treasury reports a newer Last-Modified; caller
+                    should re-fetch
+      None        → probe failed (no network, 5xx, etc.); caller
+                    serves cache silently
+
+    Defensive: even if the server ignores If-Modified-Since and
+    returns 200, we compare the returned Last-Modified header against
+    what we have stored. Different = updated; same = current. That way
+    a CDN that doesn't honour conditional requests doesn't cause us
+    to re-download the full SDN every 30 minutes."""
+    if not _SDN_LASTMOD_FILE.exists():
+        # No stored Last-Modified — can't ask the conditional
+        # question. Tell the caller to do a full fetch path.
+        return "updated"
+    try:
+        prior = _SDN_LASTMOD_FILE.read_text().strip()
+    except OSError:
+        return "updated"
+    if not prior:
+        return "updated"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "If-Modified-Since": prior,
+    }
+    for url in OFAC_SDN_URLS:
+        try:
+            resp = requests.head(
+                url, timeout=15, allow_redirects=True, headers=headers,
+            )
+        except requests.RequestException as exc:
+            log_event(
+                "sdn.validator.head_failed", level="info",
+                endpoint=url, error_class=type(exc).__name__,
+                error_message=str(exc)[:160],
+            )
+            continue
+        if resp.status_code == 304:
+            log_event("sdn.validator.unchanged_304", level="info",
+                      endpoint=url, last_modified=prior)
+            return "current"
+        if resp.status_code == 200:
+            # CDN may have ignored If-Modified-Since. Compare headers.
+            new_lm = resp.headers.get("Last-Modified", "").strip()
+            if new_lm and new_lm == prior:
+                log_event("sdn.validator.unchanged_lastmod", level="info",
+                          endpoint=url, last_modified=prior)
+                return "current"
+            log_event("sdn.validator.updated", level="info",
+                      endpoint=url, prior=prior, new=new_lm)
+            return "updated"
+        # any other status — try next mirror
+    return None
+
+
 def _ensure_sdn_file(*, refresh: bool = False) -> Path:
     fresh = (
         _SDN_FILE.exists()
         and time.time() - _SDN_FILE.stat().st_mtime < _MAX_AGE_SECONDS
     )
+    # Within the daily-refresh window, validate against Treasury if we
+    # haven't probed recently. Catches OFAC publishing more than once
+    # in 24h (they sometimes drop multiple lists per day on enforcement
+    # actions). The hot path is gated by a 30min cooldown so a burst
+    # of sanctions screens doesn't hammer Treasury.
     if fresh and not refresh:
-        return _SDN_FILE
+        if _sdn_should_validate():
+            verdict = _validate_sdn_against_treasury()
+            if verdict == "current":
+                _mark_sdn_validated()
+                return _SDN_FILE
+            if verdict == "updated":
+                # Treasury reports a newer file — fall through to the
+                # re-fetch block below (force a fresh download).
+                refresh = True
+            # verdict is None: probe failed, serve cache silently
+            else:
+                return _SDN_FILE
+        else:
+            return _SDN_FILE
 
     # Try each Treasury URL in order. First success wins; on any failure we
     # rotate. If they all fail and we have a cached copy, we use it but
@@ -106,9 +220,17 @@ def _ensure_sdn_file(*, refresh: bool = False) -> Path:
         atomic_write_bytes(_SDN_FILE, resp.content)
         sha = hashlib.sha256(resp.content).hexdigest()
         atomic_write_text(_SDN_HASH_FILE, sha)
+        # Persist the Last-Modified header so the next within-window
+        # validation can ask conditionally instead of re-fetching the
+        # whole file. Mark this fetch as a validation event too.
+        last_mod = resp.headers.get("Last-Modified", "").strip()
+        if last_mod:
+            atomic_write_text(_SDN_LASTMOD_FILE, last_mod)
+        _mark_sdn_validated()
         log_event(
             "sdn.fetch.ok", level="info",
             endpoint=url, sha256=sha, bytes=len(resp.content),
+            last_modified=last_mod,
         )
         return _SDN_FILE
 
