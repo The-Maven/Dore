@@ -61,6 +61,14 @@ class FileStore(Store):
         self._peg_ticks: list[dict] = []
         self._predictions: list[dict] = []
         self._resolutions: list[dict] = []
+        # Audit #8: protect concurrent append + iterate on the
+        # in-memory archives. RLock so unresolved_predictions can
+        # read _resolutions inside a held lock without deadlock.
+        # SupabaseStore enforces consistency at the DB; this only
+        # matters for the FileStore (tests + offline dev + the
+        # background ticker + resolver running in one process).
+        import threading
+        self._sim_lock = threading.RLock()
 
     # ── votes.yaml helpers (mirror sca.votes) ─────────────────────────
     _SECTIONS = ("source_decisions", "address_decisions")
@@ -477,19 +485,23 @@ class FileStore(Store):
         self, *, symbol: str, source: str,
         price: float, deviation_bps: float,
     ) -> None:
-        self._peg_ticks.append({
+        row = {
             "id": str(uuid.uuid4()),
             "symbol": symbol,
             "source": source,
             "price": price,
             "deviation_bps": deviation_bps,
             "read_at": _now(),
-        })
+        }
+        with self._sim_lock:
+            self._peg_ticks.append(row)
 
     def list_peg_ticks(
         self, symbol: str, *, limit: int = 200,
     ) -> list[dict]:
-        rows = [t for t in self._peg_ticks if t["symbol"] == symbol]
+        with self._sim_lock:
+            snapshot = list(self._peg_ticks)
+        rows = [t for t in snapshot if t["symbol"] == symbol]
         rows.sort(key=lambda r: r["read_at"], reverse=True)
         return [dict(r) for r in rows[:limit]]
 
@@ -503,14 +515,16 @@ class FileStore(Store):
         row.setdefault("made_at", _now())
         row.setdefault("drivers", [])
         row.setdefault("notes", "")
-        self._predictions.append(row)
+        with self._sim_lock:
+            self._predictions.append(row)
         return row["id"]
 
     def list_predictions(
         self, *, symbol: str | None = None, kind: str | None = None,
         limit: int = 200,
     ) -> list[dict]:
-        rows = list(self._predictions)
+        with self._sim_lock:
+            rows = list(self._predictions)
         if symbol is not None:
             rows = [r for r in rows if r.get("symbol") == symbol]
         if kind is not None:
@@ -521,11 +535,15 @@ class FileStore(Store):
     def unresolved_predictions(
         self, *, before_ts: str | None = None, limit: int = 500,
     ) -> list[dict]:
-        # Build a set of prediction_ids that already have resolutions.
-        resolved = {r.get("prediction_id") for r in self._resolutions}
+        # Snapshot both lists under one lock so a resolutions write
+        # between the two reads can't make us double-count a
+        # prediction as unresolved AND already-resolved.
+        with self._sim_lock:
+            resolved = {r.get("prediction_id") for r in self._resolutions}
+            predictions_snapshot = list(self._predictions)
         cutoff = before_ts or _now()
         rows = [
-            r for r in self._predictions
+            r for r in predictions_snapshot
             if r.get("id") not in resolved
             and r.get("resolves_at", "") <= cutoff
         ]
@@ -540,22 +558,29 @@ class FileStore(Store):
         row.setdefault("narrative", "")
         # Enforce 1:1 with predictions like the SQL unique constraint
         # — a second resolution for the same prediction_id is dropped
-        # silently so the calibration archive stays clean.
+        # silently so the calibration archive stays clean. The check
+        # + append happen under one lock so two threads racing to
+        # grade the same prediction can't both succeed.
         prediction_id = row.get("prediction_id")
-        if prediction_id is not None and any(
-            r.get("prediction_id") == prediction_id for r in self._resolutions
-        ):
-            return ""
-        self._resolutions.append(row)
+        with self._sim_lock:
+            if prediction_id is not None and any(
+                r.get("prediction_id") == prediction_id
+                for r in self._resolutions
+            ):
+                return ""
+            self._resolutions.append(row)
         return row["id"]
 
     def list_resolutions(
         self, *, symbol: str | None = None, kind: str | None = None,
         limit: int = 200,
     ) -> list[dict]:
-        by_pred = {r["id"]: r for r in self._predictions if "id" in r}
+        with self._sim_lock:
+            preds_snapshot = list(self._predictions)
+            res_snapshot = list(self._resolutions)
+        by_pred = {r["id"]: r for r in preds_snapshot if "id" in r}
         out = []
-        for res in self._resolutions:
+        for res in res_snapshot:
             pred = by_pred.get(res.get("prediction_id"))
             if pred is None:
                 continue

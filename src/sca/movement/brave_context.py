@@ -114,6 +114,42 @@ def _save_quota(quota: dict) -> None:
         pass
 
 
+def _increment_quota_atomically() -> int:
+    """Audit #12: read → +1 → write the quota as an atomic
+    file-locked operation so two uvicorn workers can't both read
+    199, fetch, and write 200 (burning two calls counted as one).
+    Uses fcntl.flock on a sibling lock file; on platforms without
+    fcntl (Windows dev), falls back to best-effort non-atomic.
+    Returns the new call count for logging."""
+    import os
+    lock_path = str(_QUOTA_PATH) + ".lock"
+    try:
+        import fcntl
+    except ImportError:
+        # No fcntl (rare; mostly Windows). Fall back to best-effort.
+        q = _load_quota()
+        q["calls"] = int(q.get("calls", 0)) + 1
+        _save_quota(q)
+        return q["calls"]
+
+    # Open the lock file (creating it if needed) and hold an
+    # exclusive lock across read + write. The lock is released when
+    # the fd is closed.
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        q = _load_quota()
+        q["calls"] = int(q.get("calls", 0)) + 1
+        _save_quota(q)
+        return q["calls"]
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except Exception:  # noqa: BLE001
+            pass
+        os.close(fd)
+
+
 def _daily_quota() -> int:
     try:
         return int(os.environ.get(
@@ -287,10 +323,12 @@ def fetch_context_for(
             timeout=_HTTP_TIMEOUT,
         )
         # Always count the call against quota (Brave bills on request,
-        # not just on success). Increment BEFORE raising so a 429 burn
-        # still counts.
-        quota["calls"] = int(quota.get("calls", 0)) + 1
-        _save_quota(quota)
+        # not just on success). Increment ATOMICALLY (audit #12) and
+        # BEFORE raising so a 429 burn still counts. The earlier
+        # _load_quota check is best-effort; the atomic increment here
+        # is the audit trail.
+        calls_today = _increment_quota_atomically()
+        quota["calls"] = calls_today
         resp.raise_for_status()
         data = resp.json() or {}
     except Exception as exc:  # noqa: BLE001

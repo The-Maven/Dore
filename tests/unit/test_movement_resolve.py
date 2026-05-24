@@ -137,6 +137,96 @@ def test_reliability_bins_catch_miscalibrated_model():
     assert target["count"] == 200
 
 
+def test_concurrent_insert_and_resolve_no_duplicates():
+    """Audit #16.3: two threads racing — one inserts predictions,
+    the other inserts resolutions for them. The 1:1 invariant
+    (resolutions.prediction_id is unique) must hold even under
+    contention. SupabaseStore enforces it at the DB; this pins the
+    FileStore lock contract that audit #8 added."""
+    import threading
+    import uuid
+    from sca.store import get_store
+
+    store = get_store()
+    n_iterations = 200
+    prediction_ids: list[str] = []
+    insert_done = threading.Event()
+
+    def inserter():
+        for _ in range(n_iterations):
+            pid = store.insert_prediction({
+                "id": str(uuid.uuid4()),
+                "symbol": "USDC",
+                "kind": "net_flow_direction",
+                "horizon_minutes": 60,
+                "made_at": _now_iso(),
+                "resolves_at": _past_iso(1),
+                "point": 0.0, "prob_positive": 0.5,
+                "p50_low": None, "p50_high": None,
+                "p80_low": None, "p80_high": None,
+                "p95_low": None, "p95_high": None,
+                "confidence_word": "likely",
+                "drivers": [], "model": "concur_test", "notes": "",
+            })
+            prediction_ids.append(pid)
+        insert_done.set()
+
+    def resolver():
+        # Walk the inserted ids and try to resolve each TWICE; the
+        # second insert_resolution call must return "" (dropped by
+        # the unique-constraint check inside the lock).
+        seen = set()
+        while not insert_done.is_set() or len(seen) < len(prediction_ids):
+            for pid in list(prediction_ids):
+                if pid in seen:
+                    continue
+                # First grade — should succeed.
+                first = store.insert_resolution({
+                    "prediction_id": pid,
+                    "actual_value": 1.0,
+                    "brier_score": 0.25,
+                    "crps_score": None,
+                    "outcome_kind": "hit",
+                    "narrative": "",
+                    "baseline_persistence_brier": None,
+                    "baseline_climatology_brier": 0.25,
+                })
+                # Second grade — same prediction_id — must drop.
+                second = store.insert_resolution({
+                    "prediction_id": pid,
+                    "actual_value": 1.0,
+                    "brier_score": 0.25,
+                    "crps_score": None,
+                    "outcome_kind": "hit",
+                    "narrative": "",
+                    "baseline_persistence_brier": None,
+                    "baseline_climatology_brier": 0.25,
+                })
+                if first:
+                    seen.add(pid)
+                assert second == "", \
+                    f"duplicate resolution accepted for {pid}"
+
+    t_insert = threading.Thread(target=inserter)
+    t_resolve = threading.Thread(target=resolver)
+    t_insert.start()
+    t_resolve.start()
+    t_insert.join(timeout=30)
+    t_resolve.join(timeout=30)
+
+    # Final invariant: exactly N predictions, exactly N resolutions,
+    # one per prediction_id.
+    preds = store.list_predictions(symbol="USDC", limit=n_iterations + 10)
+    assert len(preds) == n_iterations
+    # Build a count map of resolutions per prediction_id directly
+    # from the store internals so we don't rely on list_resolutions'
+    # join semantics.
+    res_ids = [r["prediction_id"]
+                for r in store._resolutions]  # noqa: SLF001 - test invariant
+    assert len(res_ids) == n_iterations
+    assert len(set(res_ids)) == n_iterations  # no duplicates
+
+
 def test_climatology_baseline_falls_back_to_half_when_thin():
     """With fewer than 5 prior resolutions the climatology baseline
     falls back to 50/50 (honest 'we have no rate to read')."""
