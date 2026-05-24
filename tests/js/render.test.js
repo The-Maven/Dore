@@ -14,6 +14,8 @@ import { loadApp, makeMount } from './harness.js';
 import {
   analysisFixture, sanctionsFixture, redemptionFixture, supplyFixture,
   marketFixture,
+  simulatorStateFixture, simulatorPredictionFixture,
+  simulatorCalibrationFixture,
 } from './fixtures.js';
 
 test('renderAnalysis renders a non-empty panel for a complete fixture', () => {
@@ -121,6 +123,82 @@ test('renderMarket skips the freshness footer when freshness block is empty', ()
   assert.doesNotThrow(() => window.renderMarket(fixture, mount));
   assert.equal(mount.querySelector('.mkt-foot-fresh'), null,
     'footer should be absent when no freshness data is available');
+});
+
+test('renderSimulator renders SOTU + token panel + calibration + config', () => {
+  const { window } = loadApp();
+  const mount = window.document.createElement('div');
+  window.document.body.appendChild(mount);
+  assert.doesNotThrow(() =>
+    window.renderSimulator(
+      mount,
+      simulatorStateFixture(),
+      { predictions: [simulatorPredictionFixture()], count: 1 },
+      simulatorCalibrationFixture(),
+      '',
+    )
+  );
+  // SOTU strip is present and includes the Brave quota cell.
+  assert.ok(mount.querySelector('.sim-sotu'), 'SOTU strip should render');
+  const sotuText = mount.querySelector('.sim-sotu').textContent;
+  assert.match(sotuText, /BRAVE QUOTA/);
+  assert.match(sotuText, /12 \/ 200/);
+  // Token panel + fan chart.
+  assert.ok(mount.querySelector('.sim-token-panel'),
+    'per-token panel should render');
+  assert.ok(mount.querySelector('.fan-svg'), 'fan chart SVG should render');
+  // Judge synthesis present.
+  assert.ok(mount.querySelector('.sim-judge'), 'judge panel should render');
+  const judgeText = mount.querySelector('.sim-judge').textContent;
+  assert.match(judgeText, /SYNTHESIS/);
+  assert.match(judgeText, /3\.2bp/);
+  // Calibration page present.
+  assert.ok(mount.querySelector('.sim-calibration'),
+    'calibration page should render');
+});
+
+test('renderSimulator handles empty archive gracefully', () => {
+  const { window } = loadApp();
+  const mount = window.document.createElement('div');
+  window.document.body.appendChild(mount);
+  assert.doesNotThrow(() =>
+    window.renderSimulator(
+      mount,
+      simulatorStateFixture(),
+      { predictions: [], count: 0 },
+      { count: 0, brier_mean: null, crps_mean: null,
+        outcome_histogram: {}, reliability_bins: [],
+        baseline_persistence_brier_mean: null,
+        baseline_climatology_brier_mean: null },
+      '',
+    )
+  );
+  assert.ok(mount.querySelector('.sim-empty'),
+    'empty-state panel should render when no predictions');
+  assert.ok(mount.querySelector('.sim-calibration-empty'),
+    'empty calibration message should render');
+});
+
+test('renderSimulator absent-judge falls back to engine notes', () => {
+  const { window } = loadApp();
+  const mount = window.document.createElement('div');
+  window.document.body.appendChild(mount);
+  const pred = simulatorPredictionFixture({
+    judge_synthesis: null, judge_insight: null,
+    judge_pitch: null, judge_model: null,
+  });
+  assert.doesNotThrow(() =>
+    window.renderSimulator(
+      mount,
+      simulatorStateFixture(),
+      { predictions: [pred], count: 1 },
+      simulatorCalibrationFixture(),
+      '',
+    )
+  );
+  const judge = mount.querySelector('.sim-judge-absent');
+  assert.ok(judge, 'absent-judge fallback should render');
+  assert.match(judge.textContent, /No judge layer ran/);
 });
 
 test('renderRedemption handles crypto-collateralized (no tiers)', () => {

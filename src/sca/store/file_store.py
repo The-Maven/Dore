@@ -54,6 +54,13 @@ class FileStore(Store):
         # analyses + monitor have no on-disk equivalent: keep them in memory.
         self._analyses: dict[str, dict] = {}
         self._snapshots: list[dict] = []
+        # Movement simulator: immutable archives held in memory for the
+        # FileStore. Production runs on SupabaseStore where they hit a
+        # real table; this lets tests + offline dev exercise the same
+        # call surface end-to-end without a network.
+        self._peg_ticks: list[dict] = []
+        self._predictions: list[dict] = []
+        self._resolutions: list[dict] = []
 
     # ── votes.yaml helpers (mirror sca.votes) ─────────────────────────
     _SECTIONS = ("source_decisions", "address_decisions")
@@ -464,3 +471,195 @@ class FileStore(Store):
         rows = [s for s in self._snapshots if s["symbol"] == symbol]
         rows.sort(key=lambda r: r["read_at"], reverse=True)
         return [dict(r) for r in rows[:limit]]
+
+    # ── movement simulator: peg ticks ─────────────────────────────────
+    def insert_peg_tick(
+        self, *, symbol: str, source: str,
+        price: float, deviation_bps: float,
+    ) -> None:
+        self._peg_ticks.append({
+            "id": str(uuid.uuid4()),
+            "symbol": symbol,
+            "source": source,
+            "price": price,
+            "deviation_bps": deviation_bps,
+            "read_at": _now(),
+        })
+
+    def list_peg_ticks(
+        self, symbol: str, *, limit: int = 200,
+    ) -> list[dict]:
+        rows = [t for t in self._peg_ticks if t["symbol"] == symbol]
+        rows.sort(key=lambda r: r["read_at"], reverse=True)
+        return [dict(r) for r in rows[:limit]]
+
+    # ── movement simulator: predictions ───────────────────────────────
+    def insert_prediction(self, prediction: dict) -> str:
+        # Generate id + made_at server-side if not supplied so the
+        # archive's invariants (every row has both) hold across
+        # backends.
+        row = dict(prediction)
+        row.setdefault("id", str(uuid.uuid4()))
+        row.setdefault("made_at", _now())
+        row.setdefault("drivers", [])
+        row.setdefault("notes", "")
+        self._predictions.append(row)
+        return row["id"]
+
+    def list_predictions(
+        self, *, symbol: str | None = None, kind: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        rows = list(self._predictions)
+        if symbol is not None:
+            rows = [r for r in rows if r.get("symbol") == symbol]
+        if kind is not None:
+            rows = [r for r in rows if r.get("kind") == kind]
+        rows.sort(key=lambda r: r.get("made_at", ""), reverse=True)
+        return [dict(r) for r in rows[:limit]]
+
+    def unresolved_predictions(
+        self, *, before_ts: str | None = None, limit: int = 500,
+    ) -> list[dict]:
+        # Build a set of prediction_ids that already have resolutions.
+        resolved = {r.get("prediction_id") for r in self._resolutions}
+        cutoff = before_ts or _now()
+        rows = [
+            r for r in self._predictions
+            if r.get("id") not in resolved
+            and r.get("resolves_at", "") <= cutoff
+        ]
+        rows.sort(key=lambda r: r.get("resolves_at", ""))
+        return [dict(r) for r in rows[:limit]]
+
+    # ── movement simulator: resolutions ───────────────────────────────
+    def insert_resolution(self, resolution: dict) -> str:
+        row = dict(resolution)
+        row.setdefault("id", str(uuid.uuid4()))
+        row.setdefault("resolved_at", _now())
+        row.setdefault("narrative", "")
+        # Enforce 1:1 with predictions like the SQL unique constraint
+        # — a second resolution for the same prediction_id is dropped
+        # silently so the calibration archive stays clean.
+        prediction_id = row.get("prediction_id")
+        if prediction_id is not None and any(
+            r.get("prediction_id") == prediction_id for r in self._resolutions
+        ):
+            return ""
+        self._resolutions.append(row)
+        return row["id"]
+
+    def list_resolutions(
+        self, *, symbol: str | None = None, kind: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        by_pred = {r["id"]: r for r in self._predictions if "id" in r}
+        out = []
+        for res in self._resolutions:
+            pred = by_pred.get(res.get("prediction_id"))
+            if pred is None:
+                continue
+            if symbol is not None and pred.get("symbol") != symbol:
+                continue
+            if kind is not None and pred.get("kind") != kind:
+                continue
+            joined = dict(pred)
+            joined.update({
+                "resolution_id": res.get("id"),
+                "resolved_at": res.get("resolved_at"),
+                "actual_value": res.get("actual_value"),
+                "brier_score": res.get("brier_score"),
+                "crps_score": res.get("crps_score"),
+                "outcome_kind": res.get("outcome_kind"),
+                "narrative": res.get("narrative", ""),
+                "baseline_persistence_brier":
+                    res.get("baseline_persistence_brier"),
+                "baseline_climatology_brier":
+                    res.get("baseline_climatology_brier"),
+            })
+            out.append(joined)
+        out.sort(key=lambda r: r.get("resolved_at", ""), reverse=True)
+        return out[:limit]
+
+    def calibration_summary(
+        self, *, symbol: str | None = None, kind: str | None = None,
+        horizon_minutes: int | None = None,
+    ) -> dict:
+        # Read predictions + their resolutions in one pass; build the
+        # aggregate the calibration UI needs.
+        by_pred = {r["id"]: r for r in self._predictions if "id" in r}
+        rows = []
+        for res in self._resolutions:
+            pred = by_pred.get(res.get("prediction_id"))
+            if pred is None:
+                continue
+            if symbol is not None and pred.get("symbol") != symbol:
+                continue
+            if kind is not None and pred.get("kind") != kind:
+                continue
+            if (horizon_minutes is not None
+                    and pred.get("horizon_minutes") != horizon_minutes):
+                continue
+            rows.append((pred, res))
+
+        if not rows:
+            return {
+                "count": 0, "brier_mean": None, "crps_mean": None,
+                "outcome_histogram": {}, "reliability_bins": [],
+                "baseline_persistence_brier_mean": None,
+                "baseline_climatology_brier_mean": None,
+            }
+
+        briers = [r[1].get("brier_score") for r in rows
+                  if r[1].get("brier_score") is not None]
+        crps = [r[1].get("crps_score") for r in rows
+                if r[1].get("crps_score") is not None]
+        baselines_p = [r[1].get("baseline_persistence_brier") for r in rows
+                       if r[1].get("baseline_persistence_brier") is not None]
+        baselines_c = [r[1].get("baseline_climatology_brier") for r in rows
+                       if r[1].get("baseline_climatology_brier") is not None]
+        hist: dict[str, int] = {}
+        for _, res in rows:
+            k = res.get("outcome_kind", "unknown")
+            hist[k] = hist.get(k, 0) + 1
+
+        # Reliability bins for binary direction predictions: bucket
+        # prob_positive into 10% buckets and compute empirical hit
+        # rate. Only rows with a numeric prob_positive count.
+        bins: list[dict] = []
+        for low in range(0, 100, 10):
+            high = low + 10
+            in_bin = [
+                (p, r) for p, r in rows
+                if p.get("prob_positive") is not None
+                and low / 100.0 <= p["prob_positive"] < high / 100.0
+            ]
+            if not in_bin:
+                continue
+            hits = sum(
+                1 for _, r in in_bin
+                if r.get("outcome_kind") in ("hit", "inside_p50")
+            )
+            bins.append({
+                "lower_pct": low,
+                "upper_pct": high,
+                "midpoint": (low + high) / 200.0,
+                "count": len(in_bin),
+                "empirical_rate": hits / len(in_bin),
+                "predicted_mean": sum(
+                    p.get("prob_positive", 0.0) for p, _ in in_bin
+                ) / len(in_bin),
+            })
+
+        def _mean(xs: list) -> float | None:
+            return sum(xs) / len(xs) if xs else None
+
+        return {
+            "count": len(rows),
+            "brier_mean": _mean(briers),
+            "crps_mean": _mean(crps),
+            "outcome_histogram": hist,
+            "reliability_bins": bins,
+            "baseline_persistence_brier_mean": _mean(baselines_p),
+            "baseline_climatology_brier_mean": _mean(baselines_c),
+        }

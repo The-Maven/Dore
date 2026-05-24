@@ -6315,6 +6315,647 @@ function shortDate(iso) {
 }
 
 // ════════════════════════════════════════════════════════════════════
+//  F9 · SIMULATOR — predict / attribute / score / narrate
+// ════════════════════════════════════════════════════════════════════
+// Coin movement simulator. The product is the track record — a
+// calibration archive of every forecast Doré has emitted, scored
+// against reality with strictly proper rules. The page renders:
+//   1. SOTU strip — ticker liveness + last cycle summary
+//   2. Per-token current call: fan chart (stepped 50/80/95 bands) +
+//      IPCC ladder word, judge synthesis/insight/pitch, attribution
+//      with verified-driver + web-context tabs
+//   3. Calibration page: reliability bins, Brier-over-time, baseline
+//      skill comparison
+//   4. Config panel: cadence (default 10min), horizon, symbols, kinds
+
+function viewSimulator(symbolArg) {
+  app.innerHTML = '';
+  const refreshBtn = el('button', { class: 'btn ghost' },
+    icon('i-supply'), 'REFRESH');
+  const tickNowBtn = el('button', {
+    class: 'btn ghost',
+    title: 'Run the simulator cycle synchronously (curator only).',
+  }, icon('i-frame'), 'TICK NOW');
+  app.append(viewHead('F9', 'SIMULATOR',
+    'predict · attribute · score · narrate. the track record is the product.',
+    refreshBtn, tickNowBtn));
+  const mount = el('div', { class: 'view-body sim-body' });
+  app.append(mount);
+
+  refreshBtn.addEventListener('click', () => loadSimulator(mount, symbolArg));
+  tickNowBtn.addEventListener('click', async () => {
+    tickNowBtn.disabled = true;
+    const orig = tickNowBtn.innerHTML;
+    tickNowBtn.replaceChildren(el('span', { class: 'spinner' }),
+      document.createTextNode(' TICKING'));
+    try {
+      const resp = await fetch('/api/simulator/tick', { method: 'POST' });
+      if (!resp.ok) throw new Error('tick failed: ' + resp.status);
+      await loadSimulator(mount, symbolArg);
+    } catch (err) {
+      console.error('simulator tick failed', err);
+    } finally {
+      tickNowBtn.disabled = false;
+      tickNowBtn.innerHTML = orig;
+    }
+  });
+  loadSimulator(mount, symbolArg);
+}
+
+async function loadSimulator(mount, symbolArg) {
+  mount.innerHTML = '';
+  mount.append(el('div', { class: 'sim-loading' },
+    el('span', { class: 'spinner' }),
+    ' composing forecast archive…'));
+
+  let state, preds, calibration;
+  try {
+    const [stateResp, predsResp, calResp] = await Promise.all([
+      fetch('/api/simulator/state'),
+      fetch('/api/simulator/predictions?limit=200'),
+      fetch('/api/simulator/calibration'),
+    ]);
+    state = await stateResp.json();
+    preds = await predsResp.json();
+    calibration = await calResp.json();
+  } catch (err) {
+    mount.innerHTML = '';
+    mount.append(el('div', { class: 'sim-error' },
+      'Simulator endpoints unreachable. The ticker may not have started yet — ',
+      'try TICK NOW or check the F1 monitor.'));
+    return;
+  }
+
+  mount.innerHTML = '';
+  renderSimulator(mount, state, preds, calibration, symbolArg);
+}
+
+function renderSimulator(mount, state, preds, calibration, symbolArg) {
+  // SOTU strip — at-a-glance liveness.
+  mount.append(simStateStrip(state));
+
+  // Schema-missing banner: if migration 0007 hasn't been applied, the
+  // store reports an empty archive with a schema_missing tag. Surface
+  // that explicitly so the operator knows what to do, instead of
+  // silently rendering an empty-archive page that looks identical to
+  // the cold-start state.
+  if (preds && preds.schema_missing) {
+    mount.append(el('section', { class: 'sim-schema-banner fade-in' },
+      el('div', { class: 'sim-schema-kick' }, 'SCHEMA MISSING'),
+      el('div', { class: 'sim-schema-body' },
+        'The predictions table is not yet provisioned. Apply ',
+        el('code', {}, 'supabase/migrations/0007_movement_simulator.sql'),
+        ' against the live database to enable the archive. ',
+        'Until then, the simulator runs end-to-end against the in-',
+        'memory FileStore (visible in tests + offline dev) and the ',
+        'live archive stays empty.')));
+  }
+
+  // Group predictions by symbol so each token gets its own panel.
+  // Newest-first ordering is preserved within each symbol.
+  const bySymbol = new Map();
+  for (const p of (preds.predictions || [])) {
+    const arr = bySymbol.get(p.symbol) || [];
+    arr.push(p);
+    bySymbol.set(p.symbol, arr);
+  }
+
+  // If the user landed on a /simulator/SYMBOL deep link, sort that
+  // symbol first so it's the first panel they see.
+  const symbols = Array.from(bySymbol.keys());
+  if (symbolArg) {
+    symbols.sort((a, b) => {
+      if (a === symbolArg) return -1;
+      if (b === symbolArg) return 1;
+      return a.localeCompare(b);
+    });
+  } else {
+    symbols.sort();
+  }
+
+  if (symbols.length === 0) {
+    mount.append(simEmptyState());
+  } else {
+    for (const sym of symbols) {
+      mount.append(simTokenPanel(sym, bySymbol.get(sym)));
+    }
+  }
+
+  // Calibration page — the front door of the product. Lives below
+  // the per-token panels so investors who scroll see it without
+  // navigating; the explicit anchor in simStateStrip lets the
+  // operator jump to it directly.
+  mount.append(simCalibrationPanel(calibration));
+
+  // Config panel — at the foot. Authoring requires sign-in.
+  mount.append(simConfigPanel(state.config || {}));
+}
+
+// ── SOTU strip ───────────────────────────────────────────────────────
+function simStateStrip(state) {
+  const t = state.ticker || {};
+  const c = state.config || {};
+  const q = state.brave_quota || {};
+  const lastTickAgo = t.last_tick_at ? agoLabel(t.last_tick_at) : '—';
+  const summary = t.last_summary || {};
+  const perSym = summary.per_symbol || [];
+  const symbolsEmitted = perSym.reduce(
+    (n, s) => n + Object.keys(s.emitted || {}).length, 0);
+  const resolver = summary.resolver || {};
+  const graded = resolver.graded || 0;
+  const waiting = resolver.waiting || 0;
+  // Brave quota status: green if <50% burned, gold if <90%, red beyond.
+  const qPct = q.cap ? (q.calls || 0) / q.cap : 0;
+  const qCls = qPct < 0.5 ? 'sim-quota-ok'
+    : qPct < 0.9 ? 'sim-quota-warn' : 'sim-quota-tight';
+  return el('section', { class: 'sim-sotu fade-in' },
+    el('div', { class: 'sim-sotu-row' },
+      el('div', { class: 'sim-sotu-cell' },
+        el('div', { class: 'sim-sotu-label' }, 'STATE'),
+        el('div', { class: 'sim-sotu-val' },
+          t.running ? el('span', { class: 'sim-dot sim-dot-live' }) : el('span', { class: 'sim-dot' }),
+          t.running ? 'RUNNING' : 'IDLE')),
+      el('div', { class: 'sim-sotu-cell' },
+        el('div', { class: 'sim-sotu-label' }, 'LAST TICK'),
+        el('div', { class: 'sim-sotu-val' }, lastTickAgo)),
+      el('div', { class: 'sim-sotu-cell' },
+        el('div', { class: 'sim-sotu-label' }, 'CADENCE'),
+        el('div', { class: 'sim-sotu-val' },
+          (c.tick_interval_minutes || 10) + 'm tick · ',
+          (c.horizon_minutes || 60) + 'm horizon')),
+      el('div', { class: 'sim-sotu-cell' },
+        el('div', { class: 'sim-sotu-label' }, 'LAST CYCLE'),
+        el('div', { class: 'sim-sotu-val' },
+          String(symbolsEmitted) + ' emitted · ',
+          String(graded) + ' graded · ',
+          String(waiting) + ' waiting')),
+      el('div', { class: 'sim-sotu-cell' },
+        el('div', { class: 'sim-sotu-label' }, 'BRAVE QUOTA'),
+        el('div', { class: 'sim-sotu-val ' + qCls,
+            title: 'Daily Brave search calls. Resets at UTC midnight. ' +
+                   'Cache-first + interest gate + per-symbol coalesce ' +
+                   'keep this far below the cap.' },
+          String(q.calls || 0), ' / ',
+          String(q.cap || '?'), ' today')),
+    ));
+}
+
+// ── empty / loading state ────────────────────────────────────────────
+function simEmptyState() {
+  return el('section', { class: 'sim-empty fade-in' },
+    el('h2', { class: 'sim-empty-head' }, 'Archive is empty.'),
+    el('p', { class: 'sim-empty-body' },
+      'The simulator has not emitted any predictions yet. Press ',
+      el('b', {}, 'TICK NOW'), ' (requires sign-in) to run a cycle ',
+      'against the live state. The track record builds from there — ',
+      'calibration metrics become trustworthy after roughly 100 ',
+      'resolved predictions per probability band.'));
+}
+
+// ── per-token panel ──────────────────────────────────────────────────
+function simTokenPanel(symbol, predictions) {
+  // Group by kind so peg_deviation + net_flow_direction render side by side.
+  const byKind = new Map();
+  for (const p of predictions) {
+    if (!byKind.has(p.kind)) byKind.set(p.kind, []);
+    byKind.get(p.kind).push(p);
+  }
+  const newestByKind = {};
+  for (const [k, arr] of byKind) newestByKind[k] = arr[0];
+  const newest = predictions[0];
+
+  return el('section', { class: 'sim-token-panel fade-in', id: 'sim-' + symbol },
+    el('div', { class: 'sim-token-head' },
+      el('h2', { class: 'sim-token-sym' }, symbol),
+      el('div', { class: 'sim-token-meta' },
+        newest.made_at ? 'last call ' + agoLabel(newest.made_at) : '—',
+        ' · ',
+        String(predictions.length) + ' prediction' +
+          (predictions.length === 1 ? '' : 's') + ' in archive')),
+    Object.keys(newestByKind).map(k =>
+      simForecastBlock(symbol, k, newestByKind[k], byKind.get(k) || [])));
+}
+
+// ── one forecast block (current call + judge + history) ──────────────
+function simForecastBlock(symbol, kind, current, history) {
+  const niceKind = kind === 'peg_deviation' ? 'peg deviation'
+    : kind === 'net_flow_direction' ? 'net flow direction'
+    : kind;
+  const unit = kind === 'peg_deviation' ? 'bp' : '';
+  return el('div', { class: 'sim-forecast' },
+    el('div', { class: 'sim-forecast-head' },
+      el('span', { class: 'sim-forecast-kind' }, niceKind.toUpperCase()),
+      el('span', { class: 'sim-forecast-horizon' },
+        'horizon ' + (current.horizon_minutes || '?') + 'm'),
+      current.confidence_word
+        ? el('span', { class: 'sim-confidence sim-confidence-' + current.confidence_word },
+            current.confidence_word.replace(/_/g, ' '))
+        : null),
+    // Fan chart — the visual centrepiece.
+    fanChart(current, unit),
+    // Judge synthesis + insight + pitch panels (the AI wedge).
+    simJudgePanel(current),
+    // Attribution split into verified + web context tabs.
+    simAttributionPanel(current),
+    // History strip — past resolved calls with hit/miss badges.
+    simHistoryStrip(history, unit));
+}
+
+// ── fan chart (SVG) ─────────────────────────────────────────────────
+function fanChart(prediction, unit) {
+  // BoE-style stepped fan: thin modal path + asymmetric stepped
+  // bands at 50/80/95. The point is centred horizontally; the
+  // vertical scale auto-fits the widest band.
+  const point = Number(prediction.point) || 0;
+  const p50l = Number(prediction.p50_low);
+  const p50h = Number(prediction.p50_high);
+  const p80l = Number(prediction.p80_low);
+  const p80h = Number(prediction.p80_high);
+  const p95l = Number(prediction.p95_low);
+  const p95h = Number(prediction.p95_high);
+  // If we have no bands (insufficient history), show a degenerate
+  // chart so the panel still anchors.
+  const haveBands = Number.isFinite(p95l) && Number.isFinite(p95h);
+  const width = 560;
+  const height = 160;
+  const padX = 40;
+  const padY = 24;
+  const innerW = width - padX * 2;
+  const innerH = height - padY * 2;
+  // Vertical extent: widen 5% so the cone never kisses the frame.
+  let lo = haveBands ? Math.min(p95l, point) : point - 1;
+  let hi = haveBands ? Math.max(p95h, point) : point + 1;
+  if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+  const range = hi - lo;
+  lo -= range * 0.05;
+  hi += range * 0.05;
+  const y = (v) => padY + innerH * (1 - (v - lo) / (hi - lo));
+  // X axis: 0=now (left edge), 1=resolves_at (right edge).
+  const xNow = padX;
+  const xRes = padX + innerW;
+  const yZero = y(0);
+  // Build the SVG path strings.
+  const bandRect = (low, high, cls) => {
+    if (!Number.isFinite(low) || !Number.isFinite(high)) return null;
+    const yh = y(high);
+    const yl = y(low);
+    return el('rect', {
+      class: cls, x: xNow, y: yh,
+      width: xRes - xNow, height: yl - yh,
+    });
+  };
+  const svgChildren = [];
+  // Zero line + axis label (peg target = 0bp / 0 net change).
+  svgChildren.push(el('line', {
+    class: 'fan-axis', x1: xNow, x2: xRes, y1: yZero, y2: yZero,
+  }));
+  svgChildren.push(el('text', {
+    class: 'fan-axis-label', x: xRes + 4, y: yZero + 4,
+  }, '0' + unit));
+  if (haveBands) {
+    svgChildren.push(bandRect(p95l, p95h, 'fan-band fan-band-p95'));
+    svgChildren.push(bandRect(p80l, p80h, 'fan-band fan-band-p80'));
+    svgChildren.push(bandRect(p50l, p50h, 'fan-band fan-band-p50'));
+  }
+  // Modal path: horizontal line at point.
+  svgChildren.push(el('line', {
+    class: 'fan-modal', x1: xNow, x2: xRes,
+    y1: y(point), y2: y(point),
+  }));
+  // Point label at the right edge.
+  svgChildren.push(el('text', {
+    class: 'fan-point-label', x: xRes + 4, y: y(point) + 4,
+  }, point.toFixed(unit === 'bp' ? 2 : 0) + unit));
+  // Time labels.
+  svgChildren.push(el('text', {
+    class: 'fan-time-label', x: xNow, y: height - 4,
+  }, 'now'));
+  svgChildren.push(el('text', {
+    class: 'fan-time-label', x: xRes, y: height - 4,
+    'text-anchor': 'end',
+  }, '+' + (prediction.horizon_minutes || '?') + 'm'));
+  const svg = el('svg', {
+    class: 'fan-svg', viewBox: '0 0 ' + width + ' ' + height,
+    xmlns: 'http://www.w3.org/2000/svg',
+    role: 'img', 'aria-label': 'Forecast fan chart',
+  });
+  // el() sets HTML attributes but SVG needs proper namespace; fall
+  // back to innerHTML for the children so the elements ARE SVG.
+  svg.innerHTML = svgChildren.filter(Boolean).map(svgString).join('');
+  return el('div', { class: 'fan-chart-wrap' }, svg,
+    el('div', { class: 'fan-legend' },
+      el('span', { class: 'fan-legend-swatch fan-legend-p50' }), '50%',
+      el('span', { class: 'fan-legend-swatch fan-legend-p80' }), '80%',
+      el('span', { class: 'fan-legend-swatch fan-legend-p95' }), '95%'));
+}
+
+// HTML→SVG bridge: el() produces HTML elements; convert their attrs
+// into an SVG element string so the host <svg> can innerHTML them.
+function svgString(node) {
+  if (!node) return '';
+  const tag = node.tagName.toLowerCase();
+  const attrs = Array.from(node.attributes || [])
+    .map(a => a.name + '="' + a.value.replace(/"/g, '&quot;') + '"')
+    .join(' ');
+  return '<' + tag + (attrs ? ' ' + attrs : '') + '>' +
+    (node.textContent || '') + '</' + tag + '>';
+}
+
+// ── judge panel (synthesis · insight · pitch) ───────────────────────
+function simJudgePanel(prediction) {
+  const hasJudge = prediction.judge_synthesis || prediction.judge_insight
+    || prediction.judge_pitch;
+  if (!hasJudge) {
+    return el('div', { class: 'sim-judge sim-judge-absent' },
+      el('div', { class: 'sim-judge-kick' }, 'AI JUDGE'),
+      el('div', { class: 'sim-judge-empty' },
+        'No judge layer ran for this prediction. ',
+        prediction.notes
+          ? el('span', {}, 'engine notes: ', el('i', {}, prediction.notes))
+          : 'Configure LLM_API_KEY to enable the judge.'));
+  }
+  const blocks = [];
+  if (prediction.judge_synthesis) {
+    blocks.push(el('div', { class: 'sim-judge-block' },
+      el('div', { class: 'sim-judge-label' }, 'SYNTHESIS'),
+      el('div', { class: 'sim-judge-body' }, prediction.judge_synthesis)));
+  }
+  if (prediction.judge_insight) {
+    blocks.push(el('div', { class: 'sim-judge-block sim-judge-insight' },
+      el('div', { class: 'sim-judge-label' }, 'INSIGHT'),
+      el('div', { class: 'sim-judge-body' }, prediction.judge_insight)));
+  }
+  if (prediction.judge_pitch) {
+    blocks.push(el('div', { class: 'sim-judge-block sim-judge-pitch' },
+      el('div', { class: 'sim-judge-label' }, 'CONSIDER'),
+      el('div', { class: 'sim-judge-body' }, prediction.judge_pitch)));
+  }
+  return el('div', { class: 'sim-judge' },
+    el('div', { class: 'sim-judge-kick' },
+      'AI JUDGE',
+      el('span', { class: 'sim-judge-model' },
+        prediction.judge_model || '')),
+    ...blocks);
+}
+
+// ── attribution panel — verified drivers vs web context ─────────────
+function simAttributionPanel(prediction) {
+  // drivers is the verified-driver array (from observability +
+  // corpus). Web context is currently fused into the judge prompt
+  // upstream, not separately stored on the prediction row — surface
+  // the verified drivers here with their trust badge.
+  const drivers = prediction.drivers || [];
+  if (drivers.length === 0) {
+    return el('div', { class: 'sim-attr sim-attr-empty' },
+      el('div', { class: 'sim-attr-kick' }, 'DRIVERS'),
+      el('div', { class: 'sim-attr-empty-body' },
+        'No driver cited.'));
+  }
+  return el('div', { class: 'sim-attr' },
+    el('div', { class: 'sim-attr-kick' }, 'CITED DRIVERS'),
+    el('div', { class: 'sim-attr-list' },
+      drivers.map((d, i) =>
+        el('div', { class: 'sim-attr-row' },
+          el('span', { class: 'sim-attr-idx' }, '[' + i + ']'),
+          el('span', { class: 'sim-attr-summary' }, d.summary || d.kind || ''),
+          el('span', { class: 'sim-attr-trust sim-attr-trust-' +
+              ((d.trust_tier || '').replace(/_/g, '-')) },
+            (d.trust_tier || '').replace(/_/g, ' ')),
+          d.url
+            ? el('a', { class: 'sim-attr-link', href: d.url,
+                target: '_blank', rel: 'noopener' }, '↗')
+            : null))));
+}
+
+// ── history strip ────────────────────────────────────────────────────
+function simHistoryStrip(history, unit) {
+  if (history.length <= 1) return null;
+  const past = history.slice(1, 13);  // up to 12 prior calls
+  return el('div', { class: 'sim-history' },
+    el('div', { class: 'sim-history-kick' }, 'PRIOR CALLS'),
+    el('div', { class: 'sim-history-row' },
+      past.map(p => {
+        const res = p.resolution;
+        const cls = res
+          ? 'sim-history-cell sim-history-' + (res.outcome_kind || 'unknown')
+          : 'sim-history-cell sim-history-pending';
+        const tip = res
+          ? (res.outcome_kind || 'unknown') +
+            ' · ' + (res.narrative || '')
+          : 'awaiting resolution';
+        return el('div', { class: cls, title: tip },
+          el('div', { class: 'sim-history-point' },
+            (Number(p.point) || 0).toFixed(unit === 'bp' ? 1 : 0) + unit),
+          el('div', { class: 'sim-history-when' },
+            p.made_at ? agoLabel(p.made_at) : '—'));
+      })));
+}
+
+// ── calibration panel ────────────────────────────────────────────────
+function simCalibrationPanel(calibration) {
+  const c = calibration || {};
+  const count = c.count || 0;
+  if (count === 0) {
+    return el('section', { class: 'sim-calibration sim-calibration-empty fade-in' },
+      el('h2', { class: 'sim-calibration-head' }, 'Calibration archive'),
+      el('p', { class: 'sim-calibration-body' },
+        'No predictions have resolved yet. Calibration metrics ',
+        'become trustworthy after roughly 100 resolved predictions ',
+        'per probability band; the archive fills as the ticker runs.'));
+  }
+  return el('section', { class: 'sim-calibration fade-in' },
+    el('h2', { class: 'sim-calibration-head' }, 'Calibration archive'),
+    el('p', { class: 'sim-calibration-body' },
+      el('b', {}, String(count)),
+      ' prediction',
+      count === 1 ? '' : 's',
+      ' resolved. ',
+      'Brier and CRPS are strictly proper scoring rules — lower is ',
+      'better. The model only earns credibility when its Brier ',
+      'beats the climatology baseline (0.25).'),
+    el('div', { class: 'sim-cal-grid' },
+      simCalMetric('BRIER (model)', c.brier_mean,
+        'Lower is better. Range [0,1].'),
+      simCalMetric('BRIER (climatology)', c.baseline_climatology_brier_mean,
+        'Baseline: always-50/50 forecast.'),
+      simCalMetric('BRIER (persistence)', c.baseline_persistence_brier_mean,
+        'Baseline: forecast = last seen.'),
+      simCalMetric('CRPS (model)', c.crps_mean,
+        'Continuous Ranked Probability Score.')),
+    simReliabilityBins(c.reliability_bins || []),
+    simOutcomeHistogram(c.outcome_histogram || {}));
+}
+
+function simCalMetric(label, value, sub) {
+  const display = (value === null || value === undefined)
+    ? '—' : Number(value).toFixed(3);
+  return el('div', { class: 'sim-cal-metric' },
+    el('div', { class: 'sim-cal-metric-label' }, label),
+    el('div', { class: 'sim-cal-metric-value' }, display),
+    el('div', { class: 'sim-cal-metric-sub' }, sub));
+}
+
+function simReliabilityBins(bins) {
+  // Metaculus-style scatter: predicted probability vs empirical
+  // frequency, with the perfect-calibration diagonal as the
+  // reference. Buckets sized by count so small-n bins look thin.
+  if (!bins || bins.length === 0) {
+    return el('div', { class: 'sim-rel-empty' },
+      'Reliability diagram populates as direction-prediction ',
+      'resolutions accumulate.');
+  }
+  const width = 360;
+  const height = 240;
+  const pad = 32;
+  const inner = width - pad * 2;
+  const innerH = height - pad * 2;
+  const x = (p) => pad + inner * p;
+  const yFromTop = (p) => pad + innerH * (1 - p);
+  const svg = el('svg', {
+    class: 'sim-rel-svg', viewBox: '0 0 ' + width + ' ' + height,
+    xmlns: 'http://www.w3.org/2000/svg',
+  });
+  const parts = [];
+  // Axes.
+  parts.push('<line class="sim-rel-axis" x1="' + pad + '" y1="' +
+    (height - pad) + '" x2="' + (width - pad) + '" y2="' +
+    (height - pad) + '"/>');
+  parts.push('<line class="sim-rel-axis" x1="' + pad + '" y1="' + pad +
+    '" x2="' + pad + '" y2="' + (height - pad) + '"/>');
+  // Diagonal reference.
+  parts.push('<line class="sim-rel-diag" x1="' + x(0) + '" y1="' +
+    yFromTop(0) + '" x2="' + x(1) + '" y2="' + yFromTop(1) + '"/>');
+  // Bins.
+  for (const b of bins) {
+    const px = x(b.predicted_mean);
+    const py = yFromTop(b.empirical_rate);
+    const r = Math.max(3, Math.min(10, 2 + Math.sqrt(b.count)));
+    parts.push('<circle class="sim-rel-dot" cx="' + px + '" cy="' +
+      py + '" r="' + r + '"><title>' +
+      b.count + ' samples · predicted ' +
+      (b.predicted_mean * 100).toFixed(0) + '% · empirical ' +
+      (b.empirical_rate * 100).toFixed(0) + '%</title></circle>');
+  }
+  // Axis labels.
+  parts.push('<text class="sim-rel-axlbl" x="' + (width / 2) +
+    '" y="' + (height - 4) + '" text-anchor="middle">predicted</text>');
+  parts.push('<text class="sim-rel-axlbl" x="10" y="' + (height / 2) +
+    '" transform="rotate(-90 10,' + (height / 2) +
+    ')" text-anchor="middle">empirical</text>');
+  svg.innerHTML = parts.join('');
+  return el('div', { class: 'sim-rel-wrap' },
+    el('div', { class: 'sim-rel-kick' }, 'RELIABILITY DIAGRAM'),
+    svg,
+    el('div', { class: 'sim-rel-note' },
+      'Dot size = sample count. Closer to the diagonal = better ',
+      'calibrated.'));
+}
+
+function simOutcomeHistogram(hist) {
+  const order = ['inside_p50', 'inside_p80', 'inside_p95', 'outside',
+    'hit', 'partial', 'miss'];
+  const total = Object.values(hist).reduce((a, b) => a + b, 0) || 1;
+  return el('div', { class: 'sim-hist' },
+    el('div', { class: 'sim-hist-kick' }, 'OUTCOME HISTOGRAM'),
+    el('div', { class: 'sim-hist-row' },
+      order.filter(k => hist[k] > 0).map(k =>
+        el('div', { class: 'sim-hist-bucket sim-hist-' + k },
+          el('div', { class: 'sim-hist-bar', style: 'width:' +
+              Math.max(20, (hist[k] / total) * 200) + 'px' }),
+          el('div', { class: 'sim-hist-lbl' },
+            k.replace(/_/g, ' '),
+            ' · ', String(hist[k]))))));
+}
+
+// ── config panel ─────────────────────────────────────────────────────
+function simConfigPanel(config) {
+  const tick = el('input', {
+    type: 'number', min: '1', max: '1440',
+    value: String(config.tick_interval_minutes || 10),
+    class: 'sim-config-input',
+  });
+  const horizon = el('input', {
+    type: 'number', min: '1', max: '1440',
+    value: String(config.horizon_minutes || 60),
+    class: 'sim-config-input',
+  });
+  const symbols = el('input', {
+    type: 'text',
+    value: (config.symbols || []).join(', '),
+    class: 'sim-config-input sim-config-input-wide',
+    placeholder: 'USDC, USDT, DAI, …',
+  });
+  const enabledKinds = new Set(config.kinds || []);
+  const peg = el('input', {
+    type: 'checkbox',
+    ...(enabledKinds.has('peg_deviation') ? { checked: true } : {}),
+  });
+  const flow = el('input', {
+    type: 'checkbox',
+    ...(enabledKinds.has('net_flow_direction') ? { checked: true } : {}),
+  });
+  const saveBtn = el('button', { class: 'btn ghost' },
+    icon('i-supply'), 'SAVE CONFIG');
+  const statusLine = el('div', { class: 'sim-config-status' });
+
+  saveBtn.addEventListener('click', async () => {
+    const kinds = [];
+    if (peg.checked) kinds.push('peg_deviation');
+    if (flow.checked) kinds.push('net_flow_direction');
+    const body = {
+      tick_interval_minutes: Number(tick.value),
+      horizon_minutes: Number(horizon.value),
+      symbols: symbols.value.split(',').map(s => s.trim()).filter(Boolean),
+      kinds,
+      enabled: true,
+    };
+    statusLine.textContent = 'saving…';
+    try {
+      const resp = await fetch('/api/simulator/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const msg = await resp.text();
+        statusLine.textContent = 'error: ' + msg;
+        return;
+      }
+      statusLine.textContent = 'saved. Next tick will use the new config.';
+    } catch (err) {
+      statusLine.textContent = 'error: ' + err.message;
+    }
+  });
+
+  return el('section', { class: 'sim-config fade-in' },
+    el('h2', { class: 'sim-config-head' }, 'Configuration'),
+    el('p', { class: 'sim-config-body' },
+      'Tick interval and prediction horizon are intentionally ',
+      'decoupled. The tick is the refresh rate (default 10m matches ',
+      'the operator spec). The horizon is the prediction window — ',
+      'shorter than 30m is below the data-supported floor for most ',
+      'targets; we render the call honestly but the calibration ',
+      'archive will reflect the noise.'),
+    el('div', { class: 'sim-config-grid' },
+      el('label', { class: 'sim-config-cell' },
+        el('span', { class: 'sim-config-lbl' }, 'TICK INTERVAL (min)'),
+        tick),
+      el('label', { class: 'sim-config-cell' },
+        el('span', { class: 'sim-config-lbl' }, 'PREDICTION HORIZON (min)'),
+        horizon),
+      el('label', { class: 'sim-config-cell sim-config-cell-wide' },
+        el('span', { class: 'sim-config-lbl' }, 'SYMBOLS'),
+        symbols),
+      el('div', { class: 'sim-config-cell' },
+        el('span', { class: 'sim-config-lbl' }, 'KINDS'),
+        el('label', { class: 'sim-config-kind' }, peg,
+          el('span', {}, 'peg deviation')),
+        el('label', { class: 'sim-config-kind' }, flow,
+          el('span', {}, 'net flow direction')))),
+    el('div', { class: 'sim-config-actions' }, saveBtn, statusLine));
+}
+
+// ════════════════════════════════════════════════════════════════════
 //  ROUTER
 // ════════════════════════════════════════════════════════════════════
 function route() {
@@ -6356,6 +6997,10 @@ function route() {
     STATE.activeSymbol = '';
     refreshInstruments();
     viewMarket();
+  } else if (view === 'simulator') {
+    STATE.activeSymbol = '';
+    refreshInstruments();
+    viewSimulator(arg ? arg.toUpperCase() : '');
   } else {
     STATE.activeSymbol = '';
     refreshInstruments();
@@ -6387,7 +7032,8 @@ async function boot() {
   // F-key navigation
   window.addEventListener('keydown', (e) => {
     const map = { F1: '#monitor', F2: '#analyze', F3: '#corpus', F4: '#evals',
-      F5: '#sanctions', F6: '#redemptions', F7: '#analyst', F8: '#compendium' };
+      F5: '#sanctions', F6: '#redemptions', F7: '#analyst', F8: '#compendium',
+      F9: '#simulator' };
     if (map[e.key]) { e.preventDefault(); location.hash = map[e.key]; }
     if (e.key === '/' && document.activeElement !== ci) { e.preventDefault(); ci.focus(); }
   });

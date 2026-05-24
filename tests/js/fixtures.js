@@ -102,6 +102,87 @@ export function sanctionsFixture(overrides = {}) {
   };
 }
 
+// Doré simulator state — minimal but realistic shape so renderSimulator
+// can be unit-tested without spinning up the FastAPI server.
+export function simulatorStateFixture(overrides = {}) {
+  const now = new Date();
+  const oneMinAgo = new Date(now.getTime() - 60_000).toISOString();
+  return {
+    ticker: {
+      running: true,
+      last_tick_at: oneMinAgo,
+      started_at: oneMinAgo,
+      last_summary: {
+        tick_interval_minutes: 10, horizon_minutes: 60,
+        per_symbol: [
+          { symbol: 'USDC', emitted: { peg_deviation: true,
+              net_flow_direction: true }, skipped: {}, errors: {} },
+        ],
+        resolver: { checked: 0, graded: 0, waiting: 0, errors: 0 },
+      },
+    },
+    config: {
+      enabled: true,
+      tick_interval_minutes: 10,
+      horizon_minutes: 60,
+      symbols: ['USDC', 'USDT'],
+      kinds: ['peg_deviation', 'net_flow_direction'],
+      max_in_flight_per_symbol: 24,
+    },
+    brave_quota: { day: '2026-05-24', calls: 12, cap: 200, remaining: 188 },
+    ...overrides,
+  };
+}
+
+export function simulatorPredictionFixture(overrides = {}) {
+  const now = new Date();
+  const tenMinAgo = new Date(now.getTime() - 600_000).toISOString();
+  const future = new Date(now.getTime() + 3_600_000).toISOString();
+  return {
+    id: 'pred-uuid-1',
+    symbol: 'USDC',
+    kind: 'peg_deviation',
+    horizon_minutes: 60,
+    made_at: tenMinAgo,
+    resolves_at: future,
+    point: 3.2,
+    p50_low: 1.5, p50_high: 4.9,
+    p80_low: -0.4, p80_high: 6.8,
+    p95_low: -2.6, p95_high: 9.0,
+    prob_positive: null,
+    confidence_word: 'likely',
+    drivers: [
+      { kind: 'attestation.published',
+        summary: 'New attestation published for USDC',
+        url: 'https://circle.com/transparency',
+        trust_tier: 'issuer_first_party' },
+    ],
+    model: 'ewma_cone_v1',
+    notes: 'history=12 sigma=2.4bp',
+    judge_synthesis: 'USDC sits inside the 50% band at +3.2bp.',
+    judge_insight: 'Peg holds within stated cone.',
+    judge_pitch: 'no action',
+    judge_model: 'judge_v1',
+    ...overrides,
+  };
+}
+
+export function simulatorCalibrationFixture(overrides = {}) {
+  return {
+    count: 5,
+    brier_mean: 0.18,
+    crps_mean: 1.4,
+    outcome_histogram: { inside_p50: 3, inside_p80: 1, outside: 1 },
+    reliability_bins: [
+      { lower_pct: 60, upper_pct: 70, midpoint: 0.65,
+        count: 3, empirical_rate: 0.67, predicted_mean: 0.65 },
+    ],
+    baseline_persistence_brier_mean: 0.22,
+    baseline_climatology_brier_mean: 0.25,
+    ...overrides,
+  };
+}
+
 export function marketFixture(overrides = {}) {
   // Mirrors the /api/market response just enough that renderMarket runs.
   // Freshness block: covers the Phase 3 footer that names both clocks

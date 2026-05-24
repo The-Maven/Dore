@@ -3824,3 +3824,691 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 /* Inter Tight is generally robust at display sizes, but bumping weight
    on the hero strip stat values matches the new Bodoni weight visually. */
 .mkt-stat-val { font-weight: 700; }
+
+/* ════════════════════════════════════════════════════════════════════
+   F9 · SIMULATOR — predict / attribute / score / narrate
+   ════════════════════════════════════════════════════════════════════
+   Editorial-financial palette: ink + gold + the same Inter Tight /
+   Bodoni Moda / IBM Plex Mono trinity as the rest of the app. Fan
+   chart bands use the gold accent at three opacities for the 50/80/
+   95 levels; the reliability diagram and outcome histogram inherit
+   the same scale so the page reads as one piece, not a collection
+   of widgets.
+   */
+
+.sim-body {
+  padding: 18px 22px 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sim-loading,
+.sim-error {
+  padding: 32px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--muted-1);
+}
+.sim-error { color: #d49d6a; }
+
+/* SOTU strip — five-cell horizontal row above the per-token panels.
+   Tight, monospace-numbered, identical layout to the analyze
+   freshness strip so the visual rhythm carries. Five cells: STATE,
+   LAST TICK, CADENCE, LAST CYCLE, BRAVE QUOTA. */
+.sim-sotu {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 1px;
+  background: rgba(212, 162, 74, 0.18);
+  border: 1px solid rgba(212, 162, 74, 0.3);
+  padding: 1px;
+}
+.sim-sotu-row {
+  display: contents;
+}
+.sim-sotu-cell {
+  background: var(--ink);
+  padding: 14px 16px;
+}
+.sim-sotu-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.sim-sotu-val {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--paper);
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.sim-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--muted-2);
+  margin-right: 6px;
+}
+.sim-dot-live {
+  background: #92c180;
+  box-shadow: 0 0 8px rgba(146, 193, 128, 0.6);
+}
+
+/* Empty state — when the archive has no predictions yet. Calm
+   editorial copy, no scolding. */
+.sim-empty {
+  padding: 36px 28px;
+  border: 1px dashed rgba(212, 162, 74, 0.4);
+  background: rgba(212, 162, 74, 0.03);
+}
+.sim-empty-head {
+  font-family: 'Bodoni Moda', serif;
+  font-size: 26px;
+  color: var(--paper);
+  margin: 0 0 10px;
+}
+.sim-empty-body {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--muted-1);
+  max-width: 60ch;
+}
+
+/* Per-token panel — one card per stablecoin with all its kinds. */
+.sim-token-panel {
+  border: 1px solid rgba(212, 162, 74, 0.22);
+  background: rgba(255, 255, 255, 0.005);
+}
+.sim-token-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 14px 22px;
+  border-bottom: 1px solid rgba(212, 162, 74, 0.18);
+  background: linear-gradient(180deg,
+    rgba(212, 162, 74, 0.06) 0%,
+    rgba(212, 162, 74, 0.0) 100%);
+}
+.sim-token-sym {
+  font-family: 'Bodoni Moda', serif;
+  font-size: 30px;
+  font-weight: 600;
+  color: var(--gold);
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+.sim-token-meta {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--muted-1);
+  text-transform: uppercase;
+}
+
+.sim-forecast {
+  padding: 22px;
+  border-top: 1px solid rgba(212, 162, 74, 0.08);
+}
+.sim-forecast:first-of-type { border-top: 0; }
+
+.sim-forecast-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.sim-forecast-kind {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: var(--paper);
+}
+.sim-forecast-horizon {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--muted-2);
+}
+
+/* IPCC confidence ladder badge — same idea as the via-* badges in
+   the compendium. The colour cue runs gold (high confidence) →
+   muted (high uncertainty), matching the visual weight of the band
+   half-widths it summarises. */
+.sim-confidence {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  padding: 2px 8px;
+  border: 1px solid rgba(212, 162, 74, 0.3);
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+.sim-confidence-virtually_certain,
+.sim-confidence-very_likely {
+  border-color: rgba(212, 162, 74, 0.7);
+  color: var(--gold);
+}
+.sim-confidence-likely {
+  border-color: rgba(212, 162, 74, 0.4);
+  color: #d4a24a;
+}
+.sim-confidence-about_as_likely_as_not {
+  color: var(--muted-1);
+}
+.sim-confidence-unlikely,
+.sim-confidence-very_unlikely,
+.sim-confidence-exceptionally_unlikely {
+  border-color: rgba(180, 140, 90, 0.3);
+  color: var(--muted-2);
+}
+
+/* Fan chart — the visual centrepiece. Stepped 50/80/95 bands at three
+   gold opacities; a thin paper-coloured line for the modal path; gold
+   axis at 0. Inspired by BoE / Economist fan charts. */
+.fan-chart-wrap {
+  margin: 6px 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fan-svg {
+  width: 100%;
+  height: auto;
+  max-height: 200px;
+}
+.fan-band {
+  /* fill set per-band below */
+  stroke: none;
+}
+.fan-band-p95 { fill: rgba(212, 162, 74, 0.07); }
+.fan-band-p80 { fill: rgba(212, 162, 74, 0.15); }
+.fan-band-p50 { fill: rgba(212, 162, 74, 0.32); }
+.fan-modal {
+  stroke: var(--paper);
+  stroke-width: 1.5;
+  fill: none;
+}
+.fan-axis {
+  stroke: rgba(212, 162, 74, 0.4);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+.fan-axis-label,
+.fan-point-label,
+.fan-time-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  fill: var(--muted-1);
+  letter-spacing: 0.1em;
+}
+.fan-point-label { fill: var(--gold); font-size: 10px; }
+.fan-legend {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--muted-2);
+  text-transform: uppercase;
+}
+.fan-legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 10px;
+  margin-right: 6px;
+  background: rgba(212, 162, 74, 0.32);
+}
+.fan-legend-swatch.fan-legend-p80 { background: rgba(212, 162, 74, 0.15); }
+.fan-legend-swatch.fan-legend-p95 { background: rgba(212, 162, 74, 0.07); }
+
+/* AI Judge panel — three labelled blocks: SYNTHESIS, INSIGHT,
+   CONSIDER. Gold accent line + small body padding so it reads as a
+   distinct editorial voice. */
+.sim-judge {
+  margin-top: 16px;
+  padding: 14px 18px;
+  border-left: 3px solid var(--gold);
+  background: rgba(212, 162, 74, 0.03);
+}
+.sim-judge-kick {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--gold);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.sim-judge-model {
+  font-size: 9px;
+  color: var(--muted-2);
+  letter-spacing: 0.14em;
+}
+.sim-judge-block {
+  margin-bottom: 10px;
+}
+.sim-judge-block:last-child { margin-bottom: 0; }
+.sim-judge-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+.sim-judge-body {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--paper);
+  max-width: 72ch;
+}
+.sim-judge-insight .sim-judge-body {
+  font-style: italic;
+}
+.sim-judge-pitch .sim-judge-body {
+  color: var(--gold);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.sim-judge-empty {
+  color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+.sim-judge-absent {
+  border-left-color: rgba(212, 162, 74, 0.2);
+}
+
+/* Attribution — verified driver rows with trust-tier badges. */
+.sim-attr {
+  margin-top: 14px;
+  padding: 12px 16px;
+  border: 1px solid rgba(212, 162, 74, 0.14);
+}
+.sim-attr-kick {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--muted-1);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.sim-attr-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(212, 162, 74, 0.06);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--paper);
+}
+.sim-attr-row:first-child { border-top: 0; }
+.sim-attr-idx {
+  color: var(--gold);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.sim-attr-summary {
+  flex: 1;
+}
+.sim-attr-trust {
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  padding: 1px 6px;
+  border: 1px solid rgba(212, 162, 74, 0.3);
+  color: var(--muted-1);
+  text-transform: uppercase;
+}
+.sim-attr-trust-issuer-first-party,
+.sim-attr-trust-regulator-first-party {
+  border-color: rgba(146, 193, 128, 0.5);
+  color: #b9d8a1;
+}
+.sim-attr-trust-research-or-regulator,
+.sim-attr-trust-research-house {
+  border-color: rgba(120, 180, 220, 0.5);
+  color: #a7c8e0;
+}
+.sim-attr-trust-doré-observed {
+  border-color: rgba(212, 162, 74, 0.5);
+  color: var(--gold);
+}
+.sim-attr-trust-web-unverified {
+  border-color: rgba(180, 140, 90, 0.3);
+  color: var(--muted-2);
+}
+.sim-attr-link {
+  color: var(--gold);
+  text-decoration: none;
+}
+.sim-attr-empty-body {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--muted-2);
+  font-style: italic;
+}
+
+/* History strip — past prior calls with hit/miss colour cues. */
+.sim-history {
+  margin-top: 14px;
+}
+.sim-history-kick {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--muted-1);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.sim-history-row {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+}
+.sim-history-cell {
+  flex: 0 0 60px;
+  padding: 8px 6px;
+  border: 1px solid rgba(212, 162, 74, 0.18);
+  background: rgba(212, 162, 74, 0.02);
+  text-align: center;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  cursor: help;
+}
+.sim-history-inside_p50 {
+  border-color: rgba(146, 193, 128, 0.55);
+  background: rgba(146, 193, 128, 0.08);
+}
+.sim-history-inside_p80 {
+  border-color: rgba(146, 193, 128, 0.35);
+  background: rgba(146, 193, 128, 0.04);
+}
+.sim-history-inside_p95 {
+  border-color: rgba(212, 162, 74, 0.3);
+  background: rgba(212, 162, 74, 0.04);
+}
+.sim-history-outside,
+.sim-history-miss {
+  border-color: rgba(208, 110, 90, 0.45);
+  background: rgba(208, 110, 90, 0.06);
+}
+.sim-history-pending {
+  border-color: rgba(212, 162, 74, 0.1);
+  color: var(--muted-2);
+}
+.sim-history-point {
+  color: var(--paper);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.sim-history-when {
+  color: var(--muted-2);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  margin-top: 2px;
+}
+
+/* Calibration page. */
+.sim-calibration {
+  border: 1px solid rgba(212, 162, 74, 0.3);
+  padding: 26px 28px;
+  background: rgba(212, 162, 74, 0.025);
+}
+.sim-calibration-empty {
+  background: rgba(255, 255, 255, 0.01);
+}
+.sim-calibration-head {
+  font-family: 'Bodoni Moda', serif;
+  font-size: 24px;
+  color: var(--paper);
+  margin: 0 0 10px;
+}
+.sim-calibration-body {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--muted-1);
+  margin: 0 0 22px;
+  max-width: 64ch;
+}
+.sim-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.sim-cal-metric {
+  padding: 14px 16px;
+  border: 1px solid rgba(212, 162, 74, 0.18);
+  background: rgba(0, 0, 0, 0.15);
+}
+.sim-cal-metric-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--muted-2);
+  text-transform: uppercase;
+}
+.sim-cal-metric-value {
+  font-family: 'Bodoni Moda', serif;
+  font-size: 28px;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+  margin: 4px 0 3px;
+}
+.sim-cal-metric-sub {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted-2);
+  letter-spacing: 0.04em;
+}
+
+/* Reliability diagram. */
+.sim-rel-wrap {
+  margin: 18px 0 22px;
+}
+.sim-rel-kick {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--muted-1);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.sim-rel-svg {
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(212, 162, 74, 0.15);
+  max-width: 360px;
+  max-height: 240px;
+}
+.sim-rel-axis {
+  stroke: rgba(212, 162, 74, 0.35);
+  stroke-width: 1;
+}
+.sim-rel-diag {
+  stroke: rgba(212, 162, 74, 0.45);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.sim-rel-dot {
+  fill: var(--gold);
+  opacity: 0.85;
+}
+.sim-rel-axlbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  fill: var(--muted-1);
+  letter-spacing: 0.16em;
+}
+.sim-rel-note,
+.sim-rel-empty {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted-2);
+  letter-spacing: 0.04em;
+  margin-top: 6px;
+}
+
+/* Outcome histogram. */
+.sim-hist {
+  margin-top: 20px;
+}
+.sim-hist-kick {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--muted-1);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.sim-hist-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sim-hist-bucket {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sim-hist-bar {
+  height: 10px;
+  background: rgba(212, 162, 74, 0.4);
+}
+.sim-hist-inside_p50 .sim-hist-bar { background: rgba(146, 193, 128, 0.7); }
+.sim-hist-inside_p80 .sim-hist-bar { background: rgba(146, 193, 128, 0.45); }
+.sim-hist-inside_p95 .sim-hist-bar { background: rgba(212, 162, 74, 0.55); }
+.sim-hist-outside .sim-hist-bar { background: rgba(208, 110, 90, 0.6); }
+.sim-hist-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--muted-1);
+  text-transform: uppercase;
+}
+
+/* Config panel. */
+.sim-config {
+  border: 1px dashed rgba(212, 162, 74, 0.3);
+  padding: 22px 24px;
+}
+.sim-config-head {
+  font-family: 'Bodoni Moda', serif;
+  font-size: 20px;
+  color: var(--paper);
+  margin: 0 0 10px;
+}
+.sim-config-body {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 13px;
+  color: var(--muted-1);
+  line-height: 1.5;
+  margin: 0 0 16px;
+  max-width: 70ch;
+}
+.sim-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.sim-config-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sim-config-cell-wide {
+  grid-column: span 2;
+}
+.sim-config-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--muted-2);
+  text-transform: uppercase;
+}
+.sim-config-input {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(212, 162, 74, 0.3);
+  color: var(--paper);
+  padding: 6px 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+}
+.sim-config-input-wide { width: 100%; }
+.sim-config-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 14px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--paper);
+  letter-spacing: 0.06em;
+}
+.sim-config-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.sim-config-status {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--muted-1);
+}
+
+@media (max-width: 768px) {
+  .sim-sotu { grid-template-columns: repeat(2, 1fr); }
+  .sim-cal-grid { grid-template-columns: repeat(2, 1fr); }
+  .sim-config-grid { grid-template-columns: 1fr; }
+}
+
+/* Brave quota indicator on the SOTU strip. */
+.sim-quota-ok { color: #b9d8a1; }
+.sim-quota-warn { color: var(--gold); }
+.sim-quota-tight { color: #d49d6a; }
+
+/* Schema-missing banner — shown when migration 0007 hasn't been
+   applied to the live store. Distinct from the empty-archive state
+   (which is a normal cold-start). */
+.sim-schema-banner {
+  border: 1px dashed #d49d6a;
+  background: rgba(208, 110, 90, 0.06);
+  padding: 16px 20px;
+  margin: 4px 0;
+}
+.sim-schema-kick {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: #d49d6a;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.sim-schema-body {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--paper);
+  max-width: 72ch;
+}
+.sim-schema-body code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--gold);
+  background: rgba(212, 162, 74, 0.08);
+  padding: 1px 6px;
+  border-radius: 2px;
+}

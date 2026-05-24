@@ -1,0 +1,354 @@
+"""Background ticker — drives forecast emission and resolver cycles.
+
+ONE thread, ONE responsibility: every N minutes (configurable; default
+10), for each enabled symbol and kind, build a forecast row from the
+deterministic engine, attach the cited attribution paragraph, persist
+the prediction, then run a resolver cycle to grade any predictions
+that have aged out since last tick.
+
+The thread is started by the FastAPI lifespan on import, gated by an
+env var so tests don't accidentally fire predictions during a pytest
+session. The runtime config is reloaded on every cycle so an admin
+can change cadence / symbols without a server restart.
+"""
+from __future__ import annotations
+
+import os
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Optional
+
+from sca.movement import config as sim_config
+from sca.movement import peg_tick_runner
+from sca.movement.attribute import compose_attribution, gather_event_candidates
+from sca.movement.brave_context import fetch_context_for as fetch_brave_context
+from sca.movement.judge import compose as compose_judge
+from sca.movement.predict import (
+    forecast_net_flow_direction,
+    forecast_peg_deviation,
+)
+from sca.movement.resolve import run_resolver_cycle
+from sca.observability import log_event
+
+
+# IPCC ladder ordered MOST → LEAST calm. The Brave interest gate
+# wants the LEAST calm word across a symbol's forecasts so a "this
+# is interesting" call still triggers fresh context even when other
+# kinds say "nothing happening".
+_CALM_ORDER = [
+    "virtually_certain", "very_likely",          # calm
+    "likely",
+    "about_as_likely_as_not",
+    "unlikely", "very_unlikely",
+    "exceptionally_unlikely",                    # NOT calm
+]
+
+
+def _pick_least_calm(words: list[str | None]) -> str | None:
+    """Return the most-uncertain (least-calm) confidence word from a
+    list — that's the word the Brave interest gate should see. None
+    entries are ignored; an all-None list returns None and the gate
+    treats that as 'not calm' (don't skip)."""
+    best_idx = -1
+    best_word: str | None = None
+    for w in words:
+        if not w:
+            continue
+        try:
+            idx = _CALM_ORDER.index(w)
+        except ValueError:
+            continue
+        if idx > best_idx:
+            best_idx = idx
+            best_word = w
+    return best_word
+
+
+_TICKER_DISABLED_ENV = "SCA_MOVEMENT_TICKER_DISABLED"
+_TICKER_LOCK = threading.Lock()
+_TICKER_STATE: dict = {
+    "running": False,
+    "last_tick_at": None,
+    "last_summary": None,
+    "started_at": None,
+}
+
+
+def is_running() -> bool:
+    with _TICKER_LOCK:
+        return _TICKER_STATE["running"]
+
+
+def state() -> dict:
+    """Snapshot of the ticker's current runtime state. Read by the
+    /api/simulator/state endpoint."""
+    with _TICKER_LOCK:
+        return dict(_TICKER_STATE)
+
+
+def _peg_history_bps(symbol: str, limit: int = 60) -> list[float]:
+    """Pull recent peg ticks for `symbol`, oldest-last so the
+    forecast model sees a forward-moving series."""
+    from sca.store import get_store
+    try:
+        rows = get_store().list_peg_ticks(symbol, limit=limit) or []
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "movement.ticker.peg_history_failed", level="warn",
+            symbol=symbol, error_class=type(exc).__name__,
+        )
+        return []
+    # list_peg_ticks returns newest-first; flip for the model.
+    rows = list(reversed(rows))
+    return [float(r.get("deviation_bps") or 0.0) for r in rows]
+
+
+def _supply_series(symbol: str, limit: int = 60) -> list[float]:
+    """Pull recent total-supply snapshots for `symbol`, oldest-last."""
+    from sca.store import get_store
+    try:
+        rows = get_store().list_snapshots(symbol, limit=limit) or []
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "movement.ticker.supply_history_failed", level="warn",
+            symbol=symbol, error_class=type(exc).__name__,
+        )
+        return []
+    rows = list(reversed(rows))
+    return [float(r.get("total_supply") or 0.0) for r in rows]
+
+
+def _emit_for_symbol(symbol: str, kinds: list[str],
+                     horizon_minutes: int) -> dict:
+    """Build + persist one prediction per enabled kind for `symbol`.
+    Returns a per-kind summary dict for observability."""
+    out = {"symbol": symbol, "emitted": {}, "skipped": {}, "errors": {}}
+    candidates = gather_event_candidates(symbol)
+    forecast_summary_parts = []
+    forecasts = []
+
+    if "peg_deviation" in kinds:
+        history = _peg_history_bps(symbol)
+        f = forecast_peg_deviation(
+            symbol, history, horizon_minutes, drivers=[],
+        )
+        forecasts.append(f)
+        forecast_summary_parts.append(
+            f"{symbol} peg deviation {f.point:+.2f}bp at {horizon_minutes}m"
+        )
+
+    if "net_flow_direction" in kinds:
+        series = _supply_series(symbol)
+        f = forecast_net_flow_direction(
+            symbol, series, horizon_minutes, drivers=[],
+        )
+        forecasts.append(f)
+        forecast_summary_parts.append(
+            f"{symbol} net flow {f.point:+.0f} at {horizon_minutes}m "
+            f"(p+={f.prob_positive or 0:.2f})"
+        )
+
+    # ONE attribution paragraph for both kinds — drivers operate at
+    # the symbol level, not the kind level. Saves LLM budget and
+    # keeps the narrative coherent.
+    if forecasts:
+        forecast_summary = " · ".join(forecast_summary_parts)
+        try:
+            sentence, used = compose_attribution(
+                forecast_summary, candidates,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                "movement.ticker.attribution_failed", level="warn",
+                symbol=symbol, error_class=type(exc).__name__,
+            )
+            sentence, used = "No driver cited.", []
+        for f in forecasts:
+            f.drivers = used
+            if sentence != "No driver cited.":
+                f.notes = (f.notes + " " if f.notes else "") + f"attr: {sentence}"
+
+    from sca.store import get_store
+    store = get_store()
+    # Pull a calibration snapshot ONCE per symbol so the judge can
+    # temper its own confidence based on actual track record. Cheap
+    # in-process aggregation — fine to call inside the ticker.
+    try:
+        calibration = store.calibration_summary(symbol=symbol)
+    except Exception:  # noqa: BLE001
+        calibration = {"count": 0}
+
+    # Coalesce Brave context: ONE call per symbol, shared across all
+    # kinds. The interest gate uses the most-confident (most calm)
+    # forecast — if even the boldest call is calm, we skip Brave.
+    # Cache-first, jittered TTL, daily quota all live inside
+    # fetch_brave_context.
+    confidence_words = [getattr(f, "confidence_word", None) for f in forecasts]
+    least_calm_word = _pick_least_calm(confidence_words)
+    try:
+        web_ctx = fetch_brave_context(
+            symbol, kind=forecasts[0].kind if forecasts else "peg_deviation",
+            confidence_word=least_calm_word,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "movement.ticker.brave_context_failed", level="info",
+            symbol=symbol, error_class=type(exc).__name__,
+        )
+        web_ctx = []
+
+    for f in forecasts:
+        # Run the LLM judge per forecast row. Empty drivers + thin
+        # history are honest inputs; the judge handles them by saying
+        # so. Output is best-effort — None fields leave the UI to
+        # fall back to the engine prose.
+        judge_summary = {
+            "symbol": f.symbol,
+            "kind": f.kind,
+            "horizon_minutes": f.horizon_minutes,
+            "point": f.point,
+            "p50_low": f.p50_low, "p50_high": f.p50_high,
+            "p80_low": f.p80_low, "p80_high": f.p80_high,
+            "p95_low": f.p95_low, "p95_high": f.p95_high,
+            "prob_positive": f.prob_positive,
+            "confidence_word": f.confidence_word,
+            "engine_notes": f.notes,
+        }
+        try:
+            # web_ctx was fetched ONCE for the symbol above
+            # (coalesced across kinds — see cost-discipline notes in
+            # brave_context.py).
+            j = compose_judge(
+                judge_summary, sentence if forecasts else "",
+                used, calibration, web_context=web_ctx,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                "movement.ticker.judge_failed", level="warn",
+                symbol=symbol, kind=f.kind,
+                error_class=type(exc).__name__,
+            )
+            from sca.movement.judge import JudgeOutput
+            j = JudgeOutput(synthesis=None, insight=None, pitch=None)
+
+        try:
+            row = {
+                "symbol": f.symbol,
+                "kind": f.kind,
+                "horizon_minutes": f.horizon_minutes,
+                "resolves_at": f.resolves_at,
+                "point": f.point,
+                "p50_low": f.p50_low, "p50_high": f.p50_high,
+                "p80_low": f.p80_low, "p80_high": f.p80_high,
+                "p95_low": f.p95_low, "p95_high": f.p95_high,
+                "prob_positive": f.prob_positive,
+                "confidence_word": f.confidence_word,
+                "drivers": f.drivers,
+                "model": f.model,
+                "notes": f.notes,
+                "judge_synthesis": j.synthesis,
+                "judge_insight": j.insight,
+                "judge_pitch": j.pitch,
+                "judge_model": j.model if (
+                    j.synthesis or j.insight or j.pitch
+                ) else None,
+            }
+            store.insert_prediction(row)
+            out["emitted"][f.kind] = True
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                "movement.ticker.insert_failed", level="warn",
+                symbol=symbol, kind=f.kind,
+                error_class=type(exc).__name__,
+                error_message=str(exc)[:200],
+            )
+            out["errors"][f.kind] = type(exc).__name__
+    return out
+
+
+def _tick_once(cfg: Optional[dict] = None) -> dict:
+    """Run one ticker cycle: peg ticks → forecasts → resolver."""
+    cfg = cfg or sim_config.load()
+    summary = {
+        "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "tick_interval_minutes": cfg["tick_interval_minutes"],
+        "horizon_minutes": cfg["horizon_minutes"],
+        "per_symbol": [],
+        "resolver": None,
+    }
+    if not cfg.get("enabled", True):
+        summary["disabled"] = True
+        return summary
+
+    # 1. Refresh peg ticks for every tracked symbol.
+    peg_tick_runner.refresh_for_symbols(cfg["symbols"])
+
+    # 2. Emit predictions per symbol/kind.
+    for symbol in cfg["symbols"]:
+        per = _emit_for_symbol(
+            symbol, cfg["kinds"], cfg["horizon_minutes"],
+        )
+        summary["per_symbol"].append(per)
+
+    # 3. Grade what's resolvable.
+    try:
+        summary["resolver"] = run_resolver_cycle()
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "movement.ticker.resolver_failed", level="warn",
+            error_class=type(exc).__name__,
+        )
+        summary["resolver"] = {"errors": 1}
+
+    summary["completed_at"] = datetime.now(timezone.utc).isoformat(
+        timespec="seconds")
+    log_event(
+        "movement.ticker.cycle", level="info",
+        symbols=len(cfg["symbols"]),
+        kinds=len(cfg["kinds"]),
+        horizon=cfg["horizon_minutes"],
+    )
+    return summary
+
+
+def _ticker_loop() -> None:
+    """Long-running loop. Sleeps tick_interval_minutes between
+    cycles; rereads config every cycle so a /api/simulator/config
+    POST takes effect on the next tick."""
+    log_event("movement.ticker.started", level="info")
+    while True:
+        try:
+            cfg = sim_config.load()
+            with _TICKER_LOCK:
+                _TICKER_STATE["running"] = True
+                _TICKER_STATE["last_tick_at"] = (
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            summary = _tick_once(cfg)
+            with _TICKER_LOCK:
+                _TICKER_STATE["last_summary"] = summary
+            sleep_s = cfg["tick_interval_minutes"] * 60
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                "movement.ticker.cycle_crashed", level="error",
+                error_class=type(exc).__name__,
+                error_message=str(exc)[:300],
+            )
+            sleep_s = 60  # back off briefly on a crash
+        time.sleep(sleep_s)
+
+
+def start() -> None:
+    """Idempotent: launches the ticker thread once per process. Gated
+    by env var so tests don't accidentally run it."""
+    if os.environ.get(_TICKER_DISABLED_ENV, "").lower() in ("1", "true", "yes"):
+        log_event("movement.ticker.disabled_by_env", level="info")
+        return
+    with _TICKER_LOCK:
+        if _TICKER_STATE.get("started_at"):
+            return
+        _TICKER_STATE["started_at"] = (
+            datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    threading.Thread(
+        target=_ticker_loop, daemon=True, name="movement-ticker",
+    ).start()

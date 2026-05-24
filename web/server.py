@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sca import config
 from sca.agent import analyze, assess_redemption, screen_token
 from sca.corpus.sources import all_sources
+from sca.observability import log_event
 from sca.store import get_store
 from sca.tools import get_onchain_supply
 from web.auth import current_user, require_user
@@ -647,7 +648,50 @@ def supply(symbol: str) -> dict[str, Any]:
         result = get_onchain_supply(canon, allow_unverified=True)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"supply read failed: {exc}") from exc
+    # Persist a snapshot row at most once per minute per symbol so the
+    # movement simulator has a time series to forecast from. The
+    # F1 monitor polls every few seconds; without this gate we'd flood
+    # the store. Cheap dict check, no lock — duplicate writes within
+    # the same second from concurrent requests are tolerable.
+    _record_movement_snapshot(canon, result)
     return _asdict(result)
+
+
+# Per-symbol last-snapshot-write timestamps. In-memory is sufficient:
+# at restart we lose the gate but the worst case is one extra snapshot
+# row per symbol, which the store cheerfully accepts.
+_SNAPSHOT_WRITE_GATE: dict[str, float] = {}
+_SNAPSHOT_WRITE_INTERVAL_S = 60.0
+
+
+def _record_movement_snapshot(symbol: str, result: Any) -> None:
+    """Write the supply reading through to the store if it's been at
+    least _SNAPSHOT_WRITE_INTERVAL_S since the last write for this
+    symbol. Best-effort: a store failure logs but never raises so the
+    /api/supply path stays fast and resilient."""
+    now = time.time()
+    last = _SNAPSHOT_WRITE_GATE.get(symbol, 0.0)
+    if now - last < _SNAPSHOT_WRITE_INTERVAL_S:
+        return
+    _SNAPSHOT_WRITE_GATE[symbol] = now
+    try:
+        per_chain = getattr(result, "per_chain", None)
+        if per_chain is not None and not isinstance(per_chain, (list, dict)):
+            per_chain = _asdict(per_chain)
+        get_store().save_snapshot(
+            symbol=symbol,
+            total_supply=float(getattr(result, "total_supply", 0.0) or 0.0),
+            native_supply=getattr(result, "native_supply", None),
+            bridged_supply=getattr(result, "bridged_supply", None),
+            per_chain=per_chain,
+            warnings=list(getattr(result, "warnings", []) or []),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "movement.snapshot_persist_failed", level="warn",
+            symbol=symbol, error_class=type(exc).__name__,
+            error_message=str(exc)[:200],
+        )
 
 
 @app.post("/api/addresses/decision")
@@ -1554,6 +1598,20 @@ def _start_health_thread() -> None:
         pass
 
 
+@app.on_event("startup")
+def _start_movement_ticker() -> None:
+    """Boot the coin movement simulator's background ticker.
+
+    Gated by SCA_MOVEMENT_TICKER_DISABLED (set in test env) so pytest
+    never accidentally fires forecast rows. start() is idempotent and
+    returns silently if already running."""
+    try:
+        from sca.movement.ticker import start as start_movement_ticker
+        start_movement_ticker()
+    except Exception:  # noqa: BLE001 - startup must never fail on a bg thread
+        pass
+
+
 # ── F7 · ANALYST — the Doré agent bridge ──────────────────────────────
 # F7 is the console for Doré's conversational analyst, an agent that runs
 # on the Hermes runtime. The runtime deploys separately (see the repo
@@ -1657,6 +1715,177 @@ def agent(
 
 # ── static frontend ───────────────────────────────────────────────────
 _NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
+
+# ── F9 · MOVEMENT SIMULATOR — predict / attribute / score / narrate ──
+# The simulator's read surface for the SPA. Four endpoints, one
+# responsibility each:
+#   /api/simulator/state       — ticker liveness + config + latest summary
+#   /api/simulator/predictions — recent calls per symbol (the live frame)
+#   /api/simulator/calibration — the track record (reliability bins, Brier)
+#   /api/simulator/config      — GET current, POST validated update
+#
+# All four are cheap reads off the store; no LLM calls happen in the
+# request path. The ticker thread is the only thing that emits new
+# predictions, which keeps the request path deterministic + fast.
+
+@app.get("/api/simulator/state")
+def simulator_state() -> dict[str, Any]:
+    """Ticker liveness + cached last-cycle summary + current config.
+
+    Read by the SPA on view mount to render the configuration panel
+    and the 'last tick N min ago' status line. Never blocks on the
+    ticker — falls back to a minimal 'not yet started' payload if the
+    background thread hasn't run yet."""
+    from sca.movement import config as sim_cfg
+    from sca.movement.brave_context import quota_state as brave_quota_state
+    from sca.movement.ticker import state as ticker_state
+    return {
+        "ticker": ticker_state(),
+        "config": sim_cfg.load(),
+        # Brave web-search daily quota — surfaced so operators can
+        # see exactly how much of their free-tier budget the
+        # simulator is burning. Cap is configurable via env.
+        "brave_quota": brave_quota_state(),
+    }
+
+
+@app.get("/api/simulator/predictions")
+def simulator_predictions(
+    symbol: str | None = None,
+    kind: str | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Recent predictions (newest first) with their resolution rows
+    joined when present. The SPA renders these into the fan chart +
+    attribution feed.
+
+    Optional filters narrow the slice. Limit is capped at 500 so a
+    rogue client can't pull the entire archive in one call.
+
+    Degrades gracefully when the predictions table is missing
+    (migration 0007 not yet applied) — returns an empty archive so
+    the UI renders the 'archive is empty' state instead of a 500."""
+    store = get_store()
+    cap = max(1, min(limit, 500))
+    try:
+        preds = store.list_predictions(
+            symbol=symbol, kind=kind, limit=cap) or []
+        res = store.list_resolutions(
+            symbol=symbol, kind=kind, limit=cap) or []
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "simulator.api.predictions.degraded", level="warn",
+            error_class=type(exc).__name__,
+            error_message=str(exc)[:200],
+        )
+        return {"predictions": [], "count": 0,
+                "schema_missing": "predictions table not yet provisioned"}
+    # Join by prediction_id so each prediction carries its resolution
+    # in one row — the UI doesn't have to do a join itself.
+    res_by_pred = {r.get("id"): r for r in res if r.get("id")}
+    out = []
+    for p in preds:
+        joined = dict(p)
+        r = res_by_pred.get(p.get("id"))
+        if r is not None:
+            joined["resolution"] = {
+                "resolved_at": r.get("resolved_at"),
+                "actual_value": r.get("actual_value"),
+                "brier_score": r.get("brier_score"),
+                "crps_score": r.get("crps_score"),
+                "outcome_kind": r.get("outcome_kind"),
+                "narrative": r.get("narrative"),
+                "baseline_persistence_brier":
+                    r.get("baseline_persistence_brier"),
+                "baseline_climatology_brier":
+                    r.get("baseline_climatology_brier"),
+            }
+        out.append(joined)
+    return {"predictions": out, "count": len(out)}
+
+
+@app.get("/api/simulator/calibration")
+def simulator_calibration(
+    symbol: str | None = None,
+    kind: str | None = None,
+    horizon_minutes: int | None = None,
+) -> dict[str, Any]:
+    """The track record. Reliability bins, mean Brier, mean CRPS,
+    outcome histogram, plus the two baseline Briers (persistence +
+    climatology) for skill comparison.
+
+    Empty struct + count=0 when no resolutions exist — the UI
+    renders the 'waiting for resolutions to accumulate' state.
+    """
+    try:
+        return get_store().calibration_summary(
+            symbol=symbol, kind=kind, horizon_minutes=horizon_minutes,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "simulator.api.calibration.degraded", level="warn",
+            error_class=type(exc).__name__,
+            error_message=str(exc)[:200],
+        )
+        return {
+            "count": 0, "brier_mean": None, "crps_mean": None,
+            "outcome_histogram": {}, "reliability_bins": [],
+            "baseline_persistence_brier_mean": None,
+            "baseline_climatology_brier_mean": None,
+            "schema_missing": "resolutions table not yet provisioned",
+        }
+
+
+@app.get("/api/simulator/config")
+def simulator_config_get() -> dict[str, Any]:
+    """Current simulator config — read by the configuration panel."""
+    from sca.movement import config as sim_cfg
+    return sim_cfg.load()
+
+
+@app.post("/api/simulator/config")
+def simulator_config_set(
+    body: dict[str, Any],
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """Update the simulator config. Auth-gated because cadence /
+    symbol changes ripple through the prediction archive — only
+    signed-in curators can flip them.
+
+    Returns the merged config so the panel can refresh its bound
+    state. ValueError from validation -> 400."""
+    from sca.movement import config as sim_cfg
+    try:
+        merged = sim_cfg.save(body or {})
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    log_event(
+        "movement.config.updated", level="info",
+        by=user["user"]["id"],
+        tick_interval_minutes=merged.get("tick_interval_minutes"),
+        horizon_minutes=merged.get("horizon_minutes"),
+        symbols=merged.get("symbols"),
+        kinds=merged.get("kinds"),
+    )
+    return merged
+
+
+@app.post("/api/simulator/tick")
+def simulator_tick_now(
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """Curator endpoint: kick a ticker cycle synchronously, bypassing
+    the schedule. Useful for ops + smoke tests; the response is the
+    cycle summary so callers see exactly what landed."""
+    from sca.movement.ticker import _tick_once
+    summary = _tick_once()
+    log_event(
+        "movement.tick.manual", level="info",
+        by=user["user"]["id"],
+        symbols=len(summary.get("per_symbol", [])),
+    )
+    return summary
 
 
 @app.get("/")

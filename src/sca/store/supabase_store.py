@@ -536,3 +536,241 @@ class SupabaseStore(Store):
             .execute()
         )
         return resp.data or []
+
+    # ── movement simulator: peg ticks ─────────────────────────────────
+    def insert_peg_tick(
+        self, *, symbol: str, source: str,
+        price: float, deviation_bps: float,
+    ) -> None:
+        # numeric columns accept Python float; Supabase serialises to
+        # JSON with full precision so a sub-bp price doesn't round.
+        self._client.table("peg_ticks").insert({
+            "symbol": symbol,
+            "source": source,
+            "price": price,
+            "deviation_bps": deviation_bps,
+        }).execute()
+
+    def list_peg_ticks(
+        self, symbol: str, *, limit: int = 200,
+    ) -> list[dict]:
+        resp = (
+            self._client.table("peg_ticks")
+            .select("*")
+            .eq("symbol", symbol)
+            .order("read_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return resp.data or []
+
+    # ── movement simulator: predictions ───────────────────────────────
+    def insert_prediction(self, prediction: dict) -> str:
+        # Forward only the columns the table declares. Drivers must be
+        # a list (jsonb default '[]') — even an empty list is honest;
+        # null would mean "we don't track this", which is wrong.
+        row = {
+            "symbol": prediction["symbol"],
+            "kind": prediction["kind"],
+            "horizon_minutes": int(prediction["horizon_minutes"]),
+            "resolves_at": prediction["resolves_at"],
+            "point": prediction["point"],
+            "p50_low": prediction.get("p50_low"),
+            "p50_high": prediction.get("p50_high"),
+            "p80_low": prediction.get("p80_low"),
+            "p80_high": prediction.get("p80_high"),
+            "p95_low": prediction.get("p95_low"),
+            "p95_high": prediction.get("p95_high"),
+            "prob_positive": prediction.get("prob_positive"),
+            "confidence_word": prediction.get("confidence_word"),
+            "drivers": prediction.get("drivers", []),
+            "model": prediction["model"],
+            "notes": prediction.get("notes", ""),
+            "judge_synthesis": prediction.get("judge_synthesis"),
+            "judge_insight": prediction.get("judge_insight"),
+            "judge_pitch": prediction.get("judge_pitch"),
+            "judge_model": prediction.get("judge_model"),
+        }
+        if "made_at" in prediction:
+            row["made_at"] = prediction["made_at"]
+        resp = (
+            self._client.table("predictions")
+            .insert(row)
+            .execute()
+        )
+        data = resp.data or []
+        return (data[0].get("id") if data else "") or ""
+
+    def list_predictions(
+        self, *, symbol: str | None = None, kind: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        q = self._client.table("predictions").select("*")
+        if symbol is not None:
+            q = q.eq("symbol", symbol)
+        if kind is not None:
+            q = q.eq("kind", kind)
+        resp = q.order("made_at", desc=True).limit(limit).execute()
+        return resp.data or []
+
+    def unresolved_predictions(
+        self, *, before_ts: str | None = None, limit: int = 500,
+    ) -> list[dict]:
+        # The resolver thread runs every minute and pulls predictions
+        # whose resolves_at has passed but which lack a paired
+        # resolutions row. PostgREST doesn't natively express an
+        # anti-join, so we fetch a candidate window then drop the
+        # already-resolved ids in Python. The window is bounded by
+        # `limit` so a backlog drains across cycles.
+        from datetime import datetime, timezone
+        cutoff = before_ts or datetime.now(timezone.utc).isoformat()
+        q = (
+            self._client.table("predictions")
+            .select("*")
+            .lte("resolves_at", cutoff)
+            .order("resolves_at")
+            .limit(limit)
+        )
+        candidates = (q.execute().data or [])
+        if not candidates:
+            return []
+        ids = [c["id"] for c in candidates]
+        resolved_resp = (
+            self._client.table("resolutions")
+            .select("prediction_id")
+            .in_("prediction_id", ids)
+            .execute()
+        )
+        resolved_ids = {r["prediction_id"]
+                        for r in (resolved_resp.data or [])}
+        return [c for c in candidates if c["id"] not in resolved_ids]
+
+    # ── movement simulator: resolutions ───────────────────────────────
+    def insert_resolution(self, resolution: dict) -> str:
+        row = {
+            "prediction_id": resolution["prediction_id"],
+            "actual_value": resolution["actual_value"],
+            "brier_score": resolution.get("brier_score"),
+            "crps_score": resolution.get("crps_score"),
+            "outcome_kind": resolution["outcome_kind"],
+            "narrative": resolution.get("narrative", ""),
+            "baseline_persistence_brier":
+                resolution.get("baseline_persistence_brier"),
+            "baseline_climatology_brier":
+                resolution.get("baseline_climatology_brier"),
+        }
+        try:
+            resp = (
+                self._client.table("resolutions")
+                .insert(row)
+                .execute()
+            )
+        except Exception:  # noqa: BLE001
+            # Unique-constraint violation on prediction_id (already
+            # resolved) is benign — the resolver is idempotent across
+            # retries. Other errors are re-raised so the caller logs.
+            return ""
+        data = resp.data or []
+        return (data[0].get("id") if data else "") or ""
+
+    def list_resolutions(
+        self, *, symbol: str | None = None, kind: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        # PostgREST embedded resource: pull resolutions and embed the
+        # parent prediction row. Then flatten into the dict shape the
+        # FileStore returns so callers stay backend-agnostic.
+        q = self._client.table("resolutions").select(
+            "*, prediction:predictions(*)"
+        )
+        resp = q.order("resolved_at", desc=True).limit(limit).execute()
+        out = []
+        for row in (resp.data or []):
+            pred = row.get("prediction") or {}
+            if symbol is not None and pred.get("symbol") != symbol:
+                continue
+            if kind is not None and pred.get("kind") != kind:
+                continue
+            flat = dict(pred)
+            flat.update({
+                "resolution_id": row.get("id"),
+                "resolved_at": row.get("resolved_at"),
+                "actual_value": row.get("actual_value"),
+                "brier_score": row.get("brier_score"),
+                "crps_score": row.get("crps_score"),
+                "outcome_kind": row.get("outcome_kind"),
+                "narrative": row.get("narrative", ""),
+                "baseline_persistence_brier":
+                    row.get("baseline_persistence_brier"),
+                "baseline_climatology_brier":
+                    row.get("baseline_climatology_brier"),
+            })
+            out.append(flat)
+        return out
+
+    def calibration_summary(
+        self, *, symbol: str | None = None, kind: str | None = None,
+        horizon_minutes: int | None = None,
+    ) -> dict:
+        # Single-pass aggregation in Python over the joined resolutions
+        # because PostgREST aggregation is limited and the calibration
+        # math (reliability bins) needs the per-row data anyway.
+        rows = self.list_resolutions(symbol=symbol, kind=kind, limit=2000)
+        if horizon_minutes is not None:
+            rows = [r for r in rows
+                    if r.get("horizon_minutes") == horizon_minutes]
+        if not rows:
+            return {
+                "count": 0, "brier_mean": None, "crps_mean": None,
+                "outcome_histogram": {}, "reliability_bins": [],
+                "baseline_persistence_brier_mean": None,
+                "baseline_climatology_brier_mean": None,
+            }
+        briers = [r["brier_score"] for r in rows if r.get("brier_score") is not None]
+        crps = [r["crps_score"] for r in rows if r.get("crps_score") is not None]
+        bp = [r["baseline_persistence_brier"] for r in rows
+              if r.get("baseline_persistence_brier") is not None]
+        bc = [r["baseline_climatology_brier"] for r in rows
+              if r.get("baseline_climatology_brier") is not None]
+        hist: dict[str, int] = {}
+        for r in rows:
+            k = r.get("outcome_kind", "unknown")
+            hist[k] = hist.get(k, 0) + 1
+
+        bins: list[dict] = []
+        for low in range(0, 100, 10):
+            high = low + 10
+            in_bin = [
+                r for r in rows
+                if r.get("prob_positive") is not None
+                and low / 100.0 <= float(r["prob_positive"]) < high / 100.0
+            ]
+            if not in_bin:
+                continue
+            hits = sum(
+                1 for r in in_bin
+                if r.get("outcome_kind") in ("hit", "inside_p50")
+            )
+            bins.append({
+                "lower_pct": low,
+                "upper_pct": high,
+                "midpoint": (low + high) / 200.0,
+                "count": len(in_bin),
+                "empirical_rate": hits / len(in_bin),
+                "predicted_mean": sum(
+                    float(r.get("prob_positive", 0)) for r in in_bin
+                ) / len(in_bin),
+            })
+
+        def _mean(xs: list) -> float | None:
+            return sum(float(x) for x in xs) / len(xs) if xs else None
+
+        return {
+            "count": len(rows),
+            "brier_mean": _mean(briers),
+            "crps_mean": _mean(crps),
+            "outcome_histogram": hist,
+            "reliability_bins": bins,
+            "baseline_persistence_brier_mean": _mean(bp),
+            "baseline_climatology_brier_mean": _mean(bc),
+        }

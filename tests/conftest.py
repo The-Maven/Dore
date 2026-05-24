@@ -49,6 +49,39 @@ def _isolate_state(monkeypatch, tmp_path):
 
     monkeypatch.setattr(config, "SUPABASE_URL", "")
     monkeypatch.setattr(config, "SUPABASE_SERVICE_KEY", "")
+    # Movement simulator: keep the ticker thread + live peg-price
+    # fetch off in every test. Tests construct forecasts and
+    # resolutions directly; the background loop and HTTP fetches stay
+    # out of the path.
+    monkeypatch.setenv("SCA_MOVEMENT_TICKER_DISABLED", "1")
+    monkeypatch.setenv("SCA_PEG_PRICE_DISABLED", "1")
+    # Isolate the movement simulator config file so test edits don't
+    # leak into the real data/movement_config.json.
+    try:
+        from sca.movement import config as _sim_cfg_mod
+    except Exception:  # noqa: BLE001 - module may not exist in older trees
+        _sim_cfg_mod = None
+    if _sim_cfg_mod is not None:
+        monkeypatch.setattr(
+            _sim_cfg_mod, "_CONFIG_PATH", tmp_path / "movement_config.json",
+        )
+    try:
+        from sca.movement import brave_context as _brave_ctx_mod
+    except Exception:  # noqa: BLE001
+        _brave_ctx_mod = None
+    if _brave_ctx_mod is not None:
+        monkeypatch.setattr(
+            _brave_ctx_mod, "_CACHE_PATH",
+            tmp_path / "movement_brave_context.json",
+        )
+        monkeypatch.setattr(
+            _brave_ctx_mod, "_QUOTA_PATH",
+            tmp_path / "movement_brave_quota.json",
+        )
+    # Belt-and-braces: even with no Brave key in test env, ensure the
+    # SCA_WEB_SEARCH_KEY env var is empty so brave_context.fetch
+    # returns [] immediately without trying network.
+    monkeypatch.setenv("SCA_WEB_SEARCH_KEY", "")
     reset_store()
     monkeypatch.setattr(votes, "VOTES_PATH", tmp_path / "votes.yaml")
     monkeypatch.setattr(_afetch, "_CACHE", tmp_path / "attestation_cache.json")

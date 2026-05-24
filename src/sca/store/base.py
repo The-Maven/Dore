@@ -211,3 +211,77 @@ class Store(ABC):
     @abstractmethod
     def list_snapshots(self, symbol: str, limit: int = 50) -> list[dict]:
         """Recent supply snapshots for a symbol, newest first."""
+
+    # ── movement simulator: peg ticks ─────────────────────────────────
+    # The intraday spot/peg series. Cheap inserts, indexed by symbol and
+    # read_at. None on optional fields is "we didn't observe it" — not
+    # "we observed zero".
+    def insert_peg_tick(
+        self, *, symbol: str, source: str,
+        price: float, deviation_bps: float,
+    ) -> None:
+        """Persist one peg-price tick. Default no-op so backends that
+        haven't yet implemented the simulator schema don't crash callers
+        — the ticker logs the persist failure and keeps going."""
+        return None
+
+    def list_peg_ticks(
+        self, symbol: str, *, limit: int = 200,
+    ) -> list[dict]:
+        """Recent peg ticks for `symbol`, newest first. Empty list when
+        unsupported by the backend."""
+        return []
+
+    # ── movement simulator: predictions ───────────────────────────────
+    # Immutable archive. The resolver writes a paired resolutions row;
+    # nothing else modifies a row once inserted.
+    def insert_prediction(self, prediction: dict) -> str:
+        """Insert one prediction row. Returns the row id. `prediction`
+        keys mirror the predictions table columns. Default no-op
+        returns empty string so callers can detect unsupported."""
+        return ""
+
+    def list_predictions(
+        self, *, symbol: str | None = None, kind: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Recent predictions, newest first. Optional symbol / kind
+        filters. Returns plain dicts (column names verbatim)."""
+        return []
+
+    def unresolved_predictions(self, *, before_ts: str | None = None,
+                                limit: int = 500) -> list[dict]:
+        """Predictions whose resolves_at has passed but which lack a
+        paired resolution row. The resolver thread reads from here on
+        each cycle."""
+        return []
+
+    # ── movement simulator: resolutions ───────────────────────────────
+    def insert_resolution(self, resolution: dict) -> str:
+        """Insert one resolution row. Returns the row id. `resolution`
+        keys mirror the resolutions table columns including
+        prediction_id (the foreign key)."""
+        return ""
+
+    def list_resolutions(
+        self, *, symbol: str | None = None, kind: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Recent resolved predictions, newest first. Joins predictions
+        on the foreign key so each row carries enough context for the
+        calibration UI (symbol, kind, made_at, point, bands)."""
+        return []
+
+    def calibration_summary(
+        self, *, symbol: str | None = None, kind: str | None = None,
+        horizon_minutes: int | None = None,
+    ) -> dict:
+        """Aggregate calibration metrics — Brier mean, CRPS mean,
+        outcome-kind histogram, reliability bins. Optional filters
+        narrow the slice. Empty struct when no resolutions exist."""
+        return {
+            "count": 0, "brier_mean": None, "crps_mean": None,
+            "outcome_histogram": {}, "reliability_bins": [],
+            "baseline_persistence_brier_mean": None,
+            "baseline_climatology_brier_mean": None,
+        }
