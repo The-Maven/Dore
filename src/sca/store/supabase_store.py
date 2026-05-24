@@ -157,18 +157,13 @@ class SupabaseStore(Store):
         )
         if entry is None:
             return  # caller will hit FK error — better than silent invention
-        # NOTE: the live DB CHECK constraint on `status` predates the
-        # opt-out migration (0002_corpus_opt_out.sql) and accepts only the
-        # legacy values {proposed, included, excluded}. Anything outside
-        # that set 23514's. Coercing to a known-good value here keeps
-        # discovery unblocked without forcing a DB migration mid-flight;
-        # the YAML still carries the canonical status (included/excluded)
-        # and that's what the SPA reads via list_sources.
-        legacy_status = entry["status"] if entry["status"] in {
-            "proposed", "approved", "rejected",
-        } else "approved"
-        # Tier constraint also predates tier1_official / tier2_industry —
-        # legacy accepts {primary, standard, methodology, research}.
+        # The `tier` CHECK constraint on the live DB still predates the
+        # tier1_official / tier2_industry vocabulary added by auto-
+        # discovery; legacy accepts only {primary, standard, methodology,
+        # research}. Coerce anything outside that set to "research" so
+        # discovered sources can land. The status constraint is post-0002
+        # ({included, excluded}) and the YAML already uses canonical
+        # values, so status passes through verbatim.
         legacy_tier = entry["tier"] if entry["tier"] in {
             "primary", "standard", "methodology", "research",
         } else "research"
@@ -176,7 +171,7 @@ class SupabaseStore(Store):
             "id": entry["id"],
             "title": entry["title"],
             "tier": legacy_tier,
-            "status": legacy_status,
+            "status": entry["status"],
             "url": entry["url"],
             "summary": entry["summary"],
             "notes": entry["notes"],
