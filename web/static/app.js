@@ -5768,18 +5768,68 @@ async function loadMarket(mount, runBtn, forceRefresh) {
       document.createTextNode(' RECOMPUTING'));
   }
   mount.innerHTML = '';
-  mount.append(el('div', { class: 'mkt-loading fade-in' },
-    el('div', { class: 'mkt-loading-dot' }),
-    el('div', {},
-      el('div', { class: 'mkt-loading-head' },
+
+  // Live loading panel — cycling narration over an elapsed clock +
+  // proportional scanbar. Same shape as the per-token analyze / eval
+  // staged narration so the surface feels alive while the LLM is
+  // composing (the long pole at ~15-19s of the ~20s recompute).
+  const expectedSec = 20;
+  const subLine = el('div', { class: 'mkt-loading-step' },
+    'reading supply across every tracked token');
+  const clock = el('span', { class: 'mkt-loading-clock' },
+    '0s / ~' + expectedSec + 's');
+  const scanbar = el('div', { class: 'mkt-loading-bar' },
+    el('div', { class: 'mkt-loading-fill' }));
+  mount.append(el('section', { class: 'mkt-loading fade-in' },
+    el('div', { class: 'mkt-loading-row' },
+      el('span', { class: 'mkt-loading-dot' }),
+      el('span', { class: 'mkt-loading-head' },
         forceRefresh ? 'Recomposing market view'
                      : 'Loading market view'),
-      el('div', { class: 'mkt-loading-sub' },
-        'Aggregating 25 tokens · 22 issuers · 9 chains'))));
+      clock),
+    subLine,
+    scanbar));
+
+  // The real backend steps in _compute_market_overview, named in
+  // product terms so the user sees what's actually happening, not
+  // jargon. The LLM compose is the long pole, hence three lines
+  // dedicated to that phase. Lines cycle every 1.6s.
+  const steps = [
+    'reading supply across every tracked token',
+    'classifying tokens by backing model',
+    'rolling up supply per issuer',
+    'measuring chain-level concentration',
+    'pulling drift readings from the fact store',
+    'retrieving regulatory passages from the corpus',
+    'composing the editorial market brief',
+    'cross-checking insights against the facts block',
+    'naming the largest movement per panel',
+    'scrubbing voice rules from the LLM output',
+  ];
+  let stepIdx = 0;
+  const t0 = Date.now();
+  const stepTimer = setInterval(() => {
+    stepIdx = (stepIdx + 1) % steps.length;
+    subLine.textContent = steps[stepIdx];
+    subLine.classList.remove('mkt-loading-step-tick');
+    void subLine.offsetWidth;  // restart fade animation
+    subLine.classList.add('mkt-loading-step-tick');
+  }, 1600);
+  const clockTimer = setInterval(() => {
+    const sec = Math.round((Date.now() - t0) / 1000);
+    const over = sec > expectedSec * 1.5;
+    clock.textContent = over ? sec + 's' : sec + 's / ~' + expectedSec + 's';
+    clock.classList.toggle('mkt-loading-clock-over', over);
+    const pct = Math.min(96, (sec / expectedSec) * 100);
+    scanbar.firstChild.style.width = pct + '%';
+  }, 200);
+  const stopLoading = () => { clearInterval(stepTimer); clearInterval(clockTimer); };
+
   let data;
   try {
     data = await api('/market' + (forceRefresh ? '?refresh=true' : ''));
   } catch (e) {
+    stopLoading();
     mount.innerHTML = '';
     mount.append(errorBox('Market view failed to load', e.message,
       undefined, { onRetry: () => loadMarket(mount, runBtn, true),
@@ -5788,6 +5838,7 @@ async function loadMarket(mount, runBtn, forceRefresh) {
     runBtn.innerHTML = original;
     return;
   }
+  stopLoading();
   mount.innerHTML = '';
   renderMarket(data, mount);
   runBtn.disabled = false;
