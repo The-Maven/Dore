@@ -357,7 +357,12 @@ def _narrate_outcome(prediction: dict, actual: float, outcome: str,
     prediction-time, not resolution-time."""
     kind = prediction.get("kind", "")
     point = _f(prediction.get("point"))
-    if kind == "peg_deviation":
+    # Honest n/a: a prediction with no point (insufficient_history)
+    # still gets a resolution row, but the narrative names the gap
+    # rather than crashing on a None-format.
+    if point is None:
+        head = f"Forecast unavailable (no point); actual {actual:.2f}."
+    elif kind == "peg_deviation":
         unit = "bp"
         head = f"Forecast {point:.2f}{unit}; actual {actual:.2f}{unit}."
     elif kind == "net_flow_direction":

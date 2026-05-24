@@ -152,6 +152,85 @@ def test_compose_with_web_context_includes_web_section_in_prompt():
     assert "research-house.example" in captured["prompt"]
 
 
+def test_clean_strips_zero_width_space_bypass():
+    """Audit P3.1: a zero-width-space inside 'may' must not let it
+    through the banned-word regex."""
+    s = "USDC m y overshoot the cone."
+    out = _clean(s, field="synthesis")
+    assert "may" not in out.lower()
+    # Also the ZWS itself shouldn't be in the output
+    assert " " not in out and "​" not in out
+
+
+def test_clean_strips_expanded_weasels():
+    """Audit P3.2: 'anticipates', 'arguably', 'presumably', 'appears
+    to', 'we anticipate' must all be caught — original list was too
+    narrow."""
+    s = ("USDC arguably overshoots; presumably the band widens; the "
+         "engine appears to anticipate divergence; we anticipate "
+         "movement.")
+    out = _clean(s, field="synthesis")
+    low = out.lower()
+    assert "arguably" not in low
+    assert "presumably" not in low
+    assert "appears to" not in low
+    assert "we anticipate" not in low
+
+
+def test_clean_enforces_length_cap_per_field():
+    """Audit P3.4: the 80/30/25 word caps were unenforced; an LLM
+    that returns 400 words shipped verbatim. Now the cap truncates
+    with an ellipsis so the audit trail shows we cut."""
+    long_synthesis = " ".join(["word"] * 200)
+    out = _clean(long_synthesis, field="synthesis")
+    word_count = len(out.replace("…", "").split())
+    assert word_count <= 80
+
+
+def test_validate_citations_strips_forged_indices():
+    """Audit P3.5: judge cites [99] when only 2 verified candidates
+    exist. The validator must strip the forged citation."""
+    from sca.movement.judge import _validate_citations
+    text = "OFAC [4] confirmed (W42) imminent; corroborated by [0]."
+    out = _validate_citations(text,
+                                verified_candidates=[{"k": 0}, {"k": 1}],
+                                web_context=[])
+    assert "[4]" not in out
+    assert "(W42)" not in out
+    assert "[0]" in out  # this one was valid
+
+
+def test_compose_dropping_a_hostile_response():
+    """End-to-end hostile scenario from the audit P3 thought experiment:
+    LLM returns synthesis citing forged drivers and weasels. The
+    compose pipeline must strip forged citations and banned weasel
+    words; the row may still ship but the audit log records every
+    edit."""
+    raw = ('{"synthesis": "Reports cite an OFAC announcement [4] '
+           'arguably coinciding with a 12bp move (W3) presumably.", '
+           '"insight": "We anticipate widening.", '
+           '"pitch": "could check"}')
+    out = compose(
+        _example_forecast(),
+        "No driver cited.",
+        attribution_candidates=[{"summary": "real candidate 0"}],
+        calibration_record={"count": 0},
+        web_context=[],
+        llm_client=_FakeLLM(raw),
+    )
+    # Forged citations stripped (only [0] would be valid here)
+    assert "[4]" not in (out.synthesis or "")
+    assert "(W3)" not in (out.synthesis or "")
+    # Banned weasels stripped
+    syn_low = (out.synthesis or "").lower()
+    assert "arguably" not in syn_low
+    assert "presumably" not in syn_low
+    # Future-tense pitching stripped from insight
+    assert "we anticipate" not in (out.insight or "").lower()
+    # Modal verbs stripped from pitch
+    assert "could" not in (out.pitch or "").lower()
+
+
 def test_compose_strips_banned_words_from_llm_output():
     raw = ('{"synthesis": "Peg may drift — perhaps lower.",'
            ' "insight": "We will see widening.",'

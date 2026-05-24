@@ -35,17 +35,33 @@ from sca.observability import log_event
 
 # Bump on any change to the prompt or schema so the predictions archive
 # carries an audit trail of which judge version wrote what.
-JUDGE_MODEL_VERSION = "judge_v1"
+JUDGE_MODEL_VERSION = "judge_v2"
 
 # Voice rules — applied post-hoc to LLM output. Cheap, defense in depth.
+# Expanded after audit P3: the original list was trivially bypassable
+# by adjacent weasels (anticipate, project, presumably, etc.).
 _BANNED_WORDS = re.compile(
-    r"\b(may|could|might|potentially|possibly|perhaps)\b",
+    r"\b(may|could|might|potentially|possibly|perhaps|"
+    r"presumably|arguably|plausibly|tentatively|"
+    r"appears to|seems to|tends to|looks like)\b",
     re.IGNORECASE,
 )
 _BANNED_FUTURE = re.compile(
-    r"\b(we will|we expect|we are going to|we'll)\b",
+    r"\b(we will|we expect|we are going to|we'll|"
+    r"we anticipate|we forecast|we project|"
+    r"doré expects|the engine will|the model will)\b",
     re.IGNORECASE,
 )
+
+# Strict length caps per field — caps that the system prompt asks for
+# but the LLM frequently exceeds. Enforced post-hoc.
+_MAX_WORDS = {"synthesis": 80, "insight": 30, "pitch": 25}
+
+# Citation patterns in the LLM output. [n] for verified candidates,
+# (Wn) for web context. Validated against the lists we actually
+# passed in, so a forged [99] or (W42) gets stripped.
+_CITE_VERIFIED_RE = re.compile(r"\[(\d+)\]")
+_CITE_WEB_RE = re.compile(r"\(W(\d+)\)")
 
 
 @dataclass
@@ -146,10 +162,23 @@ def compose(forecast_summary: dict,
                   raw_head=str(raw)[:200])
         return JudgeOutput(synthesis=None, insight=None, pitch=None)
 
+    # Validate citations FIRST so any forged [n]/(Wn) is stripped
+    # before length-capping (so the cap counts real text, not
+    # placeholder citations). Then voice-rule + length-cap each
+    # field with its tag so the audit log can attribute strips.
+    syn = _validate_citations(parsed.get("synthesis") or "",
+                                attribution_candidates,
+                                web_context or [])
+    ins = _validate_citations(parsed.get("insight") or "",
+                                attribution_candidates,
+                                web_context or [])
+    pit = _validate_citations(parsed.get("pitch") or "",
+                                attribution_candidates,
+                                web_context or [])
     return JudgeOutput(
-        synthesis=_clean(parsed.get("synthesis")),
-        insight=_clean(parsed.get("insight")),
-        pitch=_clean(parsed.get("pitch")),
+        synthesis=_clean(syn, field="synthesis"),
+        insight=_clean(ins, field="insight"),
+        pitch=_clean(pit, field="pitch"),
     )
 
 
@@ -237,22 +266,111 @@ def _parse_json_loose(raw: str) -> Optional[dict]:
         return None
 
 
-def _clean(text) -> Optional[str]:
-    """Apply voice rules + length cap. Returns None on empty input.
-    Banned words are stripped (a clean delete is safer than the LLM
-    going back to retry — we keep the rest of the sentence)."""
+def _clean(text, *, field: str | None = None) -> Optional[str]:
+    """Apply voice rules + length cap + unicode normalisation.
+    Returns None on empty input.
+
+    Discipline applied (audit P3):
+      - NFKC normalisation so zero-width-space / cyrillic-lookalike
+        bypasses against the banned-word regex are normalised first.
+      - Banned-word and banned-future patterns are STRIPPED but every
+        strip event is logged so a curator can see which rows got
+        edited. Repeated strips on the same row push the audit notes.
+      - Length cap per field (synthesis 80w / insight 30w / pitch 25w).
+        Excess words are dropped with an ellipsis so the archive shows
+        what we kept.
+    """
     if not text:
         return None
-    s = str(text).strip()
+    # Unicode normalise BEFORE the regex passes so zero-width-space /
+    # NFK-equivalent characters can't sneak past the word-boundary
+    # patterns.
+    import unicodedata
+    s = unicodedata.normalize("NFKC", str(text)).strip()
+    # Drop zero-width spaces and similar formatting characters that
+    # NFKC preserves but that would still slice a banned word.
+    s = re.sub(r"[​‌‍⁠﻿]", "", s)
     if not s:
         return None
     # Voice rule: no em-dashes.
     s = s.replace("—", ", ").replace("--", ", ")
-    # Drop banned modal verbs in place. We keep the rest of the
-    # sentence intact rather than re-prompting; the calibration
-    # archive shows whether the judge needed correction.
-    s = _BANNED_WORDS.sub("", s)
+
+    # Banned-word stripping — note every strip so the audit trail
+    # records that the judge needed correction. Cap notes at 5 to
+    # avoid log spam.
+    stripped: list[str] = []
+    def _record(match):
+        stripped.append(match.group(0))
+        return ""
+    s = _BANNED_WORDS.sub(_record, s)
     s = _BANNED_FUTURE.sub("the call indicates", s)
-    # Squeeze double spaces left by the strips.
+    if stripped and field is not None:
+        log_event(
+            "movement.judge.voice_rule_triggered", level="info",
+            field=field, stripped=stripped[:5],
+            stripped_count=len(stripped),
+        )
+
+    # Squeeze double spaces from the strips.
     s = re.sub(r"\s+", " ", s).strip()
+
+    # Length cap per field. Truncate cleanly at the limit + ellipsis
+    # so the archive shows we cut, not that the LLM stopped early.
+    if field and field in _MAX_WORDS:
+        words = s.split()
+        if len(words) > _MAX_WORDS[field]:
+            s = " ".join(words[:_MAX_WORDS[field]]) + "…"
+            log_event(
+                "movement.judge.length_cap_triggered", level="info",
+                field=field, kept_words=_MAX_WORDS[field],
+                original_words=len(words),
+            )
+
     return s or None
+
+
+def _validate_citations(text: str,
+                          verified_candidates: list[dict],
+                          web_context: list[dict]) -> str:
+    """Strip forged citations from the judge output.
+
+    The LLM is allowed to cite by [n] (verified candidates) or (Wn)
+    (web context). Citations outside the lists we passed in are
+    HALLUCINATIONS and must be removed before the row hits the
+    archive — otherwise an investor reading 'the OFAC announcement
+    [4]' could be reading a citation to a candidate that doesn't
+    exist. Forged citations also flag the row in the audit log so
+    curators can see which model versions are inventing references.
+    """
+    if not text:
+        return text
+    valid_v = set(range(len(verified_candidates)))
+    valid_w = set(range(len(web_context)))
+    forged: list[str] = []
+
+    def _strip_v(m):
+        idx = int(m.group(1))
+        if idx in valid_v:
+            return m.group(0)
+        forged.append(m.group(0))
+        return ""
+
+    def _strip_w(m):
+        idx = int(m.group(1))
+        if idx in valid_w:
+            return m.group(0)
+        forged.append(m.group(0))
+        return ""
+
+    cleaned = _CITE_VERIFIED_RE.sub(_strip_v, text)
+    cleaned = _CITE_WEB_RE.sub(_strip_w, cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if forged:
+        log_event(
+            "movement.judge.citation_forged", level="warn",
+            forged=forged[:8],
+            forged_count=len(forged),
+            valid_verified_count=len(verified_candidates),
+            valid_web_count=len(web_context),
+        )
+    return cleaned

@@ -86,26 +86,44 @@ def gather_event_candidates(symbol: str, *,
     return out
 
 
+_CITE_INJECTION_RE = __import__("re").compile(r"\[\d+\]|\(W\d+\)")
+
+
+def _sanitise(text: str) -> str:
+    """Strip citation-shaped patterns from event-derived summaries so
+    a hostile external title can't smuggle a forged [3] or (W2) into
+    the LLM prompt. Audit finding #14: a regulatory page titled
+    'Update [3] — paxos warns' would otherwise make the LLM emit [3]
+    even when no candidate at index 3 exists."""
+    if not text:
+        return text
+    return _CITE_INJECTION_RE.sub("", text).strip()
+
+
 def _summarise_event(ev: dict) -> str:
     """Deterministic one-line summary of an observability event for
     the prompt. Avoids leaking raw event payload into the LLM
-    context — fewer surfaces for prompt injection."""
+    context — fewer surfaces for prompt injection. Citation-shaped
+    substrings ([n], (Wn)) are stripped so an external title can't
+    forge a citation index into the prompt."""
     k = ev.get("kind", "")
     if k == "supply.jump":
-        return (f"Supply jump flagged for {ev.get('symbol')} "
-                f"on {ev.get('chain')} (ratio={ev.get('ratio')})")
-    if k == "attestation.published":
-        return (f"New attestation published for {ev.get('symbol')}"
-                f" (as_of={ev.get('as_of_date', '?')})")
-    if k.startswith("discovery."):
-        return ev.get("title", "Regulatory / research item published")
-    if k == "sdn.fetch.ok":
-        return "OFAC SDN list refreshed"
-    if k == "rpc.consensus.degraded":
-        return f"RPC consensus degraded on {ev.get('chain', '?')}"
-    if k == "health.source.flipped":
-        return f"Source flipped: {ev.get('id', '?')}"
-    return k
+        out = (f"Supply jump flagged for {ev.get('symbol')} "
+               f"on {ev.get('chain')} (ratio={ev.get('ratio')})")
+    elif k == "attestation.published":
+        out = (f"New attestation published for {ev.get('symbol')}"
+               f" (as_of={ev.get('as_of_date', '?')})")
+    elif k.startswith("discovery."):
+        out = ev.get("title", "Regulatory / research item published")
+    elif k == "sdn.fetch.ok":
+        out = "OFAC SDN list refreshed"
+    elif k == "rpc.consensus.degraded":
+        out = f"RPC consensus degraded on {ev.get('chain', '?')}"
+    elif k == "health.source.flipped":
+        out = f"Source flipped: {ev.get('id', '?')}"
+    else:
+        out = k
+    return _sanitise(out)
 
 
 def _trust_tier_for(kind: str) -> str:

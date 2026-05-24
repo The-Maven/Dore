@@ -16,7 +16,9 @@ skill yet. Bumping to ARIMA/GARCH is a future model version; the
 
 References (see research brief):
   - Gneiting & Raftery 2007 on strictly proper scoring rules
-  - BoE fan-chart construction (two-piece normal, asymmetric)
+  - BoE fan-chart visual idiom (we emit SYMMETRIC bands at 50/80/95
+    in v1; the BoE's two-piece normal asymmetric construction is a
+    future model version that would require a separate skew estimate)
   - Murphy decomposition for the calibration diagram
 """
 from __future__ import annotations
@@ -261,10 +263,12 @@ def forecast_net_flow_direction(
     z = expected / sigma_h if sigma_h > 0 else 0.0
     # Standard-normal CDF via erf.
     prob_positive = 0.5 * (1 + math.erf(z / math.sqrt(2)))
-    # Clamp inside [0.05, 0.94] so the engine is structurally incapable
-    # of claiming 'virtually_certain' from a thin model — the IPCC
-    # ladder cutoff is at 0.95, so we cap below it. Investors should
-    # see hedged confidence whenever the math relies on EWMA alone.
+    # Clamp inside [0.05, 0.94]. The IPCC 'virtually_certain' cutoff
+    # in _confidence_word_for_prob is >= 0.95, so a 0.94 cap means
+    # the engine cannot emit 'virtually_certain' from EWMA alone —
+    # investors see at most 'very_likely' (>= 0.85). The 0.05 floor
+    # is the mirror: the engine cannot emit 'exceptionally_unlikely'
+    # either, since that requires < 0.05.
     prob_positive = min(max(prob_positive, 0.05), 0.94)
 
     return Forecast(

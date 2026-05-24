@@ -173,12 +173,31 @@ def _domain_for(url: str) -> str:
         return ""
 
 
-def _is_calm(confidence_word: str | None) -> bool:
-    """The interest gate. True when the engine reports a calm
-    forecast and we should skip the Brave call."""
+def _is_calm(confidence_word: str | None,
+              point_value: float | None = None,
+              calm_magnitude_bps: float = 5.0) -> bool:
+    """The interest gate. True when both:
+      (a) the engine reports a calm confidence word (tight cone),
+      AND
+      (b) the point estimate is within `calm_magnitude_bps` of zero
+          (no material drift).
+
+    Without (b), a peg drifting at 1bp/cycle with a tight cone (the
+    'slow attack' shape audit #11 flagged) would skip Brave despite
+    being exactly the state where web context adds the most value.
+
+    `point_value` is the forecast's central estimate in the same unit
+    the engine emits (bp for peg_deviation, tokens for net flow). For
+    non-bps targets, the magnitude check is skipped — band-tightness
+    alone gates."""
     if not confidence_word:
         return False
-    return confidence_word in _CALM_CONFIDENCE_WORDS
+    if confidence_word not in _CALM_CONFIDENCE_WORDS:
+        return False
+    if point_value is None:
+        # No magnitude info; rely on confidence word alone.
+        return True
+    return abs(point_value) <= calm_magnitude_bps
 
 
 # ── public API ───────────────────────────────────────────────────────
@@ -187,6 +206,7 @@ def fetch_context_for(
     kind: str,
     *,
     confidence_word: str | None = None,
+    point_value: float | None = None,
     force: bool = False,
     max_results: int = _MAX_RESULTS_PER_QUERY,
 ) -> list[dict]:
@@ -221,13 +241,16 @@ def fetch_context_for(
         )
         return entry.get("results", [])
 
-    # Interest gate. Skip when the engine says nothing is happening.
-    if not force and _is_calm(confidence_word):
+    # Interest gate. Skip when the engine says nothing is happening
+    # AND the point is near zero. The combined check prevents the
+    # "slow attack" failure mode where a tight band hides a drifting
+    # point — exactly the state where web context adds most value.
+    if not force and _is_calm(confidence_word, point_value):
         log_event(
             "movement.brave.skip_calm", level="info",
             symbol=symbol_u, confidence_word=confidence_word,
+            point_value=point_value,
         )
-        # Serve stale cache if we have one — better than nothing.
         if entry:
             return entry.get("results", [])
         return []

@@ -65,6 +65,54 @@ def test_interest_gate_skips_calm_forecast(monkeypatch, tmp_path):
     assert out == []
 
 
+def test_interest_gate_does_not_skip_drifting_point(monkeypatch, tmp_path):
+    """Audit #11: a tight cone hides a drifting point. A calm
+    confidence word + a large-magnitude point must NOT skip — that's
+    the 'slow attack' shape where web context adds most value."""
+    monkeypatch.setenv("SCA_WEB_SEARCH_KEY", "x")
+    monkeypatch.setattr(bctx, "_CACHE_PATH", tmp_path / "cache.json")
+    monkeypatch.setattr(bctx, "_QUOTA_PATH", tmp_path / "quota.json")
+    called = {"n": 0}
+
+    class _Resp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"web": {"results": [
+            {"url": "https://x.example", "title": "t",
+             "description": "d"}]}}
+
+    def fake_get(*a, **kw):
+        called["n"] += 1
+        return _Resp()
+
+    import requests
+    monkeypatch.setattr(requests, "get", fake_get)
+    # very_likely + point at +18bp = "tight cone, drifting" — must fetch
+    bctx.fetch_context_for(
+        "USDC", "peg_deviation",
+        confidence_word="very_likely", point_value=18.0,
+    )
+    assert called["n"] == 1
+
+
+def test_interest_gate_skips_calm_AND_near_zero(monkeypatch, tmp_path):
+    """The dual gate: calm word + |point| <= 5bp = skip."""
+    monkeypatch.setenv("SCA_WEB_SEARCH_KEY", "x")
+    monkeypatch.setattr(bctx, "_CACHE_PATH", tmp_path / "cache.json")
+    monkeypatch.setattr(bctx, "_QUOTA_PATH", tmp_path / "quota.json")
+    import requests
+
+    def fail_get(*a, **kw):
+        raise AssertionError("Brave called despite calm + near-zero")
+
+    monkeypatch.setattr(requests, "get", fail_get)
+    out = bctx.fetch_context_for(
+        "USDC", "peg_deviation",
+        confidence_word="very_likely", point_value=2.0,
+    )
+    assert out == []
+
+
 def test_interest_gate_does_not_skip_unlikely(monkeypatch, tmp_path):
     """A 'likely' or weaker word is NOT calm — the fetch must run."""
     monkeypatch.setenv("SCA_WEB_SEARCH_KEY", "x")

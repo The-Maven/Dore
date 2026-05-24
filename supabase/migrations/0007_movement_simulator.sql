@@ -61,9 +61,12 @@ create table if not exists public.predictions (
   horizon_minutes int not null check (horizon_minutes between 1 and 1440),
   resolves_at     timestamptz not null,
   -- Forecast structure. point is the central estimate; the band
-  -- columns capture the asymmetric uncertainty cone we render on the
-  -- fan chart. p50_low/high is the 50% interval (1-in-2 reality lands
-  -- inside); 80% and 95% similarly.
+  -- columns capture the uncertainty cone we render on the fan chart.
+  -- p50_low/high is the 50% interval (1-in-2 reality lands inside);
+  -- 80% and 95% similarly. v1 emits SYMMETRIC bands; the schema
+  -- supports asymmetric bands (separate low/high columns) so a
+  -- future model version can populate them differently without a
+  -- migration.
   point           numeric not null,
   p50_low         numeric,
   p50_high        numeric,

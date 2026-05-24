@@ -32,35 +32,38 @@ from sca.movement.resolve import run_resolver_cycle
 from sca.observability import log_event
 
 
-# IPCC ladder ordered MOST → LEAST calm. The Brave interest gate
-# wants the LEAST calm word across a symbol's forecasts so a "this
-# is interesting" call still triggers fresh context even when other
-# kinds say "nothing happening".
-_CALM_ORDER = [
-    "virtually_certain", "very_likely",          # calm
-    "likely",
-    "about_as_likely_as_not",
-    "unlikely", "very_unlikely",
-    "exceptionally_unlikely",                    # NOT calm
-]
+# IPCC confidence ladder with EXPLICIT calm-rank integers.
+# Calm rank: 0 = most calm (skip web context), 6 = least calm (fetch
+# context even at the cost of a quota call). Pinned as tuples so an
+# editor "tidying" the order alphabetically cannot silently invert
+# the semantics — the rank lives next to the word.
+_CALM_RANK: dict[str, int] = {
+    "virtually_certain": 0,
+    "very_likely": 1,
+    "likely": 2,
+    "about_as_likely_as_not": 3,
+    "unlikely": 4,
+    "very_unlikely": 5,
+    "exceptionally_unlikely": 6,
+}
 
 
 def _pick_least_calm(words: list[str | None]) -> str | None:
-    """Return the most-uncertain (least-calm) confidence word from a
-    list — that's the word the Brave interest gate should see. None
-    entries are ignored; an all-None list returns None and the gate
-    treats that as 'not calm' (don't skip)."""
-    best_idx = -1
+    """Return the highest-calm-rank (least-calm) word from a list —
+    that's the one the Brave interest gate uses to decide whether
+    to fetch fresh web context. None entries are ignored; an
+    all-None list returns None and the gate treats that as
+    'not calm' (don't skip)."""
+    best_rank = -1
     best_word: str | None = None
     for w in words:
         if not w:
             continue
-        try:
-            idx = _CALM_ORDER.index(w)
-        except ValueError:
+        rank = _CALM_RANK.get(w)
+        if rank is None:
             continue
-        if idx > best_idx:
-            best_idx = idx
+        if rank > best_rank:
+            best_rank = rank
             best_word = w
     return best_word
 
@@ -180,16 +183,25 @@ def _emit_for_symbol(symbol: str, kinds: list[str],
         calibration = {"count": 0}
 
     # Coalesce Brave context: ONE call per symbol, shared across all
-    # kinds. The interest gate uses the most-confident (most calm)
-    # forecast — if even the boldest call is calm, we skip Brave.
-    # Cache-first, jittered TTL, daily quota all live inside
-    # fetch_brave_context.
+    # kinds. The interest gate uses the most-uncertain confidence
+    # word AND the largest-magnitude point — if any forecast for the
+    # symbol has either a wide cone or a far-from-zero point, we
+    # fetch fresh context.
     confidence_words = [getattr(f, "confidence_word", None) for f in forecasts]
     least_calm_word = _pick_least_calm(confidence_words)
+    # Use the peg-deviation point for the magnitude check when
+    # available (it's the only kind in bps; net-flow magnitude is in
+    # tokens and isn't comparable to the 5bp threshold).
+    peg_forecast = next(
+        (f for f in forecasts if getattr(f, "kind", "") == "peg_deviation"),
+        None,
+    )
+    point_for_gate = peg_forecast.point if peg_forecast is not None else None
     try:
         web_ctx = fetch_brave_context(
             symbol, kind=forecasts[0].kind if forecasts else "peg_deviation",
             confidence_word=least_calm_word,
+            point_value=point_for_gate,
         )
     except Exception as exc:  # noqa: BLE001
         log_event(
