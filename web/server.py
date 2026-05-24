@@ -759,6 +759,391 @@ def evals_run(
     }
 
 
+# ── Market overview — cross-token editorial aggregation ──────────────
+# Composes the live state of every tracked stablecoin into a single
+# story: supply concentration, backing-model mix, verification health,
+# drift between attestation and on-chain, per-chain map, recent news,
+# and an AI Market Brief tying it together. Cached for 30min behind a
+# threading lock; refresh=true forces a recompute.
+_MARKET_CACHE: dict[str, Any] = {
+    "payload": None, "computed_at": None, "elapsed_s": None,
+}
+_MARKET_CACHE_LOCK = threading.Lock()
+_MARKET_FRESH_S = 30 * 60   # 30 minutes
+
+
+def _backing_model_label(model: str) -> str:
+    return {
+        "fiat_reserves": "Fiat reserves",
+        "crypto_collateral": "Crypto collateral",
+        "synthetic_delta_neutral": "Synthetic delta-neutral",
+        "algorithmic": "Algorithmic",
+        "new_or_unverified": "New / unverified",
+    }.get(model, model)
+
+
+def _compute_market_overview() -> dict[str, Any]:
+    """Aggregate every tracked stablecoin into one editorial picture.
+    Cheap: reads from supply_history.json (kept warm by the live
+    monitor thread) and the attestation cache. No LLM calls except the
+    final Market Brief composition.
+    """
+    from collections import defaultdict
+    from sca import config as _cfg
+    from sca import supply_history as _hist
+    from sca.tools import attestation_fetch as _af
+
+    started = time.time()
+    tokens = _cfg.stablecoins()
+    history = _hist._load()  # noqa: SLF001 - intentional snapshot read
+    cache = _af._load_cache()
+    overrides = {
+        r["symbol"]: r
+        for r in get_store().list_attestation_url_overrides()
+    }
+
+    # Aggregate supply per (symbol, chain) from the warmed history.
+    sym_supply: dict[str, float] = defaultdict(float)
+    sym_chains: dict[str, set[str]] = defaultdict(set)
+    chain_supply: dict[str, float] = defaultdict(float)
+    chain_tokens: dict[str, set[str]] = defaultdict(set)
+    for key, val in history.items():
+        if ":" not in key or not isinstance(val, (int, float)):
+            continue
+        sym, chain = key.split(":", 1)
+        if sym not in tokens:
+            continue
+        sym_supply[sym] += val
+        sym_chains[sym].add(chain)
+        chain_supply[chain] += val
+        chain_tokens[chain].add(sym)
+
+    total_supply = sum(sym_supply.values())
+
+    # Per-issuer roll-up.
+    by_issuer: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"count": 0, "total_supply": 0.0, "tokens": []})
+    for sym, coin in tokens.items():
+        bucket = by_issuer[coin.issuer]
+        bucket["count"] += 1
+        bucket["total_supply"] += sym_supply.get(sym, 0.0)
+        bucket["tokens"].append(sym)
+    issuer_rows = []
+    for issuer, b in by_issuer.items():
+        share = (b["total_supply"] / total_supply * 100) if total_supply else 0
+        issuer_rows.append({
+            "issuer": issuer, "count": b["count"],
+            "total_supply": b["total_supply"],
+            "share_pct": round(share, 2),
+            "tokens": sorted(b["tokens"]),
+        })
+    issuer_rows.sort(key=lambda r: -r["total_supply"])
+
+    # Per-backing-model roll-up.
+    by_model: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"count": 0, "total_supply": 0.0, "tokens": []})
+    for sym, coin in tokens.items():
+        bucket = by_model[coin.backing_model]
+        bucket["count"] += 1
+        bucket["total_supply"] += sym_supply.get(sym, 0.0)
+        bucket["tokens"].append(sym)
+    model_rows = []
+    for model, b in by_model.items():
+        share = (b["total_supply"] / total_supply * 100) if total_supply else 0
+        model_rows.append({
+            "model": model, "label": _backing_model_label(model),
+            "count": b["count"],
+            "total_supply": b["total_supply"],
+            "share_pct": round(share, 2),
+            "tokens": sorted(b["tokens"]),
+        })
+    model_rows.sort(key=lambda r: -r["total_supply"])
+
+    # Per-chain roll-up.
+    chain_rows = []
+    for chain, supply in chain_supply.items():
+        share = (supply / total_supply * 100) if total_supply else 0
+        chain_rows.append({
+            "chain": chain,
+            "total_supply": supply,
+            "share_pct": round(share, 2),
+            "token_count": len(chain_tokens[chain]),
+            "tokens": sorted(chain_tokens[chain]),
+        })
+    chain_rows.sort(key=lambda r: -r["total_supply"])
+
+    # Concentration: top-N share + Herfindahl (0-1, higher = more concentrated)
+    issuer_shares = [r["share_pct"] / 100 for r in issuer_rows]
+    top3 = round(sum(issuer_shares[:3]) * 100, 2)
+    top5 = round(sum(issuer_shares[:5]) * 100, 2)
+    hhi = round(sum(s * s for s in issuer_shares), 4)
+
+    # Verification health: walk the attestation overrides + cache to
+    # classify every fiat token as fresh / stale / unresolved.
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc)
+    fresh, stale, by_design, blocked = [], [], [], []
+    for sym, coin in tokens.items():
+        if coin.backing_model != "fiat_reserves":
+            by_design.append({"symbol": sym, "model": coin.backing_model,
+                              "label": _backing_model_label(coin.backing_model)})
+            continue
+        ovr = overrides.get(sym, {}) or {}
+        cached = cache.get(sym, {}) or {}
+        url = ovr.get("url") or cached.get("url")
+        if not url:
+            blocked.append({"symbol": sym, "issuer": coin.issuer})
+            continue
+        # Resolved — call it fresh unless we know the cached snapshot is old.
+        # The 6h canary keeps cache_resolved_at <= 6h old, so we use the
+        # attestation's own age via the cache resolved date as a proxy.
+        resolved_at = cached.get("resolved_at") or ovr.get("set_at") or ""
+        try:
+            r_dt = _parse_ts(resolved_at)
+            age_h = (now - r_dt).total_seconds() / 3600 if r_dt else None
+        except Exception:  # noqa: BLE001
+            age_h = None
+        entry = {
+            "symbol": sym, "issuer": coin.issuer,
+            "url": url, "resolved_at": resolved_at,
+        }
+        if age_h is not None and age_h > 24:
+            stale.append(entry)
+        else:
+            fresh.append(entry)
+
+    # Drift: tokens where (current_supply vs the attestation's tokens_outstanding)
+    # has moved most. Pull the latest verified_facts reserves row per symbol.
+    drift_rows = []
+    try:
+        from sca.store import get_store as _gs
+        store = _gs()
+        if hasattr(store, "list_verified_facts"):
+            facts = store.list_verified_facts(limit=200) or []
+        else:
+            facts = []
+    except Exception:  # noqa: BLE001
+        facts = []
+    latest_reserves = {}
+    for f in facts:
+        if f.get("claim_type") != "reserves":
+            continue
+        sym = (f.get("subject") or "").split(":")[0]
+        if not sym or sym in latest_reserves:
+            continue
+        latest_reserves[sym] = f
+    for sym, f in latest_reserves.items():
+        if sym not in tokens:
+            continue
+        v = f.get("value") or {}
+        attested = v.get("tokens_outstanding") or v.get("attested_tokens")
+        as_of = v.get("as_of_date") or v.get("as_of") or ""
+        current = sym_supply.get(sym, 0.0)
+        if not attested or attested <= 0:
+            continue
+        drift = (current - float(attested)) / float(attested)
+        as_of_dt = _parse_ts(as_of) if as_of else None
+        stale_days = ((now - as_of_dt).days
+                      if as_of_dt else None)
+        drift_rows.append({
+            "symbol": sym,
+            "as_of": as_of,
+            "attested_tokens": float(attested),
+            "current_supply": current,
+            "drift_pct": round(drift * 100, 2),
+            "staleness_days": stale_days,
+        })
+    drift_rows.sort(key=lambda r: -abs(r["drift_pct"]))
+
+    # Recent signals: pull the top corpus events from the discovery feed
+    # that have landed in the last week, capped at 6.
+    from sca.observability import recent_events
+    recent = recent_events(limit=200) or []
+    SIGNAL_KINDS = {
+        "discovery.published", "discovery.new", "attestation.published",
+        "snapshot.flip",
+    }
+    signals = []
+    for e in reversed(recent):
+        if e.get("kind") not in SIGNAL_KINDS:
+            continue
+        signals.append({
+            "kind": e.get("kind"),
+            "title": (e.get("title") or e.get("name") or
+                      e.get("symbol") or ""),
+            "ts": e.get("ts"),
+            "url": e.get("url", ""),
+        })
+        if len(signals) >= 6:
+            break
+
+    payload = {
+        "summary": {
+            "total_supply": total_supply,
+            "token_count": len(tokens),
+            "issuer_count": len(issuer_rows),
+            "chain_count": len(chain_rows),
+            "verified_count": len(fresh),
+            "stale_count": len(stale),
+            "by_design_count": len(by_design),
+            "blocked_count": len(blocked),
+        },
+        "by_issuer": issuer_rows,
+        "by_backing_model": model_rows,
+        "by_chain": chain_rows,
+        "concentration": {
+            "top3_share_pct": top3,
+            "top5_share_pct": top5,
+            "hhi": hhi,
+        },
+        "verification_health": {
+            "fresh": fresh, "stale": stale,
+            "by_design": by_design, "blocked": blocked,
+        },
+        "drift_leaderboard": drift_rows[:6],
+        "recent_signals": signals,
+    }
+
+    # Compose the editorial AI Market Brief on top of the picture.
+    # Best-effort: a missing LLM key returns None, the view omits the
+    # hero panel.
+    facts = _market_facts_block(payload)
+    try:
+        from sca.brief import generate_market_brief
+        from sca.corpus.retrieve import retrieve
+        passages = retrieve(
+            "stablecoin market regulation attestation supply concentration",
+            k=8,
+        )
+        brief = generate_market_brief(
+            market_facts=facts, news_candidates=passages,
+        )
+    except Exception as exc:  # noqa: BLE001
+        from sca.observability import log_event
+        log_event("market.brief.failed", level="warn",
+                  error_class=type(exc).__name__,
+                  error_message=str(exc)[:200])
+        brief = None
+    payload["brief"] = _asdict(brief) if brief is not None else None
+
+    payload["computed_at"] = datetime.now(timezone.utc).isoformat()
+    payload["elapsed_s"] = round(time.time() - started, 1)
+    return payload
+
+
+def _market_facts_block(p: dict[str, Any]) -> str:
+    """A compact, prose-friendly summary of the market state for the
+    LLM. Numbers verbatim from the payload; the model invents nothing."""
+    s = p["summary"]
+    issuers = p["by_issuer"][:5]
+    models = p["by_backing_model"]
+    chains = p["by_chain"][:5]
+    drifts = p["drift_leaderboard"][:4]
+    conc = p["concentration"]
+
+    def usd(n: float) -> str:
+        if n >= 1e9:
+            return f"${n / 1e9:.2f}B"
+        if n >= 1e6:
+            return f"${n / 1e6:.2f}M"
+        return f"${n:.0f}"
+
+    lines = [
+        f"Total native stablecoin supply tracked: {usd(s['total_supply'])} "
+        f"across {s['token_count']} tokens, {s['issuer_count']} issuers, "
+        f"{s['chain_count']} chains.",
+        f"Concentration: top 3 issuers control {conc['top3_share_pct']}%, "
+        f"top 5 control {conc['top5_share_pct']}%, HHI = {conc['hhi']}.",
+        "",
+        "Top issuers by supply:",
+    ]
+    for r in issuers:
+        lines.append(
+            f"  - {r['issuer']}: {usd(r['total_supply'])} "
+            f"({r['share_pct']}%, {r['count']} token(s): "
+            f"{', '.join(r['tokens'])})"
+        )
+    lines.append("")
+    lines.append("Backing-model mix:")
+    for r in models:
+        lines.append(
+            f"  - {r['label']}: {usd(r['total_supply'])} "
+            f"({r['share_pct']}%, {r['count']} token(s))"
+        )
+    lines.append("")
+    lines.append(
+        f"Verification health: {s['verified_count']} fiat tokens have a "
+        f"resolved attestation, {s['stale_count']} are stale, "
+        f"{s['blocked_count']} are blocked on JS-rendered issuer pages. "
+        f"{s['by_design_count']} non-fiat tokens have no CPA attestation by "
+        f"design (crypto-collateralized / synthetic / algorithmic)."
+    )
+    if drifts:
+        lines.append("")
+        lines.append("Largest drifts between on-chain supply and last "
+                     "attestation:")
+        for d in drifts:
+            sign = "+" if d["drift_pct"] >= 0 else ""
+            stale = (f", attestation {d['staleness_days']}d old"
+                     if d.get("staleness_days") is not None else "")
+            lines.append(
+                f"  - {d['symbol']}: supply has moved {sign}{d['drift_pct']}% "
+                f"vs {d['as_of']} attestation{stale}"
+            )
+    lines.append("")
+    lines.append("Top chains by stablecoin supply:")
+    for r in chains:
+        lines.append(
+            f"  - {r['chain']}: {usd(r['total_supply'])} "
+            f"({r['share_pct']}%, {r['token_count']} tokens)"
+        )
+    return "\n".join(lines)
+
+
+@app.get("/api/market")
+def market_overview(refresh: bool = False) -> dict[str, Any]:
+    """Cross-token market overview + AI Market Brief. Cached for 30min."""
+    now_dt = datetime.now(timezone.utc)
+    with _MARKET_CACHE_LOCK:
+        cached = _MARKET_CACHE.get("payload")
+        ts = _MARKET_CACHE.get("computed_at")
+    age_s = None
+    if cached is not None and ts:
+        parsed = _parse_ts(ts)
+        if parsed is not None:
+            age_s = (now_dt - parsed).total_seconds()
+    if (
+        cached is not None
+        and not refresh
+        and age_s is not None
+        and age_s < _MARKET_FRESH_S
+    ):
+        return {
+            "cached": True, "computed_at": ts, "age_s": age_s,
+            "stale": False, **cached,
+        }
+    # Recompute. Hold the lock — single-flight; concurrent callers
+    # serialize behind the same in-flight aggregation.
+    with _MARKET_CACHE_LOCK:
+        # Double-check after acquiring (someone else may have just refilled).
+        ts2 = _MARKET_CACHE.get("computed_at")
+        if not refresh and ts2 and ts2 != ts:
+            cached = _MARKET_CACHE["payload"]
+            return {
+                "cached": True, "computed_at": ts2,
+                "age_s": (now_dt - _parse_ts(ts2)).total_seconds(),
+                "stale": False, **cached,
+            }
+        payload = _compute_market_overview()
+        _MARKET_CACHE["payload"] = payload
+        _MARKET_CACHE["computed_at"] = payload["computed_at"]
+        _MARKET_CACHE["elapsed_s"] = payload["elapsed_s"]
+    return {
+        "cached": False, "computed_at": payload["computed_at"],
+        "age_s": 0, "stale": False, **payload,
+    }
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     import os

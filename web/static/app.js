@@ -5737,6 +5737,455 @@ function renderCompendium(data, mount) {
 }
 
 // ════════════════════════════════════════════════════════════════════
+//  MARKET — cross-token editorial overview
+// ════════════════════════════════════════════════════════════════════
+// Story-first layout: AI Market Brief at the top, then six analytical
+// panels that read as a single narrative (concentration → backing →
+// verification → drift → chains → signals). Cached for 30min server-
+// side; first load is ~20s on a cold cache (LLM call), instant after.
+
+function viewMarket() {
+  app.innerHTML = '';
+  const runBtn = el('button', {
+    class: 'btn ghost',
+    title: 'Force a fresh market-state recompute. Cached state is served '
+      + 'instantly on subsequent loads for 30 minutes.',
+  }, icon('i-supply'), 'REFRESH');
+  app.append(viewHead('◈', 'MARKET',
+    'cross-token state of the stablecoin universe — composed every 30 minutes',
+    runBtn));
+  const mount = el('div', { class: 'view-body market-body' });
+  app.append(mount);
+  runBtn.addEventListener('click', () => loadMarket(mount, runBtn, true));
+  loadMarket(mount, runBtn, false);
+}
+
+async function loadMarket(mount, runBtn, forceRefresh) {
+  runBtn.disabled = true;
+  const original = runBtn.innerHTML;
+  if (forceRefresh) {
+    runBtn.replaceChildren(el('span', { class: 'spinner' }),
+      document.createTextNode(' RECOMPUTING'));
+  }
+  mount.innerHTML = '';
+  mount.append(el('div', { class: 'mkt-loading fade-in' },
+    el('div', { class: 'mkt-loading-dot' }),
+    el('div', {},
+      el('div', { class: 'mkt-loading-head' },
+        forceRefresh ? 'Recomposing market view'
+                     : 'Loading market view'),
+      el('div', { class: 'mkt-loading-sub' },
+        'Aggregating 25 tokens · 22 issuers · 9 chains'))));
+  let data;
+  try {
+    data = await api('/market' + (forceRefresh ? '?refresh=true' : ''));
+  } catch (e) {
+    mount.innerHTML = '';
+    mount.append(errorBox('Market view failed to load', e.message,
+      undefined, { onRetry: () => loadMarket(mount, runBtn, true),
+        retryLabel: 'TRY AGAIN' }));
+    runBtn.disabled = false;
+    runBtn.innerHTML = original;
+    return;
+  }
+  mount.innerHTML = '';
+  renderMarket(data, mount);
+  runBtn.disabled = false;
+  runBtn.innerHTML = original;
+  logLine(data.cached ? 'OK' : 'WORK', 'MARKET', [
+    seg('MARKET', 'lg-val'),
+    seg(data.cached ? 'cached' : 'recomputed',
+        data.cached ? 'd-up' : 'd-warn'),
+    seg('$' + fmtMag(data.summary.total_supply), 'd-up'),
+    seg(data.summary.token_count + ' tok'),
+  ]);
+}
+
+function renderMarket(data, mount) {
+  // Freshness strip — same shape as analyze/sanctions/redemption.
+  mount.append(freshnessStrip(data.computed_at,
+    () => loadMarket(mount, $('#mkt-refresh') || document.createElement('button'), true)));
+
+  // ═══════════════════════════════════════════════════════════════════
+  // HERO — AI Market Brief, the editorial top of the page
+  // ═══════════════════════════════════════════════════════════════════
+  if (data.brief) {
+    mount.append(marketHero(data.brief, data.summary, data.computed_at));
+  } else {
+    mount.append(marketHeroFallback(data.summary, data.computed_at));
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PANEL 01 — SUPPLY CONCENTRATION
+  // ═══════════════════════════════════════════════════════════════════
+  mount.append(panel('01',
+    'SUPPLY CONCENTRATION · WHO HOLDS THE MARKET',
+    'i-supply',
+    concentrationPanel(data)));
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PANEL 02 — BACKING-MODEL MIX
+  // ═══════════════════════════════════════════════════════════════════
+  mount.append(panel('02',
+    'WHAT BACKS THE SUPPLY · BY MODEL',
+    'i-doc',
+    backingModelPanel(data)));
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PANEL 03 — VERIFICATION HEALTH
+  // ═══════════════════════════════════════════════════════════════════
+  mount.append(panel('03',
+    'VERIFICATION HEALTH · ATTESTATION COVERAGE',
+    'i-gate',
+    verificationHealthPanel(data)));
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PANEL 04 — DRIFT LEADERBOARD
+  // ═══════════════════════════════════════════════════════════════════
+  mount.append(panel('04',
+    'SUPPLY DRIFT · ON-CHAIN VS LAST ATTESTATION',
+    'i-metric',
+    driftPanel(data)));
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PANEL 05 — PER-CHAIN MAP
+  // ═══════════════════════════════════════════════════════════════════
+  mount.append(panel('05',
+    'WHERE THE SUPPLY LIVES · BY CHAIN',
+    'i-chain',
+    chainMapPanel(data)));
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PANEL 06 — RECENT SIGNALS
+  // ═══════════════════════════════════════════════════════════════════
+  mount.append(panel('06',
+    'RECENT SIGNALS · CORPUS + DISCOVERY',
+    'i-frame',
+    recentSignalsPanel(data)));
+
+  // Foot — provenance + jump-off
+  mount.append(el('div', { class: 'mkt-foot' },
+    el('div', { class: 'mkt-foot-prov' },
+      'Composed from ', el('b', {}, data.summary.token_count + ' tokens'),
+      ' · ', el('b', {}, data.summary.issuer_count + ' issuers'),
+      ' · ', el('b', {}, data.summary.chain_count + ' chains'),
+      '. Supply readings are the last warmed by the 6-hour background '
+      + 'monitor. Numbers verbatim from the pipeline.'),
+    el('div', { class: 'mkt-foot-jumps' },
+      el('button', {
+        class: 'btn ghost',
+        onclick: () => { location.hash = '#monitor'; },
+      }, icon('i-supply'), 'OPEN LIVE MONITOR'),
+      el('a', {
+        class: 'btn ghost', href: '/compendium',
+        target: '_blank', rel: 'noopener',
+      }, icon('i-frame'), 'OPEN COMPENDIUM ↗'))));
+}
+
+// ─── HERO ────────────────────────────────────────────────────────────
+function marketHero(brief, summary, computedAt) {
+  const hero = el('section', { class: 'mkt-hero fade-in' },
+    el('div', { class: 'mkt-hero-kick' },
+      el('span', { class: 'mkt-hero-badge' }, 'DORÉ · MARKET BRIEF'),
+      el('span', { class: 'mkt-hero-meta' },
+        'composed ' + fmtComposedAt(computedAt))),
+    el('h1', { class: 'mkt-hero-head' }, brief.headline),
+    brief.key_points && brief.key_points.length
+      ? el('ul', { class: 'mkt-hero-points' },
+          ...brief.key_points.map((p) =>
+            el('li', { class: 'mkt-hero-point' }, p)))
+      : null,
+    brief.relevant_news && brief.relevant_news.length
+      ? el('div', { class: 'mkt-hero-news' },
+          el('div', { class: 'mkt-hero-news-kick' }, 'RELEVANT IN THE CORPUS'),
+          ...brief.relevant_news.map((n) => el('div', { class: 'mkt-hero-news-row' },
+            n.url
+              ? el('a', { class: 'mkt-hero-news-title', href: n.url,
+                  target: '_blank', rel: 'noopener noreferrer' },
+                  n.title, el('span', { class: 'glyph' }, ' ↗'))
+              : el('span', { class: 'mkt-hero-news-title' }, n.title),
+            n.source ? el('span', { class: 'mkt-hero-news-src' }, n.source) : null)))
+      : null,
+    el('div', { class: 'mkt-hero-foot' },
+      'Composed by an LLM from the live market state and the cited corpus. '
+      + 'Numbers are lifted verbatim from the verification pipeline; the '
+      + 'prose connects them.'),
+    // The summary strip lives INSIDE the hero so the headline and the
+    // four big numbers read as one editorial block.
+    el('div', { class: 'mkt-hero-strip' },
+      mktHeroStat(fmtMag(summary.total_supply), 'TOTAL SUPPLY (NATIVE)', '$'),
+      mktHeroStat(String(summary.token_count), 'TRACKED TOKENS'),
+      mktHeroStat(String(summary.issuer_count), 'ISSUERS'),
+      mktHeroStat(String(summary.chain_count), 'CHAINS')));
+  return hero;
+}
+
+function marketHeroFallback(summary, computedAt) {
+  return el('section', { class: 'mkt-hero mkt-hero-bare fade-in' },
+    el('div', { class: 'mkt-hero-kick' },
+      el('span', { class: 'mkt-hero-badge' }, 'DORÉ · MARKET'),
+      el('span', { class: 'mkt-hero-meta' },
+        'composed ' + fmtComposedAt(computedAt))),
+    el('h1', { class: 'mkt-hero-head' },
+      'The state of the tracked stablecoin market.'),
+    el('div', { class: 'mkt-hero-foot' },
+      'AI Market Brief unavailable this run — the deterministic '
+      + 'panels below still reflect the live picture.'),
+    el('div', { class: 'mkt-hero-strip' },
+      mktHeroStat(fmtMag(summary.total_supply), 'TOTAL SUPPLY (NATIVE)', '$'),
+      mktHeroStat(String(summary.token_count), 'TRACKED TOKENS'),
+      mktHeroStat(String(summary.issuer_count), 'ISSUERS'),
+      mktHeroStat(String(summary.chain_count), 'CHAINS')));
+}
+
+function mktHeroStat(value, label, prefix) {
+  return el('div', { class: 'mkt-stat' },
+    el('div', { class: 'mkt-stat-val' },
+      prefix ? el('span', { class: 'mkt-stat-prefix' }, prefix) : null,
+      value),
+    el('div', { class: 'mkt-stat-lbl' }, label));
+}
+
+// ─── PANEL 01 — concentration ────────────────────────────────────────
+function concentrationPanel(data) {
+  const c = data.concentration;
+  const issuers = data.by_issuer;
+  // Editorial lede above the data.
+  const lede = el('p', { class: 'mkt-lede' },
+    'Three issuers hold ', el('b', {}, c.top3_share_pct.toFixed(1) + '%'),
+    ' of the tracked supply; five hold ', el('b', {}, c.top5_share_pct.toFixed(1) + '%'),
+    '. The Herfindahl index is ', el('b', {}, c.hhi.toFixed(2)),
+    ' — anything above 0.25 reads as a heavily concentrated market.');
+
+  // Horizontal stacked bar with the top issuers + an "other" segment.
+  const segments = [];
+  let other = 100;
+  issuers.slice(0, 6).forEach((r, i) => {
+    if (r.share_pct < 0.1) return;
+    segments.push(el('div', {
+      class: 'mkt-bar-seg mkt-bar-seg-' + i,
+      style: 'width:' + r.share_pct + '%',
+      title: r.issuer + ' — ' + r.share_pct.toFixed(2) + '%',
+    }, r.share_pct >= 6
+        ? el('span', { class: 'mkt-bar-seg-lbl' },
+            r.issuer + ' ' + r.share_pct.toFixed(1) + '%')
+        : null));
+    other -= r.share_pct;
+  });
+  if (other > 0.5) {
+    segments.push(el('div', {
+      class: 'mkt-bar-seg mkt-bar-seg-other',
+      style: 'width:' + other + '%',
+      title: 'Other issuers — ' + other.toFixed(2) + '%',
+    }, other >= 6 ? el('span', { class: 'mkt-bar-seg-lbl' },
+        'Others ' + other.toFixed(1) + '%') : null));
+  }
+
+  // Per-issuer row table for the detail behind the bar.
+  const rows = issuers.slice(0, 10).map((r, i) =>
+    el('div', { class: 'mkt-issuer-row' },
+      el('span', { class: 'mkt-issuer-rank' }, String(i + 1).padStart(2, '0')),
+      el('div', { class: 'mkt-issuer-name' }, r.issuer),
+      el('div', { class: 'mkt-issuer-tokens' },
+        r.tokens.slice(0, 4).join(' · ') +
+          (r.tokens.length > 4 ? ' …' : '')),
+      el('div', { class: 'mkt-issuer-supply' }, '$' + fmtMag(r.total_supply)),
+      el('div', { class: 'mkt-issuer-share' },
+        r.share_pct.toFixed(2) + '%')));
+
+  return el('div', { class: 'mkt-panel-body' }, lede,
+    el('div', { class: 'mkt-stacked-bar' }, ...segments),
+    el('div', { class: 'mkt-issuer-list' }, ...rows));
+}
+
+// ─── PANEL 02 — backing-model mix ────────────────────────────────────
+function backingModelPanel(data) {
+  const models = data.by_backing_model;
+  const fiat = models.find((m) => m.model === 'fiat_reserves');
+  const fiatPct = fiat ? fiat.share_pct : 0;
+  const lede = el('p', { class: 'mkt-lede' },
+    fiat ? [
+      'Fiat-reserve tokens carry ',
+      el('b', {}, fiatPct.toFixed(1) + '%'),
+      ' of the tracked supply. The rest is split between on-chain '
+      + 'collateralized, synthetic delta-neutral, and algorithmic '
+      + 'designs — each with a different attestation contract.',
+    ] : 'Backing-model mix across every tracked stablecoin.');
+  const cards = models.map((m) => {
+    const cls = ({
+      fiat_reserves: 'bk-fiat',
+      crypto_collateral: 'bk-crypto',
+      synthetic_delta_neutral: 'bk-synth',
+      algorithmic: 'bk-algo',
+      new_or_unverified: 'bk-new',
+    })[m.model] || 'bk-default';
+    return el('div', { class: 'mkt-model-card ' + cls },
+      el('div', { class: 'mkt-model-share' }, m.share_pct.toFixed(1) + '%'),
+      el('div', { class: 'mkt-model-label' }, m.label),
+      el('div', { class: 'mkt-model-sub' },
+        '$' + fmtMag(m.total_supply) + ' · ' + m.count + ' token' +
+          (m.count === 1 ? '' : 's')),
+      el('div', { class: 'mkt-model-tokens' },
+        m.tokens.slice(0, 5).join(' · ') +
+          (m.tokens.length > 5 ? ' …' : '')),
+      el('div', { class: 'mkt-model-fill',
+        style: 'width:' + Math.min(100, m.share_pct) + '%' }));
+  });
+  return el('div', { class: 'mkt-panel-body' }, lede,
+    el('div', { class: 'mkt-model-grid' }, ...cards));
+}
+
+// ─── PANEL 03 — verification health ──────────────────────────────────
+function verificationHealthPanel(data) {
+  const h = data.verification_health;
+  const s = data.summary;
+  const fiatTotal = s.verified_count + s.stale_count + s.blocked_count;
+  const lede = el('p', { class: 'mkt-lede' },
+    el('b', {}, s.verified_count + ' of ' + fiatTotal),
+    ' fiat tokens have a resolved attestation right now. ',
+    s.stale_count > 0 ? [el('b', {}, String(s.stale_count)),
+      ' are stale (last canary run > 24h ago); '] : null,
+    s.blocked_count > 0 ? [el('b', {}, String(s.blocked_count)),
+      ' are blocked behind JavaScript-rendered issuer pages and '
+      + 'fall back to the AI Context (see AGENTS.md). '] : null,
+    el('b', {}, String(s.by_design_count)),
+    ' non-fiat tokens have no CPA attestation by design.');
+
+  const buckets = [
+    { key: 'fresh', label: 'Resolved', tone: 'good', items: h.fresh },
+    { key: 'stale', label: 'Stale', tone: 'warn', items: h.stale },
+    { key: 'blocked', label: 'Blocked (JS-rendered)', tone: 'bad',
+      items: h.blocked },
+    { key: 'by_design', label: 'By design (no CPA)', tone: 'neutral',
+      items: h.by_design },
+  ];
+  const cards = buckets.map((b) => el('div', {
+    class: 'mkt-health-card mkt-health-' + b.tone,
+  },
+    el('div', { class: 'mkt-health-count' }, String(b.items.length)),
+    el('div', { class: 'mkt-health-label' }, b.label),
+    el('div', { class: 'mkt-health-syms' },
+      b.items.length === 0 ? '—'
+        : b.items.slice(0, 8).map((x) => x.symbol).join(' · ') +
+            (b.items.length > 8 ? ' …' : ''))));
+  return el('div', { class: 'mkt-panel-body' }, lede,
+    el('div', { class: 'mkt-health-grid' }, ...cards));
+}
+
+// ─── PANEL 04 — drift leaderboard ────────────────────────────────────
+function driftPanel(data) {
+  const rows = data.drift_leaderboard || [];
+  if (!rows.length) {
+    return el('div', { class: 'mkt-panel-body' },
+      el('p', { class: 'mkt-lede' },
+        'No drift readings yet. Drift appears once an attestation '
+        + 'extraction completes and we have a baseline to compare '
+        + 'on-chain supply against.'));
+  }
+  const lede = el('p', { class: 'mkt-lede' },
+    'Tokens whose on-chain supply has moved most since their last '
+    + 'attested figure. Big drift either way means the on-chain '
+    + 'picture is materially different from the audited snapshot.');
+  const head = el('div', { class: 'mkt-drift-row mkt-drift-head' },
+    el('span', {}, 'TOKEN'),
+    el('span', {}, 'ATTESTED AS OF'),
+    el('span', { class: 'num' }, 'ATTESTED'),
+    el('span', { class: 'num' }, 'CURRENT'),
+    el('span', { class: 'num' }, 'DRIFT'));
+  const body = rows.map((r) => {
+    const cls = r.drift_pct >= 5 ? 'd-up'
+              : r.drift_pct <= -5 ? 'd-dn' : 'd-flat';
+    const arrow = r.drift_pct >= 5 ? '▲'
+                : r.drift_pct <= -5 ? '▼' : '◇';
+    return el('div', { class: 'mkt-drift-row' },
+      el('span', { class: 'mkt-drift-sym' },
+        tokenMark(r.symbol, 'tmark-tick'), r.symbol),
+      el('span', { class: 'mkt-drift-asof' },
+        r.as_of + (r.staleness_days != null
+          ? ' · ' + r.staleness_days + 'd' : '')),
+      el('span', { class: 'num mkt-drift-attested' },
+        '$' + fmtMag(r.attested_tokens)),
+      el('span', { class: 'num mkt-drift-current' },
+        '$' + fmtMag(r.current_supply)),
+      el('span', { class: 'num mkt-drift-pct ' + cls },
+        arrow + ' ' + (r.drift_pct >= 0 ? '+' : '') +
+          r.drift_pct.toFixed(2) + '%'));
+  });
+  return el('div', { class: 'mkt-panel-body' }, lede,
+    el('div', { class: 'mkt-drift-table' }, head, ...body));
+}
+
+// ─── PANEL 05 — per-chain map ────────────────────────────────────────
+function chainMapPanel(data) {
+  const rows = data.by_chain || [];
+  if (!rows.length) {
+    return el('div', { class: 'mkt-panel-body' },
+      el('p', { class: 'mkt-lede' },
+        'Chain breakdown unavailable.'));
+  }
+  const top = rows[0];
+  const lede = el('p', { class: 'mkt-lede' },
+    el('b', {}, top.chain),
+    ' carries the largest share at ', el('b', {}, top.share_pct.toFixed(1) + '%'),
+    ' of tracked supply across ', el('b', {}, top.token_count + ' tokens'),
+    '. The full distribution:');
+  const maxPct = rows[0].share_pct || 100;
+  const items = rows.map((r) => el('div', { class: 'mkt-chain-row' },
+    el('div', { class: 'mkt-chain-name' },
+      chainMark(r.chain, 'cmark-mkt'), r.chain),
+    el('div', { class: 'mkt-chain-bar' },
+      el('div', { class: 'mkt-chain-fill',
+        style: 'width:' + (r.share_pct / maxPct * 100) + '%' })),
+    el('div', { class: 'mkt-chain-supply' },
+      '$' + fmtMag(r.total_supply)),
+    el('div', { class: 'mkt-chain-pct' }, r.share_pct.toFixed(1) + '%'),
+    el('div', { class: 'mkt-chain-count' },
+      r.token_count + ' tok')));
+  return el('div', { class: 'mkt-panel-body' }, lede,
+    el('div', { class: 'mkt-chain-list' }, ...items));
+}
+
+// ─── PANEL 06 — recent signals ───────────────────────────────────────
+function recentSignalsPanel(data) {
+  const signals = data.recent_signals || [];
+  if (!signals.length) {
+    return el('div', { class: 'mkt-panel-body' },
+      el('p', { class: 'mkt-lede' },
+        'No new discovery signals in the recent window. The 6-hourly '
+        + 'canary will surface fresh items on its next sweep.'));
+  }
+  const lede = el('p', { class: 'mkt-lede' },
+    'Recent events the background discovery thread has surfaced from '
+    + 'the corpus — regulator publications, attestation drops, source '
+    + 'health flips. Each links to the underlying source.');
+  const rows = signals.map((s) => el('div', { class: 'mkt-signal-row' },
+    el('span', { class: 'mkt-signal-kind' },
+      (s.kind || '').replace(/^.*\./, '').replace('_', ' ')),
+    s.url
+      ? el('a', { class: 'mkt-signal-title', href: s.url,
+          target: '_blank', rel: 'noopener noreferrer' },
+          s.title || '(untitled)', el('span', { class: 'glyph' }, ' ↗'))
+      : el('span', { class: 'mkt-signal-title' }, s.title || '(untitled)'),
+    el('span', { class: 'mkt-signal-ts' },
+      s.ts ? fmtAgo(Date.now() - Date.parse(String(s.ts).replace(' ', 'T') + 'Z'))
+           : '')));
+  return el('div', { class: 'mkt-panel-body' }, lede,
+    el('div', { class: 'mkt-signals-list' }, ...rows));
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────
+function fmtComposedAt(iso) {
+  if (!iso) return 'just now';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined,
+      { day: '2-digit', month: 'short', year: 'numeric' })
+      + ', ' + d.toLocaleTimeString(undefined,
+        { hour: '2-digit', minute: '2-digit' });
+  } catch { return 'just now'; }
+}
+
+// ════════════════════════════════════════════════════════════════════
 //  ROUTER
 // ════════════════════════════════════════════════════════════════════
 function route() {
@@ -5774,6 +6223,10 @@ function route() {
     window.open('/compendium', '_blank', 'noopener');
     location.hash = '#monitor';
     viewMonitor();
+  } else if (view === 'market') {
+    STATE.activeSymbol = '';
+    refreshInstruments();
+    viewMarket();
   } else {
     STATE.activeSymbol = '';
     refreshInstruments();

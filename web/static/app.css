@@ -3092,3 +3092,538 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   #toast-stack { right: 12px; left: 12px; bottom: 78px; }
   .toast { min-width: 0; max-width: none; }
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   MARKET — cross-token editorial overview (F0 surface).
+   Bigger air, more typographic contrast than the operator surfaces.
+   The hero panel reads as a magazine spread; the analytical panels
+   beneath stay terminal-aware (IBM Plex meta labels, tabular numerics)
+   so the page feels like a Saturday FT magazine layered over Bloomberg.
+   ════════════════════════════════════════════════════════════════════ */
+.market-body { padding-bottom: 40px; }
+
+/* ── feature row in sidebar (gold accent above the F-key rows) ─────── */
+.side-row-feature {
+  border-bottom: 1px solid rgba(212,162,74,.18);
+  background:
+    linear-gradient(180deg, rgba(212,162,74,.08), rgba(212,162,74,.015));
+  margin-bottom: 4px;
+}
+.side-row-feature:hover {
+  background:
+    linear-gradient(180deg, rgba(212,162,74,.16), rgba(212,162,74,.035));
+}
+.side-row-feature.active {
+  background: rgba(212,162,74,.18);
+  border-left: 2px solid var(--gold);
+}
+.side-feature-mark {
+  color: var(--gold);
+  font-size: 13px;
+  letter-spacing: 0;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ── loading placeholder (cold-cache feedback) ─────────────────────── */
+.mkt-loading {
+  display: flex; align-items: center; gap: 14px;
+  margin: 60px auto; max-width: 480px;
+  padding: 18px 22px;
+  border: 1px solid rgba(212,162,74,.22);
+  border-left: 3px solid rgba(212,162,74,.65);
+  background: linear-gradient(180deg, rgba(212,162,74,.04), rgba(212,162,74,.01));
+}
+.mkt-loading-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 10px rgba(212,162,74,.7);
+  animation: cmpPulse 1.1s infinite;
+  flex: none;
+}
+.mkt-loading-head {
+  color: var(--paper); font-weight: 600;
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 14px; letter-spacing: .01em;
+}
+.mkt-loading-sub {
+  color: var(--muted-2); font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  letter-spacing: .04em; margin-top: 3px;
+}
+
+/* ── HERO ──────────────────────────────────────────────────────────── */
+.mkt-hero {
+  margin: 18px 18px 28px;
+  padding: 36px 38px 0;
+  border: 1px solid rgba(212,162,74,.28);
+  border-left: 4px solid var(--gold);
+  background:
+    radial-gradient(900px 320px at 12% 0%, rgba(212,162,74,.08), transparent 70%),
+    linear-gradient(180deg, rgba(212,162,74,.03) 0%, rgba(212,162,74,.008) 100%);
+  position: relative;
+  overflow: hidden;
+}
+.mkt-hero::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(212,162,74,.06) 1px, transparent 0);
+  background-size: 24px 24px;
+  opacity: .35;
+  mix-blend-mode: screen;
+}
+.mkt-hero-kick {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  position: relative; z-index: 1;
+  margin-bottom: 22px;
+}
+.mkt-hero-badge {
+  padding: 4px 11px;
+  background: var(--gold); color: var(--ink);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .14em;
+}
+.mkt-hero-meta {
+  color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; letter-spacing: .08em;
+}
+.mkt-hero-head {
+  font-family: 'Bodoni Moda', 'Inter Tight', serif;
+  font-size: clamp(28px, 3.4vw, 44px);
+  line-height: 1.18; font-weight: 600;
+  letter-spacing: -.01em;
+  color: var(--paper);
+  margin: 0 0 28px;
+  max-width: 30ch;
+  position: relative; z-index: 1;
+}
+.mkt-hero-points {
+  margin: 0 0 28px; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px 36px;
+  list-style: none;
+  position: relative; z-index: 1;
+}
+.mkt-hero-point {
+  position: relative;
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 14.5px; line-height: 1.55;
+  color: var(--paper);
+  padding-left: 22px;
+}
+.mkt-hero-point::before {
+  content: '◆';
+  position: absolute; left: 0; top: 1px;
+  color: var(--gold); font-size: 9px;
+}
+.mkt-hero-news {
+  margin: 0 0 24px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(212,162,74,.18);
+  position: relative; z-index: 1;
+}
+.mkt-hero-news-kick {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; letter-spacing: .14em;
+  color: var(--gold); margin-bottom: 10px;
+}
+.mkt-hero-news-row {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 13px; margin-bottom: 5px;
+}
+.mkt-hero-news-title {
+  color: var(--paper); font-weight: 500; text-decoration: none;
+}
+.mkt-hero-news-title:hover { color: var(--gold); }
+.mkt-hero-news-title .glyph { color: var(--gold); font-size: 10px; margin-left: 1px; }
+.mkt-hero-news-src {
+  color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; letter-spacing: .04em;
+  padding: 1px 6px;
+  background: rgba(255,255,255,.04);
+}
+.mkt-hero-foot {
+  font-size: 11px; color: var(--muted-2);
+  font-style: italic; line-height: 1.5;
+  padding-top: 14px;
+  border-top: 1px dashed rgba(255,255,255,.07);
+  position: relative; z-index: 1;
+  max-width: 70ch;
+}
+.mkt-hero-strip {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  margin: 30px -38px 0;
+  border-top: 1px solid rgba(212,162,74,.18);
+  background: rgba(10,11,14,.45);
+  position: relative; z-index: 1;
+}
+.mkt-stat {
+  padding: 22px 24px 24px;
+  border-right: 1px solid rgba(212,162,74,.12);
+  position: relative;
+}
+.mkt-stat:last-child { border-right: none; }
+.mkt-stat-val {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: clamp(28px, 2.6vw, 38px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper); letter-spacing: -.01em;
+  line-height: 1;
+}
+.mkt-stat-prefix {
+  color: var(--gold); font-weight: 500;
+  margin-right: 3px; font-size: .82em;
+}
+.mkt-stat-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; letter-spacing: .12em;
+  color: var(--muted-2); margin-top: 8px;
+}
+.mkt-hero-bare .mkt-hero-head { max-width: 40ch; }
+
+/* ── shared editorial lede (above each panel's data) ───────────────── */
+.mkt-panel-body { padding: 18px 18px 22px; }
+.mkt-lede {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 14.5px; line-height: 1.6;
+  color: var(--muted-1);
+  margin: 0 0 18px;
+  max-width: 76ch;
+}
+.mkt-lede b { color: var(--paper); font-weight: 500; }
+
+/* ── PANEL 01 stacked bar + issuer list ────────────────────────────── */
+.mkt-stacked-bar {
+  display: flex; height: 36px;
+  margin: 8px 0 22px;
+  border: 1px solid var(--line-strong);
+  overflow: hidden;
+  background: var(--ink-3);
+}
+.mkt-bar-seg {
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+  overflow: hidden;
+  transition: filter .15s;
+  cursor: default;
+}
+.mkt-bar-seg:hover { filter: brightness(1.18); }
+.mkt-bar-seg-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; letter-spacing: .04em;
+  white-space: nowrap;
+}
+.mkt-bar-seg-0 { background: var(--gold); color: var(--ink); }
+.mkt-bar-seg-1 { background: #c2934f; color: var(--ink); }
+.mkt-bar-seg-2 { background: #9c7a48; color: var(--paper); }
+.mkt-bar-seg-3 { background: #76603f; color: var(--paper); }
+.mkt-bar-seg-4 { background: #5b4d3a; color: var(--paper); }
+.mkt-bar-seg-5 { background: #443a30; color: var(--paper); }
+.mkt-bar-seg-other { background: var(--line-strong); color: var(--muted-2); }
+.mkt-issuer-list {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--line-2);
+  background: rgba(255,255,255,.012);
+}
+.mkt-issuer-row {
+  display: grid;
+  grid-template-columns: 32px 1fr 2fr 100px 64px;
+  gap: 14px; align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-2);
+  font-size: 13px;
+}
+.mkt-issuer-row:last-child { border-bottom: none; }
+.mkt-issuer-row:hover { background: rgba(212,162,74,.04); }
+.mkt-issuer-rank {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px; letter-spacing: .08em; color: var(--muted-2);
+}
+.mkt-issuer-name { color: var(--paper); font-weight: 500; }
+.mkt-issuer-tokens {
+  color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px; letter-spacing: .02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mkt-issuer-supply {
+  text-align: right; color: var(--paper);
+  font-variant-numeric: tabular-nums; font-weight: 500;
+}
+.mkt-issuer-share {
+  text-align: right; color: var(--gold);
+  font-variant-numeric: tabular-nums;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+
+/* ── PANEL 02 backing-model cards ──────────────────────────────────── */
+.mkt-model-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.mkt-model-card {
+  position: relative;
+  padding: 18px 18px 20px;
+  border: 1px solid var(--line-strong);
+  background: var(--ink-2);
+  overflow: hidden;
+}
+.mkt-model-card.bk-fiat { border-left: 3px solid var(--gold); }
+.mkt-model-card.bk-crypto { border-left: 3px solid var(--green); }
+.mkt-model-card.bk-synth { border-left: 3px solid #a7c8e0; }
+.mkt-model-card.bk-algo { border-left: 3px solid #c6a8d4; }
+.mkt-model-card.bk-new { border-left: 3px solid var(--amber); }
+.mkt-model-share {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 32px; font-weight: 600;
+  color: var(--paper); line-height: 1; letter-spacing: -.01em;
+  font-variant-numeric: tabular-nums;
+}
+.mkt-model-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px; letter-spacing: .1em;
+  color: var(--gold); text-transform: uppercase;
+  margin-top: 8px;
+}
+.mkt-model-sub {
+  color: var(--muted-1); font-size: 12px;
+  margin-top: 4px; font-variant-numeric: tabular-nums;
+}
+.mkt-model-tokens {
+  color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; letter-spacing: .02em;
+  margin-top: 10px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mkt-model-fill {
+  position: absolute; bottom: 0; left: 0;
+  height: 2px; background: var(--gold);
+}
+.bk-crypto .mkt-model-fill { background: var(--green); }
+.bk-synth .mkt-model-fill { background: #a7c8e0; }
+.bk-algo .mkt-model-fill { background: #c6a8d4; }
+
+/* ── PANEL 03 verification health ──────────────────────────────────── */
+.mkt-health-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.mkt-health-card {
+  padding: 16px 18px 18px;
+  border: 1px solid var(--line-strong);
+  background: var(--ink-2);
+}
+.mkt-health-good { border-left: 3px solid var(--green); }
+.mkt-health-warn { border-left: 3px solid var(--amber); }
+.mkt-health-bad  { border-left: 3px solid var(--rose); }
+.mkt-health-neutral { border-left: 3px solid var(--muted-2); }
+.mkt-health-count {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 30px; font-weight: 600;
+  color: var(--paper); line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.mkt-health-good .mkt-health-count { color: var(--green); }
+.mkt-health-warn .mkt-health-count { color: var(--amber); }
+.mkt-health-bad  .mkt-health-count { color: var(--rose); }
+.mkt-health-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; letter-spacing: .1em;
+  color: var(--muted-1); margin-top: 7px;
+}
+.mkt-health-syms {
+  color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; letter-spacing: .02em;
+  margin-top: 9px; line-height: 1.5;
+}
+
+/* ── PANEL 04 drift table ──────────────────────────────────────────── */
+.mkt-drift-table {
+  border: 1px solid var(--line-2);
+  background: rgba(255,255,255,.012);
+}
+.mkt-drift-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.4fr 1fr 1fr 1fr;
+  gap: 16px; align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-2);
+  font-size: 13px;
+}
+.mkt-drift-row:last-child { border-bottom: none; }
+.mkt-drift-head {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; letter-spacing: .12em;
+  color: var(--muted-2);
+  background: var(--ink-3);
+}
+.mkt-drift-sym {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--paper); font-weight: 500;
+}
+.mkt-drift-asof {
+  color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+}
+.mkt-drift-attested, .mkt-drift-current {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper);
+}
+.mkt-drift-attested { color: var(--muted-1); }
+.mkt-drift-pct {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.mkt-drift-pct.d-up { color: var(--green); }
+.mkt-drift-pct.d-dn { color: var(--rose); }
+.mkt-drift-pct.d-flat { color: var(--muted-2); }
+
+/* ── PANEL 05 per-chain map ────────────────────────────────────────── */
+.mkt-chain-list { display: flex; flex-direction: column; gap: 8px; }
+.mkt-chain-row {
+  display: grid;
+  grid-template-columns: 140px 1fr 100px 64px 70px;
+  gap: 14px; align-items: center;
+  padding: 8px 0;
+}
+.mkt-chain-name {
+  display: flex; align-items: center; gap: 9px;
+  color: var(--paper);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px; letter-spacing: .02em;
+  text-transform: uppercase;
+}
+.cmark-mkt { width: 18px; height: 18px; }
+.mkt-chain-bar {
+  height: 8px; background: var(--ink-3);
+  border: 1px solid var(--line-2); overflow: hidden;
+}
+.mkt-chain-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold), rgba(212,162,74,.5));
+}
+.mkt-chain-supply {
+  text-align: right; color: var(--paper);
+  font-variant-numeric: tabular-nums; font-size: 13px;
+  font-weight: 500;
+}
+.mkt-chain-pct {
+  text-align: right; color: var(--gold);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.mkt-chain-count {
+  text-align: right; color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; letter-spacing: .02em;
+}
+
+/* ── PANEL 06 recent signals ───────────────────────────────────────── */
+.mkt-signals-list { display: flex; flex-direction: column; }
+.mkt-signal-row {
+  display: grid;
+  grid-template-columns: 140px 1fr auto;
+  gap: 14px; align-items: baseline;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line-2);
+  font-size: 13px;
+}
+.mkt-signal-row:last-child { border-bottom: none; }
+.mkt-signal-kind {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; letter-spacing: .1em;
+  color: var(--gold); text-transform: uppercase;
+}
+.mkt-signal-title { color: var(--paper); text-decoration: none; }
+.mkt-signal-title:hover { color: var(--gold); }
+.mkt-signal-title .glyph { color: var(--gold); font-size: 10px; }
+.mkt-signal-ts {
+  color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px; letter-spacing: .04em;
+}
+
+/* ── footer ────────────────────────────────────────────────────────── */
+.mkt-foot {
+  margin: 32px 18px 24px;
+  padding: 18px 22px;
+  border: 1px dashed var(--line-2);
+  background: rgba(255,255,255,.01);
+}
+.mkt-foot-prov {
+  color: var(--muted-1); font-size: 13px;
+  font-style: italic; line-height: 1.5;
+  margin-bottom: 14px;
+  max-width: 76ch;
+}
+.mkt-foot-prov b {
+  color: var(--paper); font-weight: 500; font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+.mkt-foot-jumps {
+  display: flex; gap: 10px; flex-wrap: wrap;
+}
+
+/* ── mobile / tablet ──────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .mkt-hero { margin: 12px 10px 22px; padding: 24px 22px 0; }
+  .mkt-hero-head { font-size: 26px; max-width: none; }
+  .mkt-hero-points { grid-template-columns: 1fr; gap: 12px 0; }
+  .mkt-hero-strip { grid-template-columns: 1fr 1fr; margin: 22px -22px 0; }
+  .mkt-stat-val { font-size: 24px; }
+  .mkt-stat { padding: 16px 18px; }
+  .mkt-panel-body { padding: 14px 12px 16px; }
+  .mkt-issuer-row {
+    grid-template-columns: 24px 1fr 70px;
+    grid-template-areas:
+      'rank name supply'
+      'rank tokens share';
+    gap: 6px 10px;
+  }
+  .mkt-issuer-rank { grid-area: rank; }
+  .mkt-issuer-name { grid-area: name; }
+  .mkt-issuer-tokens { grid-area: tokens; font-size: 10.5px; }
+  .mkt-issuer-supply { grid-area: supply; }
+  .mkt-issuer-share { grid-area: share; text-align: right; }
+  .mkt-model-grid { grid-template-columns: 1fr 1fr; }
+  .mkt-model-card { padding: 14px 14px 16px; }
+  .mkt-model-share { font-size: 26px; }
+  .mkt-health-grid { grid-template-columns: 1fr 1fr; }
+  .mkt-drift-row {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      'sym pct'
+      'asof asof'
+      'attested current';
+    gap: 4px 10px;
+  }
+  .mkt-drift-sym { grid-area: sym; }
+  .mkt-drift-pct { grid-area: pct; }
+  .mkt-drift-asof { grid-area: asof; }
+  .mkt-drift-attested { grid-area: attested; text-align: left; }
+  .mkt-drift-current { grid-area: current; text-align: right; }
+  .mkt-drift-head { display: none; }
+  .mkt-chain-row {
+    grid-template-columns: 100px 1fr 70px;
+    grid-template-areas:
+      'name bar bar'
+      'name supply pct';
+  }
+  .mkt-chain-name { grid-area: name; }
+  .mkt-chain-bar { grid-area: bar; }
+  .mkt-chain-supply { grid-area: supply; }
+  .mkt-chain-pct { grid-area: pct; }
+  .mkt-chain-count { display: none; }
+  .mkt-signal-row { grid-template-columns: 1fr; gap: 4px; }
+}

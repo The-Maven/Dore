@@ -340,3 +340,134 @@ def _passage_url(p: CorpusPassage) -> str:
         return get_source(p.source_id).url
     except Exception:  # noqa: BLE001 - cite-as-best-effort
         return ""
+
+
+# ── Market-wide editorial brief ────────────────────────────────────────
+# Cross-token view: composes from the aggregated market state instead
+# of one stablecoin. Same AiBrief return shape (headline + key_points +
+# relevant_news) so the frontend can render with the existing hero
+# component.
+
+_MARKET_BRIEF_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string"},
+        "key_points": {"type": "array", "items": {"type": "string"}},
+        "relevant_news_indices": {
+            "type": "array",
+            "items": {"type": "integer"},
+        },
+    },
+    "required": ["headline", "key_points"],
+}
+
+
+def _market_system_prompt() -> str:
+    return (
+        "You are writing the DORÉ MARKET BRIEF: a single editorial "
+        "paragraph at the top of a cross-token market overview page. "
+        "Audience: a financial reader (analyst, compliance lead, fund "
+        "treasurer) who wants the state of the stablecoin market in 5 "
+        "seconds.\n\n"
+        "STRICT RULES:\n"
+        "  1. NEVER invent numeric figures. Use only figures from the "
+        "facts block I give you, verbatim.\n"
+        "  2. NEVER claim the market is 'safe' or 'fully verified'. "
+        "Describe what the live state SHOWS and let the reader conclude.\n"
+        "  3. The HEADLINE is one sentence, the bottom line. Plain "
+        "English. Lead with the most material observation in the data "
+        "(concentration, drift, verification gap, fresh news that "
+        "matters across many issuers). Do NOT restate counts like "
+        "'25 tokens tracked' as the headline.\n"
+        "  4. KEY_POINTS: 3 to 5 short bullets (~16 words each). Each "
+        "must be a real observation from the facts block, not a "
+        "platitude. Surface concrete numbers and named tokens.\n"
+        "  5. RELEVANT_NEWS_INDICES: from news_candidates, return ONLY "
+        "indices of items that genuinely shape the market view (a "
+        "regulator action, a standard publication, an issuer event "
+        "with cross-market read-through). Return [] if nothing fits.\n"
+        "  6. Return strict JSON matching the schema.\n"
+        "  7. Headlines and bullets should read at financial-product "
+        "copy quality, not as a status report.\n"
+        "  8. VOICE: never use em dashes. Commas, periods, or colons. "
+        "Avoid 'leverage', 'ecosystem', 'journey', 'transformation', "
+        "'holistic'. Present-tense, declarative.\n"
+    )
+
+
+def generate_market_brief(
+    *,
+    market_facts: str,
+    news_candidates: list[CorpusPassage],
+    llm: LLMClient | None = None,
+) -> AiBrief | None:
+    """Compose the cross-token editorial brief from aggregated market
+    state. Returns None on failure; the view omits the hero panel."""
+    client = llm or fallback_llm()
+    if client is None:
+        return None
+
+    system = _market_system_prompt()
+    user = (
+        "## Live market state (verbatim — never invent figures)\n"
+        f"{market_facts}\n\n"
+        "## news_candidates (corpus passages — recently discovered "
+        "regulatory / industry items)\n"
+        f"{_format_news_candidates(news_candidates)}\n\n"
+        "Return the editorial market brief as strict JSON per the schema."
+    )
+
+    try:
+        with timed("brief.market.generate"):
+            raw = client.extract_json(
+                system=system, prompt=user, schema=_MARKET_BRIEF_SCHEMA,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log_event("brief.market.failed", level="warn",
+                  error_class=type(exc).__name__, error_message=str(exc))
+        return None
+
+    data = raw if isinstance(raw, dict) else {}
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+
+    headline = (data.get("headline") or "").strip()
+    if not headline:
+        return None
+    key_points = [
+        p.strip() for p in (data.get("key_points") or [])
+        if isinstance(p, str) and p.strip()
+    ]
+    relevant_news: list[dict] = []
+    cites: list[str] = []
+    for i in (data.get("relevant_news_indices") or []):
+        try:
+            idx = int(i)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(news_candidates):
+            p = news_candidates[idx]
+            url = _passage_url(p)
+            relevant_news.append({
+                "title": p.heading or p.citation,
+                "source": p.source_id,
+                "url": url,
+                "snippet": (p.text or "")[:160],
+            })
+            if url:
+                cites.append(url)
+
+    from datetime import datetime, timezone
+    return AiBrief(
+        surface="market",
+        symbol="MARKET",
+        headline=headline,
+        key_points=key_points,
+        relevant_news=relevant_news,
+        citations=cites,
+        confidence="training-data-only",
+        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
