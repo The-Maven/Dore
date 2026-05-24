@@ -105,6 +105,56 @@ def _record_override(symbol: str, url: str, via: str) -> None:
         )
 
 
+def _validate_and_maybe_upgrade(
+    symbol: str, entry: dict, token,
+) -> str | None:
+    """Ask the issuer if a newer attestation exists than the cached one.
+    Returns the new URL on upgrade (cache invalidated, override written
+    via='auto_validate'), or None when the cache is current (or when
+    validation can't run — we keep serving cache rather than burning
+    discovery quota).
+
+    Has a per-entry 12h cooldown to keep the validator off the hot
+    path for views that hit cache every request.
+    """
+    from sca import web_discovery as _wd
+    if not _wd._should_validate(entry):
+        return None
+    issuer = getattr(token, "issuer", "")
+    known_domain = ""
+    if token.transparency_url:
+        try:
+            from urllib.parse import urlparse
+            known_domain = urlparse(token.transparency_url).hostname or ""
+        except Exception:  # noqa: BLE001
+            known_domain = ""
+    result = _wd.validate_attestation_currency(
+        symbol, issuer, entry.get("url", ""), known_domain=known_domain,
+    )
+    if result is None:
+        return None  # validator failed; serve cache silently
+    # Always update validated_at on a successful run, whether or not
+    # an upgrade was found. That's the freshness signal the UI needs.
+    cache = _load_cache()
+    e = cache.setdefault(symbol, {})
+    e["validated_at"] = result["validated_at"]
+    newer = result.get("newer_url")
+    if newer and newer != entry.get("url"):
+        # Invalidate the cache entry, write the new URL through the
+        # store as an override so future resolves short-circuit at
+        # step (1). Mark via='auto_validate' so an operator can tell
+        # this URL came from validation, not original discovery.
+        e.update({
+            "url": newer, "via": "auto_validate",
+            "resolved_at": date.today().isoformat(),
+        })
+        _save_cache(cache)
+        _record_override(symbol, newer, "auto_validate")
+        return newer
+    _save_cache(cache)
+    return None
+
+
 def resolve_url(symbol: str, *, refresh: bool = False) -> dict:
     """Resolve a healthy attestation PDF URL for `symbol`.
 
@@ -134,7 +184,16 @@ def resolve_url(symbol: str, *, refresh: bool = False) -> dict:
         entry = cache.get(symbol, {})
         cached = entry.get("url")
         if cached and _cache_fresh(entry) and _head_ok(cached):
-            return {"url": cached, "via": "cache"}
+            # Validate against the issuer if we haven't checked recently.
+            # The cache being fresh by TTL doesn't mean the issuer hasn't
+            # published a newer report. If the validator finds one, we
+            # invalidate the cache here and fall through to the discovery
+            # chain so the next steps see a clean slate.
+            upgraded_url = _validate_and_maybe_upgrade(symbol, entry, token)
+            if upgraded_url is None:
+                return {"url": cached, "via": "cache"}
+            # else: a newer URL is available; recompute through the chain
+            cache = _load_cache()  # reload — _validate_and_maybe_upgrade rewrote it
 
     # 3. config seed (YAML bootstrap)
     seed = token.latest_attestation_url

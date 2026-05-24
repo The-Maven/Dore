@@ -156,6 +156,190 @@ def _cache_fresh(entry: dict) -> bool:
     return (date.today() - when).days <= _CACHE_MAX_AGE_DAYS
 
 
+# ── Validation — "is the world still where we left it?" ─────────────
+# A cache entry can stay "fresh" by its own TTL while the issuer
+# publishes a newer report. The Feb-vs-March 2026 USDC case (Doré
+# served Feb for 86 days because the cache TTL hadn't elapsed) is the
+# canonical failure mode. The validator answers: given what we have
+# cached, has the issuer published anything newer? Cheap by design —
+# one targeted Brave query, dated-URL comparison, no full discovery
+# chain.
+#
+# Per-entry validation cooldown so the canary's 6h sweep doesn't
+# hammer Brave every cycle when the answer hasn't moved.
+_VALIDATION_COOLDOWN_HOURS = 12
+
+# Month tokens we look for in attestation PDF URLs to date them.
+# Issuers use either "February 26" / "Feb-2026" / "2026-02" patterns.
+_MONTHS = {
+    "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
+    "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
+    "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10, "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+
+def _extract_pdf_date(url: str) -> tuple[int, int] | None:
+    """Pull a (year, month) tuple from an attestation PDF URL.
+
+    Recognises three common patterns:
+      - "...Examination Report February 26.pdf"  →  (2026, 2)
+      - "...Examination-Report-Feb-2026.pdf"     →  (2026, 2)
+      - "...2026-02-attestation.pdf"             →  (2026, 2)
+
+    Returns None when no date hint is found (caller treats the cache
+    URL as undateable and skips the validator)."""
+    import re as _re
+    if not url:
+        return None
+    lower = url.lower()
+    # Pattern 1: "month_name <yy_or_yyyy>"
+    for name, mnum in _MONTHS.items():
+        for sep in (" ", "-", "_", "%20"):
+            tok = f"{name}{sep}"
+            i = lower.find(tok)
+            if i == -1:
+                continue
+            rest = lower[i + len(tok):i + len(tok) + 6]
+            m = _re.match(r"(\d{2,4})", rest)
+            if not m:
+                continue
+            yr = int(m.group(1))
+            if yr < 100:
+                yr += 2000
+            if 2020 <= yr <= 2099:
+                return (yr, mnum)
+    # Pattern 2: yyyy-mm or yyyy_mm in the path
+    m = _re.search(r"(20\d{2})[-_/](0[1-9]|1[0-2])", lower)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    return None
+
+
+def _months_between(a: tuple[int, int], b: tuple[int, int]) -> int:
+    """How many months from a to b (positive when b is newer)."""
+    return (b[0] - a[0]) * 12 + (b[1] - a[1])
+
+
+def _should_validate(entry: dict) -> bool:
+    """True if this entry hasn't been validated within the cooldown.
+
+    Falls back to `resolved_at` when `validated_at` is missing — a
+    brand-new cache entry was just discovered, so it's effectively
+    validated. Only entries that have been sitting in cache past the
+    cooldown trigger the validator. Without this, every first cache
+    hit would burn a Brave query."""
+    from datetime import datetime as _dt, timezone as _tz, date as _date
+    last = entry.get("validated_at")
+    if last:
+        try:
+            when = _dt.fromisoformat(last.replace("Z", "+00:00"))
+            age_h = (_dt.now(_tz.utc) - when).total_seconds() / 3600
+            return age_h >= _VALIDATION_COOLDOWN_HOURS
+        except (ValueError, AttributeError):
+            pass
+    # Fall back to resolved_at: treat fresh resolutions as validated.
+    resolved = entry.get("resolved_at")
+    if resolved:
+        try:
+            when_d = _date.fromisoformat(resolved)
+            age_h = (_date.today() - when_d).days * 24
+            return age_h >= _VALIDATION_COOLDOWN_HOURS
+        except ValueError:
+            pass
+    # No timestamps at all — be safe and validate.
+    return True
+
+
+def validate_attestation_currency(
+    symbol: str,
+    issuer: str,
+    cached_url: str,
+    *,
+    known_domain: str = "",
+) -> dict | None:
+    """Probe the issuer for a newer attestation than the one we have
+    cached. Returns:
+      {"newer_url": str, "validated_at": iso}   when an upgrade exists
+      {"validated_at": iso}                     when cache is current
+      None                                      when validation failed
+                                                (caller treats as
+                                                "couldn't check; keep
+                                                serving cache")
+
+    Cheap: one Brave query, dated-URL filtering, HEAD on the winner.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    backend = _BACKENDS.get(_provider())
+    if backend is None:
+        return None
+    cached_date = _extract_pdf_date(cached_url)
+    now_iso = _dt.now(_tz.utc).isoformat(timespec="seconds")
+    # Use a tight query that surfaces recently-dated attestations.
+    # The current calendar year + symbol is enough; backend ranking
+    # gives us the most relevant first.
+    yr = date.today().year
+    issuer_term = f' issued by {issuer}' if issuer else ""
+    query = (
+        f"latest reserve attestation report PDF for "
+        f"{symbol} stablecoin{issuer_term} {yr}"
+    )
+    try:
+        candidates = backend(query)
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "attestation.validator.search_failed", level="warn",
+            symbol=symbol, error_class=type(exc).__name__,
+            error_message=str(exc)[:200],
+        )
+        return None
+    # Filter to PDFs from acceptable origins.
+    candidates = [
+        u for u in candidates
+        if (u.lower().endswith(".pdf") or "/wp-content/" in u.lower())
+        and _is_acceptable_origin(u, known_domain, symbol)
+        and u != cached_url
+    ]
+    if not candidates:
+        log_event(
+            "attestation.validator.cache_current", level="info",
+            symbol=symbol, cached_url=cached_url,
+        )
+        return {"validated_at": now_iso}
+    # Find the most recently-dated candidate that beats the cache.
+    cand_dates: list[tuple[tuple[int, int], str]] = []
+    for u in candidates:
+        d = _extract_pdf_date(u)
+        if d is None:
+            continue
+        cand_dates.append((d, u))
+    if not cand_dates:
+        # Search returned candidates but none dated. Don't claim an
+        # upgrade we can't prove; treat as "couldn't validate".
+        return {"validated_at": now_iso}
+    cand_dates.sort(key=lambda t: t[0], reverse=True)
+    newest_date, newest_url = cand_dates[0]
+    if cached_date is None or _months_between(cached_date, newest_date) > 0:
+        # Verify the candidate is genuinely a fetchable PDF before we
+        # claim it as the upgrade.
+        if _head_is_pdf_from_trusted(newest_url, known_domain, symbol):
+            log_event(
+                "attestation.validator.upgraded", level="info",
+                symbol=symbol, cached_url=cached_url,
+                newer_url=newest_url,
+                cached_date=("%d-%02d" % cached_date if cached_date else ""),
+                newer_date="%d-%02d" % newest_date,
+            )
+            return {"newer_url": newest_url, "validated_at": now_iso}
+    log_event(
+        "attestation.validator.cache_current", level="info",
+        symbol=symbol, cached_url=cached_url,
+        cached_date=("%d-%02d" % cached_date if cached_date else "?"),
+    )
+    return {"validated_at": now_iso}
+
+
 def _head_is_pdf(url: str) -> bool:
     """A PDF that returns 200 and either declares Content-Type:
     application/pdf or has a .pdf suffix."""
