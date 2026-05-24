@@ -1794,7 +1794,7 @@ function refreshGrid() {
     const verified = t.verified_count === t.chain_count;
     tbody.append(el('tr', {
       class: 'click',
-      onclick: () => { location.hash = '#analyze/' + t.symbol; },
+      onclick: () => { location.hash = currentSurfaceHash(t.symbol); },
     },
       el('td', { class: 'td-mark' }, tokenMark(t.symbol, 'tmark-grid')),
       el('td', { class: 'sym' }, t.symbol),
@@ -1911,7 +1911,7 @@ function refreshInstruments() {
     const native = nativeOf(s);
     box.append(el('div', {
       class: 'instr-row' + (t.symbol === STATE.activeSymbol ? ' active' : ''),
-      onclick: () => { location.hash = '#analyze/' + t.symbol; },
+      onclick: () => { location.hash = currentSurfaceHash(t.symbol); },
     },
       el('div', { class: 'instr-id' },
         tokenMark(t.symbol, 'tmark-side'),
@@ -2200,6 +2200,20 @@ function stageSubNarration(stages) {
   });
 }
 
+// ── sidebar token-click target ───────────────────────────────────────
+// When the user clicks a token in the sidebar (or the monitor grid),
+// stay in whichever surface they're currently viewing rather than
+// always bouncing to #analyze. On the sanctions or redemption surfaces
+// the click runs that surface for the picked token in place; on any
+// other surface (monitor, corpus, evals, analyst, compendium) default
+// to analyze.
+function currentSurfaceHash(symbol) {
+  const view = (location.hash || '').replace(/^#/, '').split('/')[0];
+  if (view === 'sanctions') return '#sanctions/' + symbol;
+  if (view === 'redemptions') return '#redemptions/' + symbol;
+  return '#analyze/' + symbol;
+}
+
 // ── result freshness ─────────────────────────────────────────────────
 // A compute is "fresh" for six hours — matches the server-side
 // _CACHE_FRESH_S TTL in web/server.py. The background canary refreshes
@@ -2294,11 +2308,14 @@ function freshnessStrip(computedAt, onRefresh) {
   // when stale, soft-ghost when fresh. Tooltip includes the
   // last-N-runs average so the user knows what to expect before they
   // commit to waiting through a recompute. Surface + symbol are
-  // resolved from STATE so this helper stays generic across F2/F5/F6.
+  // resolved from the route so this helper stays generic across
+  // F2/F4/F5/F6.
+  const route = (location.hash || '').replace(/^#/, '').split('/')[0];
   const surface = ({
-    analyze: 'attestation', sanctions: 'sanctions', redemptions: 'redemption',
-  })[(location.hash || '').replace(/^#/, '').split('/')[0]] || 'attestation';
-  const sym = STATE.activeSymbol;
+    analyze: 'attestation', sanctions: 'sanctions',
+    redemptions: 'redemption', evals: 'evals',
+  })[route] || 'attestation';
+  const sym = surface === 'evals' ? 'suite' : STATE.activeSymbol;
   const lat = sym ? expectedLatency(surface, sym) : null;
   const latLine = lat
     ? ' A recompute typically takes about ' + lat.seconds + ' seconds'
@@ -4401,84 +4418,157 @@ function viewEvals() {
     'regression guard · one live analysis per case — slow', runBtn));
   const mount = el('div', { class: 'view-body' });
   app.append(mount);
+  // Mirror analyze/sanctions/redemption: try the cached endpoint
+  // first so a returning user sees the last suite instantly with a
+  // freshness strip. Only a true cache miss shows the idle empty
+  // state. RUN SUITE always forces a fresh POST.
+  runBtn.addEventListener('click', () => runEvalSuite(runBtn, mount));
+  loadCachedEvals(runBtn, mount);
+}
+
+async function loadCachedEvals(runBtn, mount) {
+  mount.innerHTML = '';
   mount.append(el('div', { class: 'empty' },
     icon('i-eval'),
-    el('b', {}, 'Eval suite idle'),
-    el('div', {}, 'Each case runs a full analysis and grades structured ' +
-      'expectations. Press RUN SUITE — this takes a while.')));
-
-  runBtn.addEventListener('click', async () => {
-    runBtn.disabled = true;
-    runBtn.replaceChildren(el('span', { class: 'spinner' }),
-      document.createTextNode(' RUNNING'));
+    el('b', {}, 'Loading last eval suite…')));
+  let payload;
+  try { payload = await api('/evals'); }
+  catch { payload = { cached: false }; }
+  if (!payload || !payload.cached) {
     mount.innerHTML = '';
-    logLine('WORK', 'EVALS', [seg('suite start', 'lg-val'), seg('grading all cases')]);
-    // Dynamic narration during the synchronous eval run — same feel as
-    // the analyze view's stage narration, but the endpoint is blocking
-    // so we cycle through plausible eval-time steps client-side. Each
-    // line corresponds to something the harness actually does.
-    const subLine = el('div', { class: 'rs-sub rs-sub-tick' },
-      'loading the eval case list');
-    const clock = el('span', { class: 'rs-tk', style: 'margin-left:auto' }, '0s');
-    const head = el('div', { class: 'rstage active' },
-      el('div', { class: 'rs-mark' }),
-      el('div', { class: 'rs-text' },
-        el('div', { class: 'rs-label' }, 'Eval suite running'),
-        subLine),
-      clock);
-    mount.append(panel(null, 'EVAL SUITE — RUNNING', 'i-eval',
-      el('div', {},
-        el('div', { class: 'run-stages' }, head),
-        el('div', { class: 'scanbar' }))));
-    const evalLines = [
-      'loading the eval case list',
-      'running USDC supply-resolves check',
-      'running USDT supply-resolves check',
-      'running PYUSD attestation-absent expectation',
-      'verifying GUSD gap-contains assertions',
-      'checking the corpus-included-by-default guard',
-      'asserting no investment-advice language in narratives',
-      'grading attestation-confidence thresholds',
-      'tallying pass / fail across every case',
-    ];
-    let i = 0;
-    const t0 = Date.now();
-    const subTimer = setInterval(() => {
-      i = (i + 1) % evalLines.length;
-      subLine.textContent = evalLines[i];
-      subLine.classList.remove('rs-sub-tick');
-      void subLine.offsetWidth;
-      subLine.classList.add('rs-sub-tick');
-    }, 1600);
-    const clockTimer = setInterval(() => {
-      clock.textContent = Math.round((Date.now() - t0) / 1000) + 's';
-    }, 250);
-    let data;
-    try { data = await api('/evals'); }
-    catch (e) {
-      clearInterval(subTimer); clearInterval(clockTimer);
-      mount.innerHTML = '';
-      logLine('ERR', 'EVALS', [seg('SUITE-FAIL', 'd-warn'),
-        seg(String(e.message).slice(0, 48))]);
-      mount.append(errorBox('Eval run failed', e.message, undefined,
-        { onRetry: () => runBtn.click(), retryLabel: 'TRY AGAIN' }));
-      runBtn.disabled = false;
-      runBtn.replaceChildren(icon('i-eval'), document.createTextNode('RUN SUITE'));
-      return;
+    mount.append(el('div', { class: 'empty' },
+      icon('i-eval'),
+      el('b', {}, 'Eval suite idle'),
+      el('div', {}, 'Each case runs a full analysis and grades structured ' +
+        'expectations. Press RUN SUITE — this takes a while.')));
+    runBtn.replaceChildren(icon('i-eval'), document.createTextNode('RUN SUITE'));
+    return;
+  }
+  mount.innerHTML = '';
+  // Surface the same freshness strip every other view uses so the user
+  // sees "computed 12m ago" + a contextual RE-RUN that matches the
+  // analyze / sanctions / redemption pattern exactly.
+  mount.append(freshnessStrip(payload.computed_at,
+    () => runEvalSuite(runBtn, mount)));
+  logLine('OK', 'EVALS', [
+    seg(payload.passed === payload.count ? 'GREEN' : 'FAIL',
+      payload.passed === payload.count ? 'd-up' : 'd-dn'),
+    seg(payload.stale ? 'stale cache' : 'fresh cache',
+      payload.stale ? 'd-warn' : 'd-up'),
+    seg('pass' + payload.passed + '/' + payload.count),
+  ]);
+  renderEvals(payload, mount);
+  runBtn.replaceChildren(icon('i-eval'), document.createTextNode('RE-RUN'));
+}
+
+async function runEvalSuite(runBtn, mount) {
+  runBtn.disabled = true;
+  runBtn.replaceChildren(el('span', { class: 'spinner' }),
+    document.createTextNode(' RUNNING'));
+  mount.innerHTML = '';
+  logLine('WORK', 'EVALS', [seg('suite start', 'lg-val'),
+    seg('grading all cases')]);
+  // Dynamic narration during the synchronous eval run — same shape
+  // as the analyze view's stage panel including the latency hint
+  // (typical-time line + clock/scanbar) so the user knows how long
+  // to wait. evals uses one cross-suite latency bucket.
+  const expected = expectedLatency('evals', 'suite');
+  const subLine = el('div', { class: 'rs-sub rs-sub-tick' },
+    'loading the eval case list');
+  const clock = el('span', { class: 'rs-tk',
+    style: 'margin-left:auto' }, '0s / ~' + expected.seconds + 's');
+  const head = el('div', { class: 'rstage active' },
+    el('div', { class: 'rs-mark' }),
+    el('div', { class: 'rs-text' },
+      el('div', { class: 'rs-label' }, 'Eval suite running'),
+      subLine),
+    clock);
+  const scanbar = el('div', { class: 'scanbar' });
+  const waitHint = el('div', { class: 'rs-wait' },
+    el('span', { class: 'rs-wait-mark' }, '◇'),
+    el('span', { class: 'rs-wait-txt' },
+      latencyHint('evals', 'suite')));
+  mount.append(panel(null, 'EVAL SUITE — RUNNING', 'i-eval',
+    el('div', {},
+      el('div', { class: 'run-stages' }, head),
+      scanbar,
+      waitHint)));
+  const evalLines = [
+    'loading the eval case list',
+    'running USDC supply-resolves check',
+    'running USDT supply-resolves check',
+    'running PYUSD attestation-absent expectation',
+    'verifying GUSD gap-contains assertions',
+    'checking the corpus-included-by-default guard',
+    'asserting no investment-advice language in narratives',
+    'grading attestation-confidence thresholds',
+    'tallying pass / fail across every case',
+  ];
+  let i = 0;
+  const t0 = Date.now();
+  const subTimer = setInterval(() => {
+    i = (i + 1) % evalLines.length;
+    subLine.textContent = evalLines[i];
+    subLine.classList.remove('rs-sub-tick');
+    void subLine.offsetWidth;
+    subLine.classList.add('rs-sub-tick');
+  }, 1600);
+  const clockTimer = setInterval(() => {
+    const elapsedS = Math.round((Date.now() - t0) / 1000);
+    const over = elapsedS > expected.seconds * 1.5;
+    const wayOver = elapsedS > expected.seconds * 2.5;
+    clock.textContent = over ? elapsedS + 's'
+      : elapsedS + 's / ~' + expected.seconds + 's';
+    clock.className = 'rs-tk' + (wayOver ? ' rs-tk-slow'
+      : over ? ' rs-tk-overrun' : '');
+    if (wayOver) {
+      waitHint.classList.add('rs-wait-slow');
+      waitHint.querySelector('.rs-wait-txt').textContent =
+        'Taking longer than usual. Still working — every case includes a '
+        + 'live analyze() with its own LLM hop.';
+    } else if (over) {
+      waitHint.classList.add('rs-wait-over');
+      waitHint.querySelector('.rs-wait-txt').textContent =
+        'A little past the typical ' + expected.seconds + 's, still on track.';
     }
+    const pct = Math.min(96, Math.round((elapsedS / expected.seconds) * 100));
+    scanbar.style.setProperty('--scan-pct', pct + '%');
+  }, 250);
+  let data;
+  try {
+    data = await api('/evals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+  } catch (e) {
     clearInterval(subTimer); clearInterval(clockTimer);
     mount.innerHTML = '';
-    logLine(data.passed === data.count ? 'OK' : 'ALERT', 'EVALS', [
-      seg(data.passed === data.count ? 'GREEN' : 'FAIL',
-        data.passed === data.count ? 'd-up' : 'd-dn'),
-      seg('pass' + data.passed + '/' + data.count),
-      seg('fail' + (data.count - data.passed),
-        data.count - data.passed ? 'd-warn' : ''),
-    ]);
-    renderEvals(data, mount);
+    logLine('ERR', 'EVALS', [seg('SUITE-FAIL', 'd-warn'),
+      seg(String(e.message).slice(0, 48))]);
+    mount.append(errorBox('Eval run failed', e.message, undefined,
+      { onRetry: () => runEvalSuite(runBtn, mount),
+        retryLabel: 'TRY AGAIN' }));
     runBtn.disabled = false;
-    runBtn.replaceChildren(icon('i-eval'), document.createTextNode('RE-RUN'));
-  });
+    runBtn.replaceChildren(icon('i-eval'),
+      document.createTextNode('RUN SUITE'));
+    return;
+  }
+  clearInterval(subTimer); clearInterval(clockTimer);
+  if (data.elapsed_s) recordLatency('evals', 'suite', data.elapsed_s);
+  mount.innerHTML = '';
+  mount.append(freshnessStrip(data.computed_at,
+    () => runEvalSuite(runBtn, mount)));
+  logLine(data.passed === data.count ? 'OK' : 'ALERT', 'EVALS', [
+    seg(data.passed === data.count ? 'GREEN' : 'FAIL',
+      data.passed === data.count ? 'd-up' : 'd-dn'),
+    seg('pass' + data.passed + '/' + data.count),
+    seg('fail' + (data.count - data.passed),
+      data.count - data.passed ? 'd-warn' : ''),
+  ]);
+  renderEvals(data, mount);
+  runBtn.disabled = false;
+  runBtn.replaceChildren(icon('i-eval'), document.createTextNode('RE-RUN'));
 }
 
 // Eval points come back as programmatic kind strings ("supply_resolved",

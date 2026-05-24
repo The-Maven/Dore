@@ -680,33 +680,83 @@ def address_decision(
     return {"ok": True, "symbol": symbol, "chain": chain, "decision": decision}
 
 
+# ── eval suite — cached read + on-demand run ─────────────────────────
+# GET is a cheap read (returns last run + age) so the view mounts
+# instantly; POST is the slow run (one analyze() per case). Mirrors
+# the analyze / sanctions / redemption pattern so every surface has
+# the same data-freshness + RE-RUN shape.
+_EVALS_CACHE: dict[str, Any] = {"payload": None, "computed_at": None,
+                                 "elapsed_s": None}
+_EVALS_CACHE_LOCK = threading.Lock()
+
+
+def _evals_payload(results: list[Any]) -> dict[str, Any]:
+    cases = []
+    for r in results:
+        cases.append({
+            "case_id": r.case_id,
+            "symbol": r.symbol,
+            "passed": r.passed,
+            "points": [_asdict(p) for p in r.points],
+        })
+    passed = sum(1 for c in cases if c["passed"])
+    return {"cases": cases, "count": len(cases), "passed": passed}
+
+
 @app.get("/api/evals")
-def evals(
+def evals_cached() -> dict[str, Any]:
+    """Return the last completed eval suite + when it was computed.
+    Cheap: no LLM, no live RPCs. The Evals view mounts on this so the
+    page renders the last picture instantly; explicit RUN/RE-RUN goes
+    through POST."""
+    with _EVALS_CACHE_LOCK:
+        if _EVALS_CACHE["payload"] is None:
+            return {"cached": False}
+        ts = _EVALS_CACHE["computed_at"]
+        age_s = None
+        if ts:
+            parsed = _parse_ts(ts)
+            if parsed is not None:
+                age_s = (datetime.now(timezone.utc) - parsed).total_seconds()
+        return {
+            "cached": True,
+            "computed_at": ts,
+            "elapsed_s": _EVALS_CACHE["elapsed_s"],
+            "age_s": age_s,
+            "stale": age_s is not None and age_s > _CACHE_FRESH_S,
+            **_EVALS_CACHE["payload"],
+        }
+
+
+@app.post("/api/evals")
+def evals_run(
     _rate: None = Depends(rate_limit_enforce),
 ) -> dict[str, Any]:
-    """Run the eval harness. This is slow (one analyze() per case).
-
-    Rate-limited: each case invokes the LLM and live RPCs; an uncapped
-    caller could burn the LLM quota in minutes.
-    """
+    """Run the eval harness. Slow (one analyze() per case) and rate-
+    limited so an uncapped caller can't burn LLM quota in minutes.
+    Caches the result for subsequent GETs."""
     from sca.evals import run_evals
 
+    started = time.time()
     try:
         results = run_evals()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"eval run failed: {exc}") from exc
-    cases = []
-    for r in results:
-        cases.append(
-            {
-                "case_id": r.case_id,
-                "symbol": r.symbol,
-                "passed": r.passed,
-                "points": [_asdict(p) for p in r.points],
-            }
-        )
-    passed = sum(1 for c in cases if c["passed"])
-    return {"cases": cases, "count": len(cases), "passed": passed}
+    payload = _evals_payload(results)
+    elapsed = round(time.time() - started, 1)
+    now = datetime.now(timezone.utc).isoformat()
+    with _EVALS_CACHE_LOCK:
+        _EVALS_CACHE["payload"] = payload
+        _EVALS_CACHE["computed_at"] = now
+        _EVALS_CACHE["elapsed_s"] = elapsed
+    return {
+        "cached": False,
+        "computed_at": now,
+        "elapsed_s": elapsed,
+        "age_s": 0,
+        "stale": False,
+        **payload,
+    }
 
 
 @app.get("/api/health")
