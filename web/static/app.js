@@ -2214,6 +2214,86 @@ function currentSurfaceHash(symbol) {
   return '#analyze/' + symbol;
 }
 
+// ── background job tracker ──────────────────────────────────────────
+// When the user navigates away from a token mid-run, the foreground
+// poll exits but the server-side job keeps running. trackJob() picks
+// it up at a low poll cadence (4s) and fires a toast when the result
+// lands so the user can jump back to it instead of having to remember
+// they ran it.
+const TRACKED_JOBS = new Map();
+const KIND_LABELS = {
+  analyze: { surface: 'analysis', api: '/analyze/' },
+  sanctions: { surface: 'sanctions screen', api: '/sanctions/' },
+  redemptions: { surface: 'redemption assessment', api: '/redemption/' },
+};
+
+function trackJob(jobId, kind, symbol) {
+  if (TRACKED_JOBS.has(jobId)) return;
+  const cfg = KIND_LABELS[kind];
+  if (!cfg) return;
+  const meta = { kind, symbol, startedAt: Date.now(), timer: null };
+  const stopTracking = () => {
+    clearInterval(meta.timer);
+    TRACKED_JOBS.delete(jobId);
+  };
+  const tick = async () => {
+    // Quietly give up after 5min — the job has either died or the
+    // server pool TTL ate it. Toast spam serves no one.
+    if (Date.now() - meta.startedAt > 5 * 60_000) { stopTracking(); return; }
+    let st;
+    try { st = await api(cfg.api + jobId); }
+    catch { return; }  // transient — try next tick
+    if (st.status === 'running') return;
+    stopTracking();
+    if (st.status === 'done') {
+      showJobToast('ok', kind, symbol, cfg.surface);
+    } else if (st.status === 'error') {
+      showJobToast('err', kind, symbol, cfg.surface);
+    }
+  };
+  meta.timer = setInterval(tick, 4000);
+  TRACKED_JOBS.set(jobId, meta);
+  logLine('WATCH', kind.toUpperCase().slice(0, 8), [
+    seg(symbol.padEnd(5), 'lg-sym'),
+    seg('backgrounded', 'd-warn'),
+    seg('toast on finish'),
+  ]);
+}
+
+function showJobToast(kind, surfaceKind, symbol, surfaceLabel) {
+  const stack = $('#toast-stack') || (() => {
+    const s = document.createElement('div');
+    s.id = 'toast-stack';
+    document.body.append(s);
+    return s;
+  })();
+  const ok = kind === 'ok';
+  const toast = el('div', {
+    class: 'toast ' + (ok ? 'toast-ok' : 'toast-err') + ' fade-in',
+    onclick: () => {
+      location.hash = '#' + surfaceKind + '/' + symbol;
+      toast.remove();
+    },
+  },
+    icon(ok ? 'i-ok' : 'i-error'),
+    el('div', { class: 'toast-body' },
+      el('div', { class: 'toast-head' },
+        symbol + ' ' + surfaceLabel + (ok ? ' finished' : ' failed')),
+      el('div', { class: 'toast-sub' },
+        ok ? 'Click to view the result' : 'Click to retry')),
+    el('button', {
+      class: 'toast-x',
+      title: 'dismiss',
+      onclick: (e) => { e.stopPropagation(); toast.remove(); },
+    }, '×'),
+  );
+  stack.append(toast);
+  setTimeout(() => {
+    toast.classList.add('toast-out');
+    setTimeout(() => toast.remove(), 320);
+  }, 12000);
+}
+
 // ── result freshness ─────────────────────────────────────────────────
 // A compute is "fresh" for six hours — matches the server-side
 // _CACHE_FRESH_S TTL in web/server.py. The background canary refreshes
@@ -2656,7 +2736,13 @@ async function startAnalysis(symbol, mount, refresh = false) {
   };
 
   pollTimer = setInterval(async () => {
-    if (STATE.activeSymbol !== symbol) { finish(); return; }
+    if (STATE.activeSymbol !== symbol) {
+      // User moved on. Hand the job off to the background tracker so
+      // a toast lands when it eventually finishes.
+      trackJob(job.job_id, 'analyze', symbol);
+      finish();
+      return;
+    }
     let st;
     try { st = await api('/analyze/' + job.job_id); }
     catch (e) {
@@ -3786,7 +3872,13 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
   };
 
   surfacePollTimer = setInterval(async () => {
-    if (STATE.activeSymbol !== symbol) { finish(); return; }
+    if (STATE.activeSymbol !== symbol) {
+      // Hand off to the background tracker so a toast lands when this
+      // backgrounded sanctions / redemption run finishes.
+      trackJob(job.job_id, kind, symbol);
+      finish();
+      return;
+    }
     let st;
     try { st = await api(cfg.api + '/' + job.job_id); }
     catch (e) {
