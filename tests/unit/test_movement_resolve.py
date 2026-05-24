@@ -72,6 +72,71 @@ def test_persistence_baseline_returns_none_when_no_history():
     assert _persistence_brier(pred, True) is None
 
 
+def test_reliability_bins_catch_miscalibrated_model():
+    """Audit #16.1: plant a miscalibrated model (claims 80% but
+    delivers 50%) and assert the reliability bin reflects the gap.
+    This is the calibration plot's actual contract — previously
+    only tested that the field was populated, not that it was right."""
+    from sca.store import get_store
+    store = get_store()
+    # 200 predictions, all at prob_positive=0.8 (claims very-likely
+    # to be positive). Half of them actually go positive — so the
+    # 70-90 bucket should show empirical_rate ≈ 0.5.
+    import uuid
+    from datetime import datetime, timedelta, timezone
+    base = datetime.now(timezone.utc) - timedelta(days=2)
+    for i in range(200):
+        pred_id = str(uuid.uuid4())
+        store._predictions.append({  # noqa: SLF001 - test injection
+            "id": pred_id,
+            "symbol": "USDC",
+            "kind": "net_flow_direction",
+            "horizon_minutes": 60,
+            "made_at": (base + timedelta(minutes=i)).isoformat(timespec="seconds"),
+            "resolves_at": (base + timedelta(minutes=i+60)).isoformat(
+                timespec="seconds"),
+            "point": 0.0,
+            "p50_low": None, "p50_high": None,
+            "p80_low": None, "p80_high": None,
+            "p95_low": None, "p95_high": None,
+            "prob_positive": 0.8,
+            "confidence_word": "very_likely",
+            "drivers": [], "model": "test_model", "notes": "",
+        })
+        # Half positive, half negative — empirical rate 0.5
+        actual = 1.0 if i % 2 == 0 else -1.0
+        store._resolutions.append({  # noqa: SLF001 - test injection
+            "id": str(uuid.uuid4()),
+            "prediction_id": pred_id,
+            "resolved_at": (base + timedelta(minutes=i+60)).isoformat(
+                timespec="seconds"),
+            "actual_value": actual,
+            "brier_score": (0.8 - (1.0 if actual > 0 else 0.0)) ** 2,
+            "crps_score": None,
+            "outcome_kind": "inside_p80" if actual > 0 else "outside",
+            "narrative": "",
+            "baseline_persistence_brier": None,
+            "baseline_climatology_brier": 0.25,
+        })
+
+    summary = store.calibration_summary(kind="net_flow_direction")
+    bins = summary["reliability_bins"]
+    # Find the 70-80 bin (covers prob 0.7-0.8) or 80-90 (covers 0.8-0.9)
+    # — our predictions at exactly 0.8 land in 80-90 due to >= 0.8 < 0.9
+    target = next(
+        (b for b in bins
+         if b["lower_pct"] <= 80 and b["upper_pct"] > 80),
+        None,
+    )
+    assert target is not None, "expected a bin covering 0.8"
+    # Empirical rate ≈ 0.5 (we planted exactly half positive).
+    assert abs(target["empirical_rate"] - 0.5) < 0.02
+    # Predicted mean stays at 0.8 (that's what we forecast every time).
+    assert abs(target["predicted_mean"] - 0.8) < 0.01
+    # Sample count = 200 (or close to it).
+    assert target["count"] == 200
+
+
 def test_climatology_baseline_falls_back_to_half_when_thin():
     """With fewer than 5 prior resolutions the climatology baseline
     falls back to 50/50 (honest 'we have no rate to read')."""

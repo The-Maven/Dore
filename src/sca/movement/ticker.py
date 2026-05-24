@@ -123,10 +123,57 @@ def _supply_series(symbol: str, limit: int = 60) -> list[float]:
 
 
 def _emit_for_symbol(symbol: str, kinds: list[str],
-                     horizon_minutes: int) -> dict:
+                     horizon_minutes: int,
+                     *,
+                     max_in_flight: int | None = None) -> dict:
     """Build + persist one prediction per enabled kind for `symbol`.
-    Returns a per-kind summary dict for observability."""
+    Returns a per-kind summary dict for observability.
+
+    Audit #9: `max_in_flight` caps unresolved-prediction count per
+    symbol so a misconfigured tiny-tick / huge-horizon never floods
+    the archive. When the cap is hit, we skip emit (and log) instead
+    of writing yet another row that can't be resolved. The resolver
+    drains the backlog naturally on the next cycle."""
     out = {"symbol": symbol, "emitted": {}, "skipped": {}, "errors": {}}
+
+    # Check the in-flight cap BEFORE doing any LLM work. The cap is
+    # cheap to enforce (one count query) and prevents the largest
+    # cost layers (judge + brave) from running on a row we'd then
+    # drop. None = uncapped.
+    if max_in_flight is not None and max_in_flight > 0:
+        try:
+            from sca.store import get_store
+            unresolved = get_store().list_predictions(
+                symbol=symbol, limit=max_in_flight + 10,
+            ) or []
+            # "in-flight" = prediction without a resolution. We have no
+            # join here but the resolver writes a resolutions row 1:1
+            # with predictions; the cheap proxy is "predictions whose
+            # resolves_at hasn't passed yet OR which lack a resolution
+            # field on the joined view". For the FileStore the joined
+            # view isn't applied here; we approximate with future
+            # resolves_at.
+            from datetime import datetime, timezone
+            now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            future_unresolved = sum(
+                1 for p in unresolved
+                if (p.get("resolves_at") or "") > now_iso
+            )
+            if future_unresolved >= max_in_flight:
+                log_event(
+                    "movement.ticker.in_flight_cap_hit", level="info",
+                    symbol=symbol,
+                    in_flight=future_unresolved,
+                    cap=max_in_flight,
+                )
+                out["skipped"]["in_flight_cap"] = future_unresolved
+                return out
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                "movement.ticker.in_flight_check_failed", level="info",
+                symbol=symbol, error_class=type(exc).__name__,
+            )
+
     candidates = gather_event_candidates(symbol)
     forecast_summary_parts = []
     forecasts = []
@@ -296,10 +343,14 @@ def _tick_once(cfg: Optional[dict] = None) -> dict:
     # 1. Refresh peg ticks for every tracked symbol.
     peg_tick_runner.refresh_for_symbols(cfg["symbols"])
 
-    # 2. Emit predictions per symbol/kind.
+    # 2. Emit predictions per symbol/kind. The in-flight cap is
+    # honored per-symbol so a single misconfigured token can't drag
+    # the rest of the cycle.
+    in_flight_cap = cfg.get("max_in_flight_per_symbol", 24)
     for symbol in cfg["symbols"]:
         per = _emit_for_symbol(
             symbol, cfg["kinds"], cfg["horizon_minutes"],
+            max_in_flight=in_flight_cap,
         )
         summary["per_symbol"].append(per)
 

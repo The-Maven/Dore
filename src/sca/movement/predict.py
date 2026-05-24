@@ -253,8 +253,18 @@ def forecast_net_flow_direction(
     # Volatility of the per-step change. With ~unit-step samples the
     # horizon scaling matches the peg model.
     var_diffs = _ewma([d * d for d in diffs])
-    sigma_step = max(math.sqrt(var_diffs - mu * mu), 1.0) \
-        if var_diffs > mu * mu else 1.0
+    # Audit #5: finite-sample EWMA can occasionally produce
+    # var_diffs <= mu*mu (the E[X²] >= E[X]² identity only holds in
+    # the limit). When that happens we used to snap silently to
+    # sigma=1.0, leaving no audit trail. Now we annotate the row's
+    # notes so a curator scanning the archive can see exactly why a
+    # particular forecast had a degenerate cone.
+    variance_snapped = False
+    if var_diffs > mu * mu:
+        sigma_step = max(math.sqrt(var_diffs - mu * mu), 1.0)
+    else:
+        sigma_step = 1.0
+        variance_snapped = True
     sigma_h = sigma_step * math.sqrt(horizon_minutes)
     expected = mu * horizon_minutes
     # Probability of a positive net change at the horizon under a
@@ -271,6 +281,10 @@ def forecast_net_flow_direction(
     # either, since that requires < 0.05.
     prob_positive = min(max(prob_positive, 0.05), 0.94)
 
+    base_notes = (f"history={len(supply_series)} sigma={sigma_h:.0f} "
+                  f"mu={mu:.2f}")
+    if variance_snapped:
+        base_notes += " variance_snapped_to_1"
     return Forecast(
         symbol=symbol, kind="net_flow_direction",
         horizon_minutes=horizon_minutes, resolves_at=resolves_at,
@@ -284,8 +298,7 @@ def forecast_net_flow_direction(
         prob_positive=prob_positive,
         confidence_word=_confidence_word_for_prob(prob_positive),
         drivers=drivers, model=MODEL_VERSION,
-        notes=f"history={len(supply_series)} sigma={sigma_h:.0f} "
-              f"mu={mu:.2f}",
+        notes=base_notes,
     )
 
 

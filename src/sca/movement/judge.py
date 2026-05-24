@@ -213,7 +213,22 @@ def _build_prompt(forecast_summary: dict, attribution_sentence: str,
             tier = w.get("trust_tier", "web_unverified")
             title = (w.get("title") or "").strip()
             snippet = (w.get("snippet") or "").strip()
-            lines.append(f"  (W{i}) [{tier} · {domain}] {title}")
+            # Age annotation (audit #13): the judge sees how stale
+            # each result is so it can hedge — week-old context
+            # cited next to a fresh forecast deserves a different
+            # voice than a fresh news hit.
+            age_s = w.get("fetched_age_s")
+            age_tag = ""
+            if isinstance(age_s, (int, float)):
+                if age_s < 600:
+                    age_tag = " · fresh"
+                elif age_s < 7200:
+                    age_tag = f" · {int(age_s/60)}m old"
+                elif age_s < 86400:
+                    age_tag = f" · {int(age_s/3600)}h old"
+                else:
+                    age_tag = f" · {int(age_s/86400)}d old"
+            lines.append(f"  (W{i}) [{tier} · {domain}{age_tag}] {title}")
             if snippet:
                 lines.append(f"        {snippet}")
     else:

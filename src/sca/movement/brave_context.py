@@ -234,12 +234,12 @@ def fetch_context_for(
     now = time.time()
 
     if entry and now - entry.get("fetched_at", 0) < entry.get("ttl", _CACHE_TTL_BASE_S):
+        age_s = int(now - entry.get("fetched_at", 0))
         log_event(
             "movement.brave.cache_hit", level="info",
-            symbol=symbol_u,
-            age_s=int(now - entry.get("fetched_at", 0)),
+            symbol=symbol_u, age_s=age_s,
         )
-        return entry.get("results", [])
+        return _annotate_age(entry.get("results", []), age_s, "cache_hit")
 
     # Interest gate. Skip when the engine says nothing is happening
     # AND the point is near zero. The combined check prevents the
@@ -252,7 +252,9 @@ def fetch_context_for(
             point_value=point_value,
         )
         if entry:
-            return entry.get("results", [])
+            age_s = int(now - entry.get("fetched_at", 0))
+            return _annotate_age(entry.get("results", []), age_s,
+                                  "served_on_calm")
         return []
 
     # Daily quota guard.
@@ -265,7 +267,9 @@ def fetch_context_for(
             cap=_daily_quota(),
         )
         if entry:
-            return entry.get("results", [])
+            age_s = int(now - entry.get("fetched_at", 0))
+            return _annotate_age(entry.get("results", []), age_s,
+                                  "served_on_quota_cap")
         return []
 
     # Fresh fetch.
@@ -297,7 +301,9 @@ def fetch_context_for(
             has_stale=entry is not None,
         )
         if entry:
-            return entry.get("results", [])
+            age_s = int(now - entry.get("fetched_at", 0))
+            return _annotate_age(entry.get("results", []), age_s,
+                                  "served_on_error")
         return []
 
     results = []
@@ -327,4 +333,25 @@ def fetch_context_for(
         calls_today=quota.get("calls", 0),
         cap=_daily_quota(),
     )
-    return results
+    # A fresh fetch is age 0 — explicitly annotated so the judge can
+    # tell a fresh batch from a cache hit (same shape, different age).
+    return _annotate_age(results, 0, "fresh")
+
+
+def _annotate_age(results: list[dict], age_s: int, reason: str) -> list[dict]:
+    """Stamp each web-context dict with its freshness so the judge
+    prompt + UI can distinguish fresh from week-old context.
+
+    Audit #13: previously the judge layer couldn't tell "fresh
+    context" from "stale fallback" — both came through the same
+    shape. Now every dict carries `fetched_age_s` (seconds since
+    fetch) and `served_via` (cache_hit / served_on_calm /
+    served_on_quota_cap / served_on_error / fresh).
+    """
+    out = []
+    for r in results:
+        annotated = dict(r)
+        annotated["fetched_age_s"] = age_s
+        annotated["served_via"] = reason
+        out.append(annotated)
+    return out

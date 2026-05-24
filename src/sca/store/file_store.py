@@ -636,16 +636,23 @@ class FileStore(Store):
             ]
             if not in_bin:
                 continue
-            hits = sum(
+            # Reliability bin empirical rate for a DIRECTION prediction
+            # = fraction of times the outcome went positive. The
+            # earlier 'outcome_kind in {hit, inside_p50}' check was
+            # wrong: that conflates band-containment with direction
+            # for continuous predictions and is meaningless for the
+            # binary case.
+            positives = sum(
                 1 for _, r in in_bin
-                if r.get("outcome_kind") in ("hit", "inside_p50")
+                if r.get("actual_value") is not None
+                and float(r["actual_value"]) > 0
             )
             bins.append({
                 "lower_pct": low,
                 "upper_pct": high,
                 "midpoint": (low + high) / 200.0,
                 "count": len(in_bin),
-                "empirical_rate": hits / len(in_bin),
+                "empirical_rate": positives / len(in_bin),
                 "predicted_mean": sum(
                     p.get("prob_positive", 0.0) for p, _ in in_bin
                 ) / len(in_bin),
