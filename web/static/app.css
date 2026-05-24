@@ -102,7 +102,16 @@ b { font-weight: 600; }
   background: var(--ink-2);
   border-bottom: 1px solid var(--line);
 }
-.topbar-brand { display: flex; align-items: center; gap: 8px; }
+.topbar-brand {
+  display: flex; align-items: center; gap: 8px;
+  text-decoration: none; color: inherit; cursor: pointer;
+  transition: opacity .15s;
+}
+.topbar-brand:hover { opacity: .82; }
+.topbar-brand:focus-visible {
+  outline: 1px solid var(--gold);
+  outline-offset: 3px;
+}
 /* RS mark — outlined paper square, matches rayleighstark.com (no gold fill) */
 .brand-mark {
   display: flex; align-items: center; justify-content: center;
