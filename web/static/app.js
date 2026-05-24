@@ -839,6 +839,7 @@ const STATE = {
   feed: [],              // {time, level, agent, surface, msg}
   feedSeq: 0,
   activeSymbol: '',      // selected instrument
+  activeSurface: '',     // 'analyze' | 'sanctions' | 'redemptions' | other
   monitorRunning: false,
   sources: {},           // source_id → { title, url, tier, verified, included }
   sourcesLoaded: false,  // becomes true on first successful /api/sources fetch
@@ -2478,6 +2479,12 @@ function viewAnalyze(symbolFromHash) {
 // onMiss is what RUNs on a true cache miss (no row at all yet).
 async function renderCachedOrRun(surface, symbol, mount, onRefresh, onMiss) {
   STATE.activeSymbol = symbol;
+  // Track active surface alongside symbol so poll-aborts trigger when
+  // the user switches views even on the same token (e.g. sanctions →
+  // redemption for USDC). Without this, the abandoned poll keeps
+  // running and the toast never fires on view-switch hand-offs.
+  STATE.activeSurface = ({ attestation: 'analyze',
+    sanctions: 'sanctions', redemption: 'redemptions' })[surface] || surface;
   setAnalyzeHeaderMark(symbol);
   refreshInstruments();
   // Briefly show a quiet placeholder so the surface never flashes empty
@@ -2566,6 +2573,7 @@ function setAnalyzeHeaderMark(symbol) {
 }
 
 async function startAnalysis(symbol, mount, refresh = false) {
+  STATE.activeSurface = 'analyze';
   if (pollTimer) clearInterval(pollTimer);
   STATE.activeSymbol = symbol;
   setAnalyzeHeaderMark(symbol);
@@ -2736,9 +2744,10 @@ async function startAnalysis(symbol, mount, refresh = false) {
   };
 
   pollTimer = setInterval(async () => {
-    if (STATE.activeSymbol !== symbol) {
-      // User moved on. Hand the job off to the background tracker so
-      // a toast lands when it eventually finishes.
+    if (STATE.activeSymbol !== symbol || STATE.activeSurface !== 'analyze') {
+      // User moved on (different token OR different surface). Hand the
+      // job off to the background tracker so a toast lands when it
+      // eventually finishes.
       trackJob(job.job_id, 'analyze', symbol);
       finish();
       return;
@@ -3724,6 +3733,7 @@ function surfacePicker(kind, mount, input) {
 }
 
 async function startSurfaceJob(kind, symbol, mount, refresh = false) {
+  STATE.activeSurface = kind;
   const cfg = SURFACES[kind];
   if (surfacePollTimer) clearInterval(surfacePollTimer);
   STATE.activeSymbol = symbol;
@@ -3872,9 +3882,9 @@ async function startSurfaceJob(kind, symbol, mount, refresh = false) {
   };
 
   surfacePollTimer = setInterval(async () => {
-    if (STATE.activeSymbol !== symbol) {
-      // Hand off to the background tracker so a toast lands when this
-      // backgrounded sanctions / redemption run finishes.
+    if (STATE.activeSymbol !== symbol || STATE.activeSurface !== kind) {
+      // User switched token OR view. Hand off to the background tracker
+      // so a toast lands when this backgrounded run finishes.
       trackJob(job.job_id, kind, symbol);
       finish();
       return;
@@ -4153,25 +4163,24 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
     // Normal path: attestation resolved (or backing-model-by-design n/a).
     snapBody.append(el('div', { class: 'cov-row' },
       el('div', { class: 'cov-cell has-tip', title: tip.liquidCoverage },
-        el('div', { class: 'cov-kick' },
-          'LIQUID COVERAGE — FAST REDEMPTION CAPACITY'),
+        el('div', { class: 'cov-kick' }, 'LIQUID COVERAGE'),
         el('div', { class: 'cov-big ' + covClass(r.liquid_coverage) },
-          naLiq ? 'n/a' : fmtPct(r.liquid_coverage)),
+          naLiq ? '—' : fmtPct(r.liquid_coverage)),
         el('div', { class: 'cov-desc' }, naLiq
-          ? naFieldNote('No current attestation could be resolved — see GAPS '
-              + 'below. On-chain supply is unaffected.')
+          ? naFieldNote('Fast-redemption coverage populates from the '
+              + 'attestation’s tier breakdown.')
           : 'Liquid reserves ÷ current on-chain supply. The share of '
             + 'circulating supply redeemable using only fast-access assets.')),
       el('div', { class: 'cov-cell has-tip',
         title: m ? tip.live : tip.na.coverage },
-        el('div', { class: 'cov-kick' }, 'LIVE COVERAGE — TOTAL RESERVES'),
+        el('div', { class: 'cov-kick' }, 'LIVE COVERAGE'),
         el('div', { class: 'cov-big ' + covClass(m && m.live_coverage) },
-          m ? fmtPct(m.live_coverage) : 'n/a'),
+          m ? fmtPct(m.live_coverage) : '—'),
         el('div', { class: 'cov-desc' }, m
-          ? 'Total attested reserves ÷ current on-chain supply — all tiers, '
+          ? 'Total attested reserves ÷ current on-chain supply, all tiers, '
             + 'not just the liquid ones.'
-          : naFieldNote('No current attestation could be resolved — see GAPS '
-              + 'below.'))),
+          : naFieldNote('Total-reserve coverage populates when an '
+              + 'attestation resolves.'))),
     ));
 
     snapBody.append(el('div', { class: 'mgrid' },
@@ -4269,31 +4278,24 @@ function renderRedemption(r, elapsed, mount, computedAt, onRefresh) {
               rel: 'noopener', class: 'btn ghost' },
               icon('i-chain'), 'OPEN PROTOCOL DASHBOARD ↗')) : null)));
     } else {
-      // Lead with what we DO know (issuer + cadence + where to look);
-      // the raw-parsing limitation is a quiet footnote, not the headline.
-      const issuer = r.issuer || r.symbol;
+      // AI Context above already carries the qualitative picture for
+      // this token; we don't restate it here. Just surface the issuer
+      // transparency link as a single CTA — that's the one piece of
+      // information NOT in the AI Context block.
       const transparency = r.transparency_url || '';
-      const body = el('div', {},
-        `${issuer} publishes reserve composition in periodic CPA `
-        + 'attestations. The AI Context above carries the qualitative '
-        + 'picture (auditor, cadence, regulatory regime); the live PDF '
-        + 'is the source of truth for the tier-by-tier liquidity split.');
       if (transparency) {
-        body.append(el('div', { style: 'margin-top:10px' },
-          el('a', { href: transparency, target: '_blank',
-            rel: 'noopener', class: 'btn ghost' },
-            icon('i-chain'), 'OPEN ISSUER TRANSPARENCY PAGE ↗')));
+        tierBody.append(el('div', { class: 'empty', style: 'padding:18px 14px' },
+          icon('i-chain'),
+          el('div', {},
+            el('a', { href: transparency, target: '_blank',
+              rel: 'noopener', class: 'btn ghost' },
+              'Open the ' + (r.issuer || r.symbol) + ' transparency page ↗'))));
+      } else {
+        tierBody.append(el('div', { class: 'empty', style: 'padding:18px 14px' },
+          icon('i-metric'),
+          el('div', { style: 'color:var(--muted-2);font-size:11px' },
+            'Tier breakdown not available this run.')));
       }
-      body.append(el('div', { class: 'soft-foot' },
-        el('span', { class: 'glyph' }, '§'),
-        'Automated tier extraction needs a machine-readable PDF; this '
-        + 'run’s fetch returned no document, most often because the '
-        + 'issuer page is JavaScript-rendered or the URL has rotated. '
-        + 'Background discovery retries every six hours.'));
-      tierBody.append(el('div', { class: 'empty' },
-        icon('i-metric'),
-        el('b', {}, 'Reserve composition lives in the issuer’s attestation'),
-        body));
     }
   }
   // Panel title is backing-model aware: fiat tokens get the tier-count
