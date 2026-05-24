@@ -1071,12 +1071,32 @@ def _market_facts_block(p: dict[str, Any]) -> str:
             f"({r['share_pct']}%, {r['count']} token(s))"
         )
     lines.append("")
+    # Reframed for the LLM: combine fresh + stale into a single
+    # "attested" count (both have an extracted, citable attestation;
+    # the canary's URL-pointer freshness is irrelevant to product
+    # framing). Every token explicitly named in each bucket so the
+    # LLM cannot guess membership (a prior version hallucinated USDT
+    # into the source-only bucket when only counts were provided).
+    vh = p["verification_health"]
+    attested_syms = sorted(
+        [x["symbol"] for x in (vh.get("fresh") or [])]
+        + [x["symbol"] for x in (vh.get("stale") or [])])
+    source_only_syms = sorted(
+        x["symbol"] for x in (vh.get("blocked") or []))
+    onchain_syms = sorted(
+        x["symbol"] for x in (vh.get("by_design") or []))
+    fiat_total = len(attested_syms) + len(source_only_syms)
     lines.append(
-        f"Verification health: {s['verified_count']} fiat tokens have a "
-        f"resolved attestation, {s['stale_count']} are stale, "
-        f"{s['blocked_count']} are blocked on JS-rendered issuer pages. "
-        f"{s['by_design_count']} non-fiat tokens have no CPA attestation by "
-        f"design (crypto-collateralized / synthetic / algorithmic)."
+        f"Coverage across {fiat_total} fiat-backed tokens. Attested "
+        f"({len(attested_syms)} tokens, issuer report extracted and "
+        f"citable): {', '.join(attested_syms) if attested_syms else 'none'}. "
+        f"Source-only ({len(source_only_syms)} tokens, issuer publishes "
+        f"via a JavaScript-rendered transparency page that we summarise "
+        f"in an AI Context card with the live issuer link): "
+        f"{', '.join(source_only_syms) if source_only_syms else 'none'}. "
+        f"On-chain ({len(onchain_syms)} non-fiat tokens with no CPA "
+        f"report by design, backing visible on-chain): "
+        f"{', '.join(onchain_syms) if onchain_syms else 'none'}."
     )
     if drifts:
         lines.append("")

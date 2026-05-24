@@ -5831,7 +5831,7 @@ function renderMarket(data, mount) {
     backingModelPanel(data, insights.backing)));
 
   mount.append(panel('03',
-    'VERIFICATION HEALTH · ATTESTATION COVERAGE',
+    'COVERAGE · WHAT WE CAN CITE TODAY',
     'i-gate',
     verificationHealthPanel(data, insights.verification)));
 
@@ -6032,32 +6032,49 @@ function verificationHealthPanel(data, llmInsight) {
   const h = data.verification_health;
   const s = data.summary;
   const fiatTotal = s.verified_count + s.stale_count + s.blocked_count;
+  // Combine fresh + stale into the single 'attested' bucket — both
+  // have an extracted, citable issuer report; the canary's URL pointer
+  // freshness is irrelevant to a reader. Source-only is the new label
+  // for the JS-rendered cases (was 'Blocked') because the user does
+  // get a useful answer via AI Context. On-chain replaces the
+  // operator term 'By design (no CPA)'.
+  const attested = (h.fresh || []).concat(h.stale || []);
+  const sourceOnly = h.blocked || [];
+  const onchain = h.by_design || [];
+
   const lede = llmInsight
     ? marketInsightLede(llmInsight)
     : el('p', { class: 'mkt-lede' },
-        el('b', {}, s.verified_count + ' of ' + fiatTotal),
-        ' fiat tokens have a resolved attestation right now. ',
-        s.stale_count > 0 ? [el('b', {}, String(s.stale_count)),
-          ' are stale (last canary run > 24h ago); '] : null,
-        s.blocked_count > 0 ? [el('b', {}, String(s.blocked_count)),
-          ' are blocked behind JavaScript-rendered issuer pages and '
-          + 'fall back to the AI Context (see AGENTS.md). '] : null,
-        el('b', {}, String(s.by_design_count)),
-        ' non-fiat tokens have no CPA attestation by design.');
+        'Across ', el('b', {}, String(fiatTotal) + ' fiat-backed tokens'),
+        ', ', el('b', {}, String(attested.length)),
+        ' carry an attestation already extracted and citable. ',
+        sourceOnly.length > 0
+          ? [el('b', {}, String(sourceOnly.length)),
+             ' publish through JavaScript-rendered transparency pages '
+             + 'we can’t extract automatically; for those the AI '
+             + 'Context summarises what the issuer publishes and links '
+             + 'to the source. '] : null,
+        el('b', {}, String(onchain.length) + ' non-fiat tokens'),
+        ' carry no CPA report by design, their backing is visible '
+        + 'on-chain instead.');
 
   const buckets = [
-    { key: 'fresh', label: 'Resolved', tone: 'good', items: h.fresh },
-    { key: 'stale', label: 'Stale', tone: 'warn', items: h.stale },
-    { key: 'blocked', label: 'Blocked (JS-rendered)', tone: 'bad',
-      items: h.blocked },
-    { key: 'by_design', label: 'By design (no CPA)', tone: 'neutral',
-      items: h.by_design },
+    { key: 'attested', label: 'Attested',
+      sub: 'issuer report cited',
+      tone: 'good', items: attested },
+    { key: 'source-only', label: 'Source-only',
+      sub: 'AI summary of issuer page',
+      tone: 'warn', items: sourceOnly },
+    { key: 'onchain', label: 'On-chain',
+      sub: 'no CPA needed, backing on-chain',
+      tone: 'neutral', items: onchain },
   ];
   const cards = buckets.map((b) => el('div', {
     class: 'mkt-health-card mkt-health-' + b.tone,
   },
     el('div', { class: 'mkt-health-count' }, String(b.items.length)),
     el('div', { class: 'mkt-health-label' }, b.label),
+    el('div', { class: 'mkt-health-sub' }, b.sub),
     el('div', { class: 'mkt-health-syms' },
       b.items.length === 0 ? '—'
         : b.items.slice(0, 8).map((x) => x.symbol).join(' · ') +
