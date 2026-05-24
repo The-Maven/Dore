@@ -157,20 +157,14 @@ class SupabaseStore(Store):
         )
         if entry is None:
             return  # caller will hit FK error — better than silent invention
-        # The `tier` CHECK constraint on the live DB still predates the
-        # tier1_official / tier2_industry vocabulary added by auto-
-        # discovery; legacy accepts only {primary, standard, methodology,
-        # research}. Coerce anything outside that set to "research" so
-        # discovered sources can land. The status constraint is post-0002
-        # ({included, excluded}) and the YAML already uses canonical
-        # values, so status passes through verbatim.
-        legacy_tier = entry["tier"] if entry["tier"] in {
-            "primary", "standard", "methodology", "research",
-        } else "research"
+        # Post-0002 (status: included/excluded) + post-0005 (tier
+        # widened to the full VALID_TIERS vocabulary), both fields
+        # pass through verbatim from the YAML registry. The legacy
+        # coercion shims this used to carry are gone.
         row = {
             "id": entry["id"],
             "title": entry["title"],
-            "tier": legacy_tier,
+            "tier": entry["tier"],
             "status": entry["status"],
             "url": entry["url"],
             "summary": entry["summary"],

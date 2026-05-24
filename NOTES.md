@@ -285,8 +285,11 @@ Updated as of the end of Round 5. Always rewrite this block, never
 append to it.
 
 **Live, healthy, no open work:**
-- All four Supabase migrations applied (0001 initial, 0002 corpus
-  opt-out, 0003 attestation URL overrides, 0004 verified facts).
+- All five Supabase migrations applied (0001 initial, 0002 corpus
+  opt-out, 0003 attestation URL overrides, 0004 verified facts,
+  0005 tier widening). No legacy-coercion shims left in
+  `_ensure_source_row` — both status and tier flow through verbatim
+  from the YAML registry.
 - Curator-set + canary-discovered attestation URLs persist across
   redeploys.
 - Time-series `verified_facts` writes on every completed analyze run.
@@ -305,10 +308,6 @@ append to it.
   in server logs + the F1 ops feed.
 
 **Genuinely still open:**
-- Tier CHECK on `sources.tier` still legacy (only accepts the
-  pre-discovery vocabulary). `_ensure_source_row` coerces unknown
-  tiers to `research`. A future `0005_tier_widening.sql` migration
-  would close this analogously to how 0002 closed the status side.
 - Snapshot store is still local-disk. Real durability tier (S3 /
   Supabase Storage) remains the next infra step.
 - Eval harness is still thin (1-2 cases per surface). Hasn't bitten
