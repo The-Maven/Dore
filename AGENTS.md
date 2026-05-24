@@ -90,37 +90,30 @@ Doré's conversational analyst runs on `nousresearch/hermes-agent`. It is a
 Before touching that integration, read `agent/GUARDRAILS.md` in full — the
 boundary is layered and deliberate.
 
-## Deferred: JavaScript-rendered issuer pages
+## JavaScript-rendered issuer pages: the AI Context is the answer
 
 Three fiat-backed tokens — **USDP, USDG, EURC** — publish their
 attestations behind JavaScript-rendered transparency pages (paxos.com,
-circle.com). Doré's discovery chain (Brave → DDG → domain-scoped
-follow-up → static locator) cannot extract a PDF URL from a SPA, so
-these tokens consistently land on the AI Context fallback rather than
-a verified attestation.
+circle.com). Doré's static discovery chain (Brave → DDG → domain-scoped
+follow-up → locator) cannot extract a PDF URL from a SPA.
 
-**Why this is deferred, not broken.** Cracking these requires a headless
-browser (Playwright or similar) in the discovery worker. That means:
+**This is a closed question, not a backlog item.** The AI Context path
+is the answer for these tokens. The augmentation card leads with the
+qualitative picture (Paxos publishes monthly via Withum, Circle via
+Deloitte, etc.), the issuer transparency URL is one click away, a
+small parsing-difficulty footnote names exactly why automation didn't
+fetch the PDF, and on-chain supply still resolves cleanly. The 6-hourly
+canary keeps retrying the static chain anyway — if any of these
+issuers ever rotate to a server-rendered page or a stable PDF URL,
+the override lands automatically without code changes.
 
-- A new heavyweight dependency, ~200MB Chromium download
-- A separate worker process so the browser doesn't block the FastAPI
-  event loop
-- Retry + timeout logic around flaky JS-rendered pages
-- A new failure surface to monitor (browser crashes, page-load timeouts,
-  selector-drift when the issuer redesigns)
+**Do not add a headless browser.** Playwright or equivalent means a
+~200MB Chromium dependency, a separate worker process to keep the
+browser off the FastAPI event loop, retry + timeout logic around flaky
+JS pages, and a new failure surface (browser crashes, page-load
+timeouts, selector drift each time the issuer redesigns). None of that
+is worth three tokens. It's bloat, it's expensive to run, and the AI
+Context already does the job for the reader.
 
-The AI Context path already handles these tokens well: the augmentation
-card leads with the qualitative answer (Paxos publishes monthly via
-Withum, Circle via Deloitte, etc.), the issuer transparency URL is one
-click away, the small parsing-difficulty footnote names exactly why
-automation didn't fetch the PDF, and on-chain supply still resolves
-cleanly. The 6-hourly canary continues to retry the static discovery
-chain so if any of these issuers ever rotate to a server-rendered page
-or a stable PDF URL, the override will land automatically without code
-changes.
-
-**When to revisit:** an actual customer asks for headless extraction on
-one of these tokens, OR a fourth/fifth JS-rendered SPA enters the
-tracked set making the per-token cost worth the infrastructure. Not
-before. Don't spend a week on Playwright integration to chase three
-tokens; the AI Context is doing its job.
+If the JS-rendered set ever grows materially (say, a tenth of tracked
+tokens) the trade reopens. Until then this is settled.
