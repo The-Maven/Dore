@@ -272,10 +272,38 @@
     max-width: 100%;
   }
   .tbl-row a:hover { text-decoration: underline; }
-  .tbl-att { grid-template-columns: 80px 140px 1fr 130px 60px; }
-  .tbl-src { grid-template-columns: 80px 1fr 240px 60px; }
+  .tbl-att { grid-template-columns: 70px 130px 1fr 110px 80px 100px; }
+  .tbl-src { grid-template-columns: 70px 1fr 220px 60px 90px; }
   .tbl-fact { grid-template-columns: 100px 160px 1fr 100px 140px; }
   .tbl-disc { grid-template-columns: 80px 1fr 110px 110px; }
+  .tbl-fresh { grid-template-columns: 1.4fr 60px 130px 130px 1.2fr; }
+
+  /* System-freshness panel — two-clock cells.
+     Each layer row shows: layer label, count, latest fetch (when bytes
+     were written), latest validation (when the truth source confirmed),
+     and the validator strategy in plain English. */
+  .fresh-clock {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    color: var(--paper);
+  }
+  .fresh-clock .fresh-clock-label {
+    display: block;
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+    margin-bottom: 1px;
+  }
+  .fresh-clock.warn { color: #d49d6a; }
+  .fresh-clock.na { color: var(--muted-2); }
+  .fresh-validator {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: var(--muted-1);
+  }
 
   .via {
     display: inline-block;
@@ -453,6 +481,30 @@ function daysSince(iso) {
   return Math.floor((Date.now() - d.getTime()) / 86_400_000);
 }
 
+function hoursSince(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((Date.now() - d.getTime()) / 3_600_000);
+}
+
+// Compact "[N] ago" string: minutes < hour, hours < day, days otherwise.
+// Returns '—' for missing/invalid timestamps so callers can render
+// confidently into a fixed cell.
+function ago(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const ms = Date.now() - d.getTime();
+  if (ms < 0) return 'just now';
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(ms / 3_600_000);
+  if (h < 48) return h + 'h ago';
+  const days = Math.floor(ms / 86_400_000);
+  return days + 'd ago';
+}
+
 function flowSvg() {
   return `<svg viewBox="0 0 900 220" xmlns="http://www.w3.org/2000/svg"
       role="img" aria-label="How data flows from search to verified fact"
@@ -524,6 +576,7 @@ function render(data) {
   const discoveries = data.discoveries || [];
   const events = data.events || [];
   const provider = data.discovery_provider;
+  const systemFreshness = data.system_freshness || [];
 
   const liveSources = sources.filter(s => s.status === 'live').length;
   const brokenSources = sources.filter(s => s.status === 'broken').length;
@@ -623,20 +676,35 @@ function render(data) {
       ' means the background discovery thread found it via Brave; ',
       el('span', { class: 'via via-locator' }, 'locator'),
       ' means the static transparency-page scrape found it.'),
+    el('p', { class: 'doc-aside' },
+      el('b', {}, 'Two clocks per row.'),
+      ' ', el('i', {}, 'Extracted'), ' is when the URL was first ',
+      'resolved into Doré\'s cache. ', el('i', {}, 'Validated'), ' is when ',
+      'we last re-checked the issuer for a newer report. The gap is the ',
+      '"have we asked lately?" interval — bounded by a 12h cooldown to ',
+      'avoid hammering the source.'),
     el('div', { class: 'tbl' },
       el('div', { class: 'tbl-row tbl-head tbl-att' },
         el('div', {}, 'Token'),
         el('div', {}, 'Issuer'),
         el('div', {}, 'Current URL'),
         el('div', {}, 'Via'),
-        el('div', {}, 'Age')),
+        el('div', {}, 'Extracted'),
+        el('div', {}, 'Validated')),
       ...attRows.map(a => {
         const url = a.override_url || a.cache_url || a.yaml_seed || '';
         const via = a.override_url ? (a.override_via || 'override')
           : (a.cache_via || (a.yaml_seed ? 'seed' : 'none'));
-        const ts = a.override_set_at || a.cache_resolved_at;
-        const days = daysSince(ts);
+        const extractedTs = a.override_set_at || a.cache_resolved_at;
+        const validatedTs = a.cache_validated_at || extractedTs;
+        const days = daysSince(extractedTs);
+        const validatedH = hoursSince(validatedTs);
         const cls = !url ? 'warn' : (days !== null && days > 35) ? 'stale' : '';
+        // Validation row colour cue: red if we've never validated (or
+        // it's been >48h, well past the 12h cooldown — likely the
+        // validator hit an error and we kept serving silently).
+        const valCls = !validatedTs ? 'na'
+          : (validatedH !== null && validatedH > 48) ? 'na' : '';
         return el('div', { class: 'tbl-row tbl-att ' + cls },
           el('div', {}, el('b', {}, a.symbol)),
           el('div', {}, a.issuer || '—'),
@@ -646,8 +714,68 @@ function render(data) {
                 : el('span', { class: 'na' }, 'no URL resolved')),
           el('div', {},
             el('span', { class: 'via via-' + via.split(/[ +]/)[0] }, via)),
-          el('div', {}, days === null ? '—' : days + 'd'));
+          el('div', { title: extractedTs ? fmtTs(extractedTs) : '' },
+            days === null ? '—' : days + 'd'),
+          el('div', { class: valCls,
+              title: validatedTs ? fmtTs(validatedTs) : 'never validated' },
+            ago(validatedTs)));
       })),
+  ));
+
+  // 2.5 System freshness — per-cache-layer two-clock readout. Surfaces
+  // the gap Phase 2 closed: every layer now distinguishes "when we
+  // wrote bytes" from "when we last asked the truth source". A
+  // validated_at that lags far behind the cooldown is a signal the
+  // validator is failing silently.
+  doc.append(el('section', { class: 'section', id: 'freshness' },
+    el('h2', {}, 'System freshness'),
+    el('p', {},
+      'Cache freshness is not truth freshness. Every layer below carries ' +
+      'two clocks: ', el('i', {}, 'fetched'), ' is when we last wrote ' +
+      'bytes from the source; ', el('i', {}, 'validated'), ' is when we ' +
+      'last asked the source whether those bytes are still current. The ' +
+      'gap between them is bounded by the per-layer cooldown so a hot ' +
+      'request path doesn\'t hammer external services.'),
+    el('div', { class: 'tbl' },
+      el('div', { class: 'tbl-row tbl-head tbl-fresh' },
+        el('div', {}, 'Layer'),
+        el('div', {}, 'Entries'),
+        el('div', {}, 'Latest fetched'),
+        el('div', {}, 'Latest validated'),
+        el('div', {}, 'Validator')),
+      ...systemFreshness.map(layer => {
+        const fetched = layer.latest_fetched_at;
+        const validated = layer.latest_validated_at;
+        const validatedH = hoursSince(validated);
+        // Threshold to flag a stuck validator: layer's own cooldown,
+        // doubled. Past that, surface a muted-warn colour cue.
+        const cool = layer.cooldown_hours;
+        const stuck = !validated
+          || (cool !== null && cool !== undefined
+              && validatedH !== null && validatedH > cool * 2);
+        const valCls = !validated ? 'na' : (stuck ? 'warn' : '');
+        return el('div', { class: 'tbl-row tbl-fresh' },
+          el('div', {},
+            el('div', {}, el('b', {}, layer.label || layer.layer)),
+            el('div', { class: 'doc-aside', style: 'margin-top:2px' },
+              layer.description || '')),
+          el('div', {}, String(layer.count || 0)),
+          el('div', { class: 'fresh-clock' + (fetched ? '' : ' na'),
+              title: fetched ? fmtTs(fetched) : 'no fetch on record' },
+            el('span', { class: 'fresh-clock-label' }, 'Fetched'),
+            ago(fetched)),
+          el('div', { class: 'fresh-clock ' + valCls,
+              title: validated ? fmtTs(validated) : 'never validated' },
+            el('span', { class: 'fresh-clock-label' }, 'Validated'),
+            ago(validated)),
+          el('div', { class: 'fresh-validator' },
+            layer.validator || ''));
+      })),
+    el('p', { class: 'doc-aside' },
+      'Cooldowns: attestation cache 12h, Paxos resolver 12h, OFAC SDN ' +
+      '30m, source snapshots gated by the 6h canary sweep. A ',
+      el('i', {}, 'validated'), ' clock far past its cooldown means the ' +
+      'validator is failing — surface it via F1 events.'),
   ));
 
   // 3. Corpus health — fold unknowns into a single summary line
@@ -680,9 +808,15 @@ function render(data) {
         el('div', {}, 'Status'),
         el('div', {}, 'Source'),
         el('div', {}, 'URL'),
-        el('div', {}, 'Age')),
-      ...[...broken, ...live].slice(0, 60).map(s =>
-        el('div', { class: 'tbl-row tbl-src ' +
+        el('div', {}, 'Age'),
+        el('div', {}, 'Validated')),
+      ...[...broken, ...live].slice(0, 60).map(s => {
+        // validated_at advances on conditional-HTTP confirmation
+        // (304 or matching sha256) without rewriting the snapshot.
+        // Falls back to fetched_at for older snapshots saved
+        // before the validator landed.
+        const validatedTs = s.validated_at || s.fetched_at;
+        return el('div', { class: 'tbl-row tbl-src ' +
             (s.status === 'broken' ? 'warn' : '') },
           el('div', {},
             el('span', { class: 'via via-' + s.status }, s.status)),
@@ -692,10 +826,12 @@ function render(data) {
                 rel: 'noopener', title: s.url },
                 s.url.length > 50 ? s.url.slice(0, 50) + '…' : s.url)
                 : el('span', { class: 'na' }, '—')),
-          el('div', {},
+          el('div', { title: s.fetched_at ? fmtTs(s.fetched_at) : '' },
             (s.age_days === null || s.age_days === undefined)
-              ? '—' : s.age_days + 'd'))),
-    ),
+              ? '—' : s.age_days + 'd'),
+          el('div', { title: validatedTs ? fmtTs(validatedTs) : 'never validated' },
+            ago(validatedTs)));
+      })),
   ));
 
   // 4. Web discovery

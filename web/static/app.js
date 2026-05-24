@@ -5901,7 +5901,24 @@ function renderMarket(data, mount) {
     'i-frame',
     recentSignalsPanel(data, insights.signals)));
 
-  // Foot — provenance + jump-off
+  // Foot — provenance + jump-off. The freshness line names both
+  // clocks Phase 2 closed: the extraction window (when the
+  // underlying attestations were first resolved into Doré's cache)
+  // and the validation timestamp (when the validator last asked the
+  // issuer for a newer report). The two together let an auditor judge
+  // whether the picture is fresh OR just confidently stale.
+  const fresh = data.freshness || {};
+  const earliest = shortDate(fresh.earliest_extracted_at);
+  const latest = shortDate(fresh.latest_extracted_at);
+  const validatedAgo = agoLabel(fresh.latest_validated_at);
+  const freshnessLine = (fresh.earliest_extracted_at
+      || fresh.latest_extracted_at || fresh.latest_validated_at)
+    ? el('div', { class: 'mkt-foot-fresh' },
+        'Aggregated from extractions performed between ',
+        el('b', {}, earliest), ' and ', el('b', {}, latest),
+        '. Last validated against issuer pages ',
+        el('b', {}, validatedAgo), '.')
+    : null;
   mount.append(el('div', { class: 'mkt-foot' },
     el('div', { class: 'mkt-foot-prov' },
       'Composed from ', el('b', {}, data.summary.token_count + ' tokens'),
@@ -5909,6 +5926,7 @@ function renderMarket(data, mount) {
       ' · ', el('b', {}, data.summary.chain_count + ' chains'),
       '. Supply readings are the last warmed by the 6-hour background '
       + 'monitor. Numbers verbatim from the pipeline.'),
+    freshnessLine,
     el('div', { class: 'mkt-foot-jumps' },
       el('button', {
         class: 'btn ghost',
@@ -6267,6 +6285,33 @@ function fmtComposedAt(iso) {
       + ', ' + d.toLocaleTimeString(undefined,
         { hour: '2-digit', minute: '2-digit' });
   } catch { return 'just now'; }
+}
+
+// Compact relative-time formatter. Returns '—' for a missing /
+// unparseable timestamp so callers can render confidently into a
+// fixed cell without an extra null guard.
+function agoLabel(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const ms = Date.now() - d.getTime();
+  if (ms < 0) return 'just now';
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(ms / 3_600_000);
+  if (h < 48) return h + 'h ago';
+  const days = Math.floor(ms / 86_400_000);
+  return days + 'd ago';
+}
+
+// Short calendar-date label used in market-view freshness footer
+// (e.g. "12 Mar"). Falls back to '—' for invalid input.
+function shortDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(undefined,
+    { day: '2-digit', month: 'short' });
 }
 
 // ════════════════════════════════════════════════════════════════════

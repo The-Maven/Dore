@@ -5,7 +5,7 @@
   "description": "JS test harness for the Doré SPA. Renders run in jsdom so we catch TDZ errors, undefined references, and exceptions thrown from render functions — exactly the class of bug Python tests can't see.",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/js/render.test.js tests/js/helpers.test.js"
+    "test": "node --test tests/js/render.test.js tests/js/helpers.test.js tests/js/compendium_parse.test.js"
   },
   "devDependencies": {
     "jsdom": "^25.0.1"

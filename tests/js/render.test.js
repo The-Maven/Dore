@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { loadApp, makeMount } from './harness.js';
 import {
   analysisFixture, sanctionsFixture, redemptionFixture, supplyFixture,
+  marketFixture,
 } from './fixtures.js';
 
 test('renderAnalysis renders a non-empty panel for a complete fixture', () => {
@@ -95,6 +96,31 @@ test('renderRedemption renders without throwing', () => {
   );
   assert.ok(mount.children.length > 0);
   assert.ok(mount.querySelector('.backing-strip'), 'backing strip missing on redemption');
+});
+
+test('renderMarket renders the freshness footer when validated_at is present', () => {
+  const { window } = loadApp();
+  const mount = makeMount(window);
+  assert.doesNotThrow(() =>
+    window.renderMarket(marketFixture(), mount)
+  );
+  const footer = mount.querySelector('.mkt-foot-fresh');
+  assert.ok(footer, '.mkt-foot-fresh should render when freshness present');
+  const text = footer.textContent || '';
+  assert.match(text, /Aggregated from extractions performed between/);
+  assert.match(text, /Last validated against issuer pages/);
+});
+
+test('renderMarket skips the freshness footer when freshness block is empty', () => {
+  const { window } = loadApp();
+  const mount = makeMount(window);
+  const fixture = marketFixture({
+    freshness: { earliest_extracted_at: '', latest_extracted_at: '',
+      latest_validated_at: '' },
+  });
+  assert.doesNotThrow(() => window.renderMarket(fixture, mount));
+  assert.equal(mount.querySelector('.mkt-foot-fresh'), null,
+    'footer should be absent when no freshness data is available');
 });
 
 test('renderRedemption handles crypto-collateralized (no tiers)', () => {

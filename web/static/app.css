@@ -3683,6 +3683,22 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   color: var(--paper); font-weight: 500; font-style: normal;
   font-variant-numeric: tabular-nums;
 }
+.mkt-foot-fresh {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--muted-1);
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--gold);
+  background: rgba(212,162,74,.04);
+  max-width: 76ch;
+}
+.mkt-foot-fresh b {
+  color: var(--gold);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
 .mkt-foot-jumps {
   display: flex; gap: 10px; flex-wrap: wrap;
 }

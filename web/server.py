@@ -1026,6 +1026,27 @@ def _compute_market_overview() -> dict[str, Any]:
         brief = None
     payload["brief"] = _asdict(brief) if brief is not None else None
 
+    # Aggregate freshness for the footer: when were the underlying
+    # attestations extracted (earliest, latest) and when was the
+    # validator last run against any issuer? Read straight from the
+    # cache the resolver just touched.
+    extracted_isos = [
+        (cache.get(sym, {}) or {}).get("resolved_at", "")
+        for sym in tokens
+    ]
+    validated_isos = [
+        (cache.get(sym, {}) or {}).get("validated_at", "")
+        for sym in tokens
+    ]
+    extracted_clean = sorted([x for x in extracted_isos if x])
+    validated_clean = sorted([x for x in validated_isos if x])
+    payload["freshness"] = {
+        "earliest_extracted_at": extracted_clean[0] if extracted_clean else "",
+        "latest_extracted_at": extracted_clean[-1] if extracted_clean else "",
+        "latest_validated_at":
+            validated_clean[-1] if validated_clean else "",
+    }
+
     payload["computed_at"] = datetime.now(timezone.utc).isoformat()
     payload["elapsed_s"] = round(time.time() - started, 1)
     return payload
@@ -1212,6 +1233,10 @@ def compendium() -> dict[str, Any]:
             "cache_url": cached.get("url", ""),
             "cache_via": cached.get("via", ""),
             "cache_resolved_at": cached.get("resolved_at", ""),
+            # When the cache was last re-checked against the issuer's
+            # published reports (Brave probe + date comparison). Distinct
+            # from resolved_at, which only moves on a fresh discovery.
+            "cache_validated_at": cached.get("validated_at", ""),
         })
 
     # Source-snapshot health, newest first.
@@ -1231,6 +1256,10 @@ def compendium() -> dict[str, Any]:
             "status": "broken" if meta.status_code >= 400 else "live",
             "status_code": meta.status_code,
             "fetched_at": meta.fetched_at,
+            # Last time we re-checked the source with conditional HTTP
+            # (304 or sha256 match) — distinct from fetched_at, which
+            # only bumps on a body change.
+            "validated_at": meta.validated_at or meta.fetched_at,
             "age_days": _snap.staleness_days(meta),
             "url": meta.url,
             "sha256": meta.sha256,
@@ -1290,9 +1319,19 @@ def compendium() -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - never break the compendium
         facts = []
 
+    # System freshness — one row per cache layer, exposing both the
+    # last fetch time (when bytes were written) and the last validation
+    # time (when a truth source confirmed they're still current). The
+    # gap between them is the "have we asked lately?" signal Phase 2
+    # built; this panel makes it visible.
+    system_freshness = _compute_system_freshness(
+        attestations, sources_health,
+    )
+
     return {
         "attestations": attestations,
         "sources_health": sources_health,
+        "system_freshness": system_freshness,
         "supply_history": history_snapshot,
         "discoveries": discoveries,
         "events": events,
@@ -1301,6 +1340,106 @@ def compendium() -> dict[str, Any]:
             "SCA_WEB_SEARCH_PROVIDER", "",
         ).strip().lower() or None,
     }
+
+
+def _compute_system_freshness(
+    attestations: list[dict[str, Any]],
+    sources_health: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Per-cache-layer freshness rollup. Each row carries the most
+    recent fetched_at and validated_at across that layer plus the size
+    of the layer. Read by the Compendium "System freshness" panel."""
+    from sca.tools import paxos_resolver as _paxos
+    from sca import config as _cfg
+
+    def _max_iso(values: list[str]) -> str:
+        clean = [v for v in values if v]
+        return max(clean) if clean else ""
+
+    rows: list[dict[str, Any]] = []
+
+    # 1. Attestation cache (Brave-discovered issuer reports).
+    att_fetched = [a.get("cache_resolved_at", "") for a in attestations]
+    att_validated = [a.get("cache_validated_at", "") for a in attestations]
+    rows.append({
+        "layer": "attestation_cache",
+        "label": "Attestation cache",
+        "description": "Cached issuer attestation URLs (Brave + locator).",
+        "count": sum(1 for a in attestations if a.get("cache_url")),
+        "latest_fetched_at": _max_iso(att_fetched),
+        "latest_validated_at": _max_iso(att_validated),
+        "validator": "Brave search + dated-URL comparison",
+        "cooldown_hours": 12,
+    })
+
+    # 2. Paxos resolver cache (next-publication-month probe).
+    try:
+        paxos_cache = _paxos._load_cache()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        paxos_cache = {}
+    paxos_fetched = [
+        (e or {}).get("resolved_at", "") for e in paxos_cache.values()
+    ]
+    paxos_validated = [
+        (e or {}).get("validated_at", "") for e in paxos_cache.values()
+    ]
+    rows.append({
+        "layer": "paxos_resolver",
+        "label": "Paxos resolver cache",
+        "description": "Next-month URL probe for Paxos-issued tokens.",
+        "count": len(paxos_cache),
+        "latest_fetched_at": _max_iso(paxos_fetched),
+        "latest_validated_at": _max_iso(paxos_validated),
+        "validator": "HEAD-probe of next publication month",
+        "cooldown_hours": 12,
+    })
+
+    # 3. OFAC SDN (Treasury feed).
+    sdn_fetched_iso = ""
+    sdn_validated_iso = ""
+    try:
+        from sca.tools import sanctions as _sx
+        from datetime import datetime as _dt, timezone as _tz
+        if _sx._SDN_FILE.exists():
+            sdn_fetched_iso = _dt.fromtimestamp(
+                _sx._SDN_FILE.stat().st_mtime, _tz.utc,
+            ).isoformat(timespec="seconds")
+        if _sx._SDN_VALIDATED_FILE.exists():
+            try:
+                ts = float(_sx._SDN_VALIDATED_FILE.read_text().strip())
+                sdn_validated_iso = _dt.fromtimestamp(
+                    ts, _tz.utc,
+                ).isoformat(timespec="seconds")
+            except (OSError, ValueError):
+                sdn_validated_iso = ""
+    except Exception:  # noqa: BLE001
+        pass
+    rows.append({
+        "layer": "ofac_sdn",
+        "label": "OFAC SDN feed",
+        "description": "Treasury sanctions XML, daily refresh.",
+        "count": 1 if sdn_fetched_iso else 0,
+        "latest_fetched_at": sdn_fetched_iso,
+        "latest_validated_at": sdn_validated_iso or sdn_fetched_iso,
+        "validator": "HEAD + If-Modified-Since against Treasury",
+        "cooldown_hours": 0.5,
+    })
+
+    # 4. Source snapshots (corpus pages).
+    snap_fetched = [s.get("fetched_at", "") for s in sources_health]
+    snap_validated = [s.get("validated_at", "") for s in sources_health]
+    rows.append({
+        "layer": "source_snapshots",
+        "label": "Source snapshots",
+        "description": "Corpus pages: ECB, BIS, FSB, OFAC, blogs.",
+        "count": sum(1 for s in sources_health if s.get("fetched_at")),
+        "latest_fetched_at": _max_iso(snap_fetched),
+        "latest_validated_at": _max_iso(snap_validated),
+        "validator": "If-Modified-Since + ETag + sha256 compare",
+        "cooldown_hours": None,  # gated by canary, not cooldown
+    })
+
+    return rows
 
 
 @app.post("/api/attestations/{symbol}/url")

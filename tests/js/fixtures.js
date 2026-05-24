@@ -102,6 +102,56 @@ export function sanctionsFixture(overrides = {}) {
   };
 }
 
+export function marketFixture(overrides = {}) {
+  // Mirrors the /api/market response just enough that renderMarket runs.
+  // Freshness block: covers the Phase 3 footer that names both clocks
+  // (extracted window + last validation).
+  const now = new Date();
+  const hourAgo = new Date(now.getTime() - 3_600_000).toISOString();
+  const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+  return {
+    summary: {
+      total_supply: 230_000_000_000, token_count: 20,
+      issuer_count: 12, chain_count: 18,
+      verified_count: 10, stale_count: 2,
+      by_design_count: 5, blocked_count: 3,
+    },
+    by_issuer: [
+      { issuer: 'Circle', count: 1, total_supply: 80e9,
+        share_pct: 34.78, tokens: ['USDC'] },
+      { issuer: 'Tether', count: 1, total_supply: 110e9,
+        share_pct: 47.83, tokens: ['USDT'] },
+    ],
+    by_backing_model: [
+      { model: 'fiat_reserves', label: 'Fiat reserves',
+        count: 12, total_supply: 200e9, share_pct: 87,
+        tokens: ['USDC', 'USDT'] },
+    ],
+    by_chain: [
+      { chain: 'ethereum', total_supply: 110e9, share_pct: 47.83,
+        token_count: 18, tokens: ['USDC', 'USDT'] },
+    ],
+    concentration: { top3_share_pct: 90.1, top5_share_pct: 97.3, hhi: 0.42 },
+    verification_health: {
+      fresh: [{ symbol: 'USDC', issuer: 'Circle',
+        url: 'https://example.com/usdc.pdf',
+        resolved_at: hourAgo }],
+      stale: [], by_design: [], blocked: [],
+    },
+    drift_leaderboard: [],
+    recent_signals: [],
+    brief: null,
+    freshness: {
+      earliest_extracted_at: weekAgo,
+      latest_extracted_at: hourAgo,
+      latest_validated_at: hourAgo,
+    },
+    computed_at: now.toISOString(),
+    elapsed_s: 0.6,
+    ...overrides,
+  };
+}
+
 export function redemptionFixture(overrides = {}) {
   const att = overrides.attestation === undefined ? attestationFixture() : overrides.attestation;
   return {
