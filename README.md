@@ -217,6 +217,36 @@ is registered as a `<id>_v2` revision so old citations stay pinned.
 
     .venv/bin/python -m uvicorn web.server:app --port 8000   # → localhost:8000
 
+Eight surfaces, every one keyed to a function row (F1–F8):
+
+| | Surface | What it does |
+|---|---|---|
+| F1 | Monitor | Live operations feed + tracked-instruments grid. Self-updating; every line is a real event. |
+| F2 | Analyze | Attestation analysis for one token: AI Brief leading, then snapshot panel, guardrail ladder, cited corpus passages. |
+| F3 | Corpus | Source registry. Vote any source in or out; mark verified. Opt-out by default. |
+| F4 | Evals | Regression suite. Cached-first read on mount; RUN SUITE triggers a fresh recompute (one live analysis per case). |
+| F5 | Sanctions | OFAC SDN screening of every deployment address. |
+| F6 | Redemptions | Reserve liquidity tiered against on-chain supply. |
+| F7 | Analyst | Cited Q&A via the Hermes runtime (read-only MCP boundary). |
+| F8 | Compendium | Standalone docs page at `/compendium` — the live ledger of the data layer. REFRESH actually kicks the canary sweep. |
+
+Every result surface (F2 / F4 / F5 / F6) follows the same pattern:
+
+- **Cached-first render.** The last completed result loads instantly
+  from the Store on view mount — no spinner — regardless of age.
+- **Freshness strip.** "computed Nm ago · RE-RUN" below each result.
+  Quiet ghost button when fresh (<6h); pulsing prominent REFRESH past
+  the window.
+- **Latency expectation.** During a real recompute the clock reads
+  "8s / ~22s" with the per-token expected runtime averaged from your
+  last few runs. Past 1.5× of typical it amber-shifts and the copy
+  reassures rather than alarms.
+- **Backgrounded-job toasts.** Navigate away from a token mid-run and
+  a toast lands in the bottom-right when the job completes —
+  "USDP sanctions screen finished — Click to view the result".
+- **Friendly errors.** Stack traces never appear in the UI. The error
+  box carries a TRY AGAIN button matching the user's last action.
+
 ## Persistence & accounts
 
 Durable state lives in **Supabase** (Postgres) behind a `Store` interface;

@@ -136,13 +136,22 @@ A `Store` interface (`src/sca/store/base.py`) with two implementations:
 | Address decisions | (in `votes.yaml`) / `address_decisions` | **append-only** | yes |
 | Analyses | `_analyses` dict / `analyses` table | append on create, status-update | FileStore: NO; SupabaseStore: yes |
 | Monitor snapshots | `_snapshots` list / `monitor_snapshots` | append, latest-N read | FileStore: NO; SupabaseStore: yes |
+| **Attestation URL overrides** | `attestation_url_overrides` (migration 0003) | last-write-wins per symbol, queried newest-first | yes |
+| **Verified facts** (time-series) | `verified_facts` (migration 0004) | **append-only**, content-addressed | yes |
 | Source registry | `corpus/sources.yaml` | idempotent appends | yes (single source of truth) |
 
-The **fact-store today is point-in-time-snapshot, not time-series**. On-chain
-supply readings and computed metrics are persisted, but a later read of the
-same symbol writes a new row without preserving the prior one as part of a
-queryable historical series. The curation ledger *is* append-only; reserve
-facts are not. This is the gap Phase 2 closes (§5 below).
+**The immutable time-series fact store is live** (migration 0004, applied).
+Every completed analysis writes one `verified_facts` row per (claim_type,
+subject) — reserves once per analyze run, supply once per chain — with a
+sha256 content hash that lets a repeat reading deduplicate cheaply. Schema
+and discipline detailed in §5.
+
+The attestation-URL override table (migration 0003) is what closes the
+"curator-set URL survives a redeploy" gap. Both the human curator path
+(F8 Compendium → set override) and the canary's auto-discovery path
+(every fresh `web_search` / `locator` / `paxos_resolver` resolution)
+write through this table. The local JSON cache is now a hot-path speed
+layer in front of the durable store.
 
 ### 2.5 Web / UI surface — `web/`
 
@@ -152,8 +161,13 @@ facts are not. This is the gap Phase 2 closes (§5 below).
 | `/api/supply/{symbol}` | GET | RPC reads | **none today** (gap) | none |
 | `/api/analyze`, `/api/sanctions`, `/api/redemption` | POST | RPC + LLM | yes (10-burst, 0.5 tok/s per IP) | optional |
 | `/api/analyze/{id}`, `/api/sanctions/{id}`, `/api/redemption/{id}` | GET | no (poll) | no | optional |
+| `/api/cached/{surface}/{symbol}` | GET | no (Store read) | no | optional |
 | `/api/sources/{id}/vote`, `/api/addresses/decision` | POST | store write | no | **required** |
-| `/api/evals` | GET | LLM × 5 | **none today** (gap) | none |
+| `/api/attestations/{symbol}/url` | POST | store write | no | **required** |
+| `/api/evals` | GET | no (Store read) | no | none |
+| `/api/evals` | POST | LLM × N cases | yes | none |
+| `/api/compendium` | GET | aggregate read | no | none |
+| `/api/compendium/refresh` | POST/GET | canary sweep (background) | no | optional |
 | `/api/agent` | POST | LLM + RPC | **none today** (gap) | none |
 
 Rate limiting is per-IP token bucket in `web/rate_limit.py` (capacity 10,
@@ -163,6 +177,45 @@ is the remaining gap (challenge §6 in AUDIT.md).
 The SPA in `web/static/` is vanilla JS, no build. It renders figures from
 API responses; **it does not compute its own numbers**. Numbers flow from
 tools → metrics → synthesis result → JSON → DOM, formatted only.
+
+**View shell — five consistent surface patterns.** Analyze (F2), Sanctions
+(F5), Redemption (F6), and Evals (F4) all share the same UX shape:
+
+- **Cached-first render.** On mount each view calls `GET /api/cached/...`
+  (or `GET /api/evals` for the suite). Any-age cached result renders
+  instantly without spinning a job. The fresh-six-hours window decides
+  whether the freshness strip flags it stale.
+- **Freshness strip.** "computed Nm ago · RE-RUN" beneath every rendered
+  result. Quiet ghost button when fresh; pulsing prominent REFRESH when
+  past the 6-hour window. Tooltip carries the per-token expected runtime
+  (averaged over the user's last N real runs, persisted in `localStorage`).
+- **Staged-run narration.** When a real recompute is needed, the run
+  panel shows the named stages with a rotating sub-narration line per
+  stage. A live clock reads "8s / ~22s" inside the expected window;
+  amber + "still on track" past 1.5×; amber-bold + "Taking longer than
+  usual" past 2.5×. A `--scan-pct` CSS variable drives a proportional
+  progress fill underneath the animated sweep.
+- **Backgrounded-job toast tracker.** If the user navigates away from a
+  token or surface mid-run, the foreground poll hands the `job_id` to
+  `trackJob()` which polls at 4s cadence. On completion a toast lands in
+  the bottom-right: "USDP sanctions screen finished — Click to view the
+  result". The hand-off happens in `route()` via the
+  `STATE.activeJobInFlight` descriptor so it survives the cleanup of
+  the foreground poll timer.
+- **Friendly errors.** `errorBox(title, msg, trace, {onRetry, retryLabel})`
+  renders a product-quality message + an inline TRY AGAIN button. Stack
+  traces never appear in the UI; the raw exception goes to the F1
+  operations feed as a one-line `ERR · TRACE` entry for operator
+  discoverability.
+
+**Compendium** (F8) lives as a standalone docs page at `/compendium`,
+opened in a new tab from the sidebar (HTML `target="_blank"` honoured by
+the sidebar click handler). The page header carries a coloured dot
+(green idle → pulsing gold during fetch → rose on error) and a ticking
+"next refresh in Ns" countdown. Manual REFRESH actually triggers the
+canary's attestation-gap sweep via `POST /api/compendium/refresh` (not
+just a snapshot re-render), then polls every 6s until the sweep
+completes — so newly-discovered URLs land in the displayed table.
 
 ### 2.6 Hermes (the agent) — `agent/`
 
@@ -283,12 +336,15 @@ That is the Phase 2 work below.
 
 ---
 
-## 5. Phase 2 deliverable: immutable, time-series Fact Store
+## 5. Phase 2 (now live): immutable, time-series Fact Store
 
-(Non-destructive. New table introduced alongside `analyses` and
-`monitor_snapshots`; nothing existing is altered or dropped.)
+Shipped in migration `supabase/migrations/0004_verified_facts.sql`.
+Non-destructive: new table alongside `analyses` and `monitor_snapshots`;
+nothing existing was altered or dropped. Both write paths run in
+parallel — `analyses.result` and `monitor_snapshots` remain the
+operational cache; `verified_facts` is the audit trail.
 
-### Schema (proposed)
+### Schema (as deployed)
 
 ```sql
 create table verified_facts (
@@ -328,14 +384,22 @@ create index verified_facts_content_hash_idx on verified_facts (content_hash);
   2026-04-30?" is a SQL window query: latest fact per claim_type+subject
   with `observed_at <= '2026-04-30'`.
 
-### Migration discipline
+### Writer
 
-- New migration: `supabase/migrations/0003_verified_facts.sql`. New table
-  only. Backfill is optional and additive.
-- Existing `analyses.result` and `monitor_snapshots` remain the operational
-  cache; the new table is the **audit trail**. Both write paths run in
-  parallel during transition. Nothing is removed until the new table has
-  paid its way.
+`_persist_analysis` in `src/sca/agent/analyze.py` writes through on every
+completed analyze run: one `reserves` claim from the extracted attestation
+plus one `supply` claim per chain. Best-effort: a Store hiccup logs a
+warning but never breaks the user-facing analysis result.
+
+### Companion migration: 0003 attestation URL overrides
+
+`supabase/migrations/0003_attestation_url_overrides.sql` adds a
+last-write-wins table queried newest-first. Curator-set URLs (via
+`POST /api/attestations/{symbol}/url`) and canary-discovered URLs (every
+fresh `web_search` / `locator` / `paxos_resolver` resolution, via
+`_record_override` in `attestation_fetch.py`) write through it. The
+`set_by` column is a typed UUID — anonymous curator/canary writes pass
+`None`, signed-in curator writes pass the Supabase user id.
 
 ---
 
@@ -347,7 +411,7 @@ regardless of `.env`). New durable state means a new Store method and a new
 migration, plus a test that exercises both FileStore and SupabaseStore
 shapes — never an ad-hoc write.
 
-Current baseline (this commit): 279 Python tests + 30 JS tests = 309
+Current baseline (this commit): 291 Python tests + 30 JS tests = 321
 hermetic tests passing.
 
 ---

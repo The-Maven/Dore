@@ -1,5 +1,12 @@
 # Doré — autonomous work notes
 
+> **Historical document.** This file is a scratch log from a single
+> autonomous work session. It captures the reasoning at that point in
+> time and is preserved for context, not as current truth. Most items
+> below have since been delivered, superseded, or revised — read
+> `ARCHITECTURE.md`, `README.md`, and `AGENTS.md` for the canonical
+> current state. Don't act on this file directly.
+
 User stepped away ~05:50 UTC with a broad mandate: fix everything, audit-grade, AI as wedge, corpus enrichment, un-stale data. This file documents what I'm changing and why, so you can scan my reasoning when you're back instead of reading the diff cold.
 
 ## The honest gap analysis I'm working from
