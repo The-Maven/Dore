@@ -4933,6 +4933,19 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   --sim-bg-2: #0C0E12;
 }
 
+/* Light theme overrides — Bloomberg-class terminal stays the same
+   structurally, but the surface backgrounds invert to cream + the
+   delta colours pick the AA-grade variants from --green / --rose so
+   they read legibly on paper. The amber accent works on both. */
+:root[data-theme="light"] {
+  --sim-up:   #287052;  /* matches light-theme --green (5.28:1 vs cream) */
+  --sim-down: #B43E3E;  /* matches light-theme --rose */
+  --sim-flat: rgba(139, 103, 32, 0.45);
+  --sim-rule: rgba(28, 26, 20, 0.10);
+  --sim-bg-1: #ECE6D6;  /* matches --ink-2 */
+  --sim-bg-2: #E2DBC6;  /* matches --ink-3 */
+}
+
 .sim-body {
   padding: 0;  /* v3 manages its own padding per pane */
   font-feature-settings: 'tnum';
@@ -5499,6 +5512,10 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .sim-wire-glyph.sim-wire-resv { color: var(--sim-up); }
 .sim-wire-glyph.sim-wire-disp { color: var(--sim-down); }
 .sim-wire-glyph.sim-wire-judg { color: var(--sim-amber); }
+
+/* Light theme: TICK / BRAV glyphs darken for AA contrast on cream */
+:root[data-theme="light"] .sim-wire-glyph.sim-wire-tick { color: #1F5DA8; }
+:root[data-theme="light"] .sim-wire-glyph.sim-wire-brav { color: #7A6A3F; }
 .sim-wire-sym {
   color: var(--paper);
   letter-spacing: 0.08em;
@@ -5825,4 +5842,365 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   .sim-chip, .btn { min-height: 44px; }
   .sim-rail-row { min-height: 56px; }
   .sim-config-input { min-height: 44px; padding: 10px 12px; }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   DATA-TIP TOOLTIPS (v3.2 — explanatory hover layer)
+
+   Anywhere a dense bit of jargon appears (Brier, peg deviation,
+   confidence ladder words, 4-letter WIRE glyphs), we attach a
+   `data-tip="…"` attribute. CSS renders it as a small dark card on
+   hover with a paper-coloured border and gold tag — terminal-quiet
+   and instant, no JS, no flicker.
+
+   Pattern:
+     <span class="tip" data-tip="Brier: lower is better.">BRIER</span>
+
+   On touch devices (no real hover) we suppress the tooltip; the
+   `data-tip` value is still readable via long-press → native menu
+   for users who want it, but the primary surface stays clean.
+   ════════════════════════════════════════════════════════════════════ */
+
+[data-tip] {
+  position: relative;
+}
+
+/* Affordance: a faint dotted underline on inline terms. Block-level
+   elements (cells, glyphs, rows) get the tooltip without the cue —
+   the whole element is the affordance. */
+.tip {
+  border-bottom: 1px dotted rgba(212, 162, 74, 0.32);
+  cursor: help;
+}
+
+/* The tooltip card itself. ::before is the arrow nub, ::after is the
+   card. Hidden by default, shown on hover/focus with a 120ms delay so
+   tooltips feel intentional, not skittish. */
+[data-tip]:hover::after,
+[data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  z-index: 9000;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 180px;
+  max-width: 320px;
+  padding: 8px 10px 9px;
+  background: #14161A;
+  color: var(--paper, #EFEAE0);
+  border: 1px solid rgba(212, 162, 74, 0.28);
+  border-radius: 4px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  white-space: pre-wrap;
+  text-align: left;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.55),
+    0 2px 6px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  opacity: 0;
+  animation: tipFadeIn 140ms 100ms ease-out forwards;
+}
+
+[data-tip]:hover::before,
+[data-tip]:focus-visible::before {
+  content: "";
+  position: absolute;
+  z-index: 9001;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+  width: 7px;
+  height: 7px;
+  background: #14161A;
+  border-right: 1px solid rgba(212, 162, 74, 0.28);
+  border-bottom: 1px solid rgba(212, 162, 74, 0.28);
+  pointer-events: none;
+  opacity: 0;
+  animation: tipFadeIn 140ms 100ms ease-out forwards;
+}
+
+@keyframes tipFadeIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(2px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* Variants — flip below when the element sits near the top of the
+   viewport, flip right when it sits at the right edge. */
+[data-tip-pos="below"]:hover::after,
+[data-tip-pos="below"]:focus-visible::after {
+  bottom: auto;
+  top: calc(100% + 8px);
+}
+[data-tip-pos="below"]:hover::before,
+[data-tip-pos="below"]:focus-visible::before {
+  bottom: auto;
+  top: calc(100% + 3px);
+  border-right: none;
+  border-bottom: none;
+  border-left: 1px solid rgba(212, 162, 74, 0.28);
+  border-top: 1px solid rgba(212, 162, 74, 0.28);
+}
+
+[data-tip-pos="right"]:hover::after,
+[data-tip-pos="right"]:focus-visible::after {
+  bottom: 50%;
+  left: calc(100% + 10px);
+  transform: translateY(50%);
+}
+[data-tip-pos="right"]:hover::before,
+[data-tip-pos="right"]:focus-visible::before {
+  display: none;
+}
+
+/* Wider tip card for long explanations (calibration metrics). */
+[data-tip-size="lg"]:hover::after,
+[data-tip-size="lg"]:focus-visible::after {
+  min-width: 260px;
+  max-width: 400px;
+}
+
+/* Suppress tooltips on touch — long-press still surfaces data-tip
+   value via accessible name when needed, but mobile shouldn't render
+   the card mid-tap. */
+@media (pointer: coarse) {
+  [data-tip]:hover::after,
+  [data-tip]:hover::before,
+  [data-tip]:focus-visible::after,
+  [data-tip]:focus-visible::before { display: none; }
+}
+
+/* Light theme — invert the tooltip card so it stays legible on the
+   paper background. Use the existing --paper / --ink tokens. */
+:root[data-theme="light"] [data-tip]:hover::after,
+:root[data-theme="light"] [data-tip]:focus-visible::after {
+  background: #1A1B1F;
+  color: #F2EEE3;
+  border-color: rgba(212, 162, 74, 0.55);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.22),
+    0 2px 6px rgba(0, 0, 0, 0.14);
+}
+:root[data-theme="light"] [data-tip]:hover::before,
+:root[data-theme="light"] [data-tip]:focus-visible::before {
+  background: #1A1B1F;
+  border-color: rgba(212, 162, 74, 0.55);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   YIELD-BEARING TAG + VENUE CHIP (v3.2)
+
+   Visual separation for tokens that aren't 1:1-pegged by design.
+   USDY drifting +1300bp above $1.00 isn't a depeg — the YLD tag is
+   how a reader sees that at a glance.
+   ════════════════════════════════════════════════════════════════════ */
+
+.sim-yld-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-left: 6px;
+  background: linear-gradient(180deg, #5B3F00 0%, #3A2800 100%);
+  color: #FFD478;
+  border: 1px solid #8A6010;
+  border-radius: 2px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1.5;
+  vertical-align: middle;
+  cursor: help;
+  text-transform: uppercase;
+}
+.sim-yld-tag-hero {
+  margin-left: 10px;
+  padding: 3px 8px;
+  font-size: 10px;
+  background: linear-gradient(180deg, #6A4800 0%, #4A2F00 100%);
+  border-color: #A07020;
+}
+.sim-yld-tag-inline {
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 8px;
+  vertical-align: 1px;
+}
+
+/* Hero value when yield-bearing: amber (not green/red) — the bp is
+   NOT a peg-violation signal, it's accrued yield. */
+.sim-hero-val-yld { color: #FFD478 !important; }
+.sim-ribbon-val-yld { color: #FFD478 !important; }
+
+/* Venue chip: small CEX / DEX / MIXED tag */
+.sim-hero-venue {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  background: rgba(212, 162, 74, 0.10);
+  color: #C39653;
+  border: 1px solid rgba(212, 162, 74, 0.32);
+  border-radius: 2px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  line-height: 1.5;
+  vertical-align: middle;
+  cursor: help;
+}
+
+/* Empty AI Judge — keep terminal-quiet but readable */
+.sim-hero-judge-empty-msg {
+  color: var(--muted-2, #9A9590);
+  display: inline;
+}
+.sim-hero-judge-empty-sub {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted, #6E6B66);
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* Light theme: YLD tag stays legible on paper */
+:root[data-theme="light"] .sim-yld-tag {
+  background: linear-gradient(180deg, #F5D88A 0%, #E0BC55 100%);
+  color: #4A2F00;
+  border-color: #8A6010;
+}
+:root[data-theme="light"] .sim-yld-tag-hero {
+  background: linear-gradient(180deg, #F8DF95 0%, #DCB348 100%);
+}
+:root[data-theme="light"] .sim-hero-val-yld,
+:root[data-theme="light"] .sim-ribbon-val-yld {
+  color: #8A6010 !important;
+}
+:root[data-theme="light"] .sim-hero-venue {
+  background: rgba(212, 162, 74, 0.15);
+  color: #6A4A0F;
+  border-color: rgba(212, 162, 74, 0.55);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   P&L LENS BLOCK (in AI COMMENTARY card)
+
+   Distinct visual block showing risk / yield framing for the focused
+   token. Sits inside the existing commentary card — bordered + tinted
+   so investors don't miss it.
+   ════════════════════════════════════════════════════════════════════ */
+
+.sim-commentary-pl {
+  margin: 10px 0 8px;
+  padding: 9px 12px;
+  background: rgba(212, 162, 74, 0.06);
+  border-left: 2px solid #D4A24A;
+  border-radius: 0 4px 4px 0;
+  cursor: help;
+}
+.sim-commentary-pl-tag {
+  display: block;
+  margin-bottom: 4px;
+  color: #D4A24A;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+.sim-commentary-pl-body {
+  display: block;
+  color: var(--paper, #EFEAE0);
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+:root[data-theme="light"] .sim-commentary-pl {
+  background: rgba(212, 162, 74, 0.10);
+  border-left-color: #8A6010;
+}
+:root[data-theme="light"] .sim-commentary-pl-tag {
+  color: #6A4A0F;
+}
+:root[data-theme="light"] .sim-commentary-pl-body {
+  color: var(--ink, #1A1B1F);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   WIRE LEGEND + GROUPED ROWS (v3.2)
+   ════════════════════════════════════════════════════════════════════ */
+
+.sim-wire-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(212, 162, 74, 0.10);
+  cursor: help;
+}
+.sim-wire-legend-lbl {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--muted, #6E6B66);
+  margin-right: 6px;
+}
+.sim-wire-legend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  background: rgba(212, 162, 74, 0.04);
+  border: 1px solid rgba(212, 162, 74, 0.18);
+  border-radius: 2px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9px;
+}
+.sim-wire-legend-glyph {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.sim-wire-legend-n {
+  color: var(--muted-2, #9A9590);
+  font-weight: 500;
+}
+
+/* Grouped-row badge: small chevron-styled count for the collapsed runs */
+.sim-wire-count {
+  display: inline-block;
+  padding: 0 5px;
+  margin-right: 4px;
+  background: rgba(212, 162, 74, 0.12);
+  border: 1px solid rgba(212, 162, 74, 0.32);
+  border-radius: 2px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  color: #D4A24A;
+  letter-spacing: 0.05em;
+}
+.sim-wire-row-group .sim-wire-msg {
+  color: var(--paper, #EFEAE0);
+}
+
+:root[data-theme="light"] .sim-wire-legend {
+  background: rgba(212, 162, 74, 0.04);
+  border-bottom-color: rgba(212, 162, 74, 0.20);
+}
+:root[data-theme="light"] .sim-wire-legend-chip {
+  background: rgba(212, 162, 74, 0.06);
+  border-color: rgba(212, 162, 74, 0.28);
+}
+:root[data-theme="light"] .sim-wire-count {
+  background: rgba(212, 162, 74, 0.10);
+  color: #8A6010;
+  border-color: rgba(212, 162, 74, 0.40);
+}
+:root[data-theme="light"] .sim-wire-row-group .sim-wire-msg {
+  color: var(--ink, #1A1B1F);
 }

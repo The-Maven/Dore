@@ -6623,6 +6623,198 @@ function renderSimulator(mount, feed) {
   mount.append(simConfigPanel(feed.config || {}));
 }
 
+// ── tip copy ──────────────────────────────────────────────────────
+// Centralised hover-tooltip strings for the simulator. Editing the
+// explanation of a term should be a one-place change; the surfaces
+// just reference SIM_TIP.<key>. Keep each entry to ≤ ~25 words of
+// plain English — readers are first-time investors, not quants.
+const SIM_TIP = {
+  // Status strip
+  live: 'Live stream status. Green pulse = the ticker is running and ' +
+    'new ticks are being received. Idle = the ticker thread is paused.',
+  lastTick: 'Time since the last completed forecast cycle. Cycles run ' +
+    'on the cadence interval (default every 10 minutes).',
+  cadence: 'Refresh rate and prediction horizon. A 10m cadence means ' +
+    'a new tick every 10 minutes; the horizon is the window each ' +
+    'prediction tries to forecast over.\n\nWhat the tick pulls each ' +
+    'cycle:\n• peg price from 3 sources in parallel ' +
+    '(Coinbase, Kraken, CoinGecko)\n• 5bp agreement check\n• EWMA + ' +
+    'cone forecast emitted forward by the horizon\n• previous cycle\'s ' +
+    'prediction scored against what actually happened\n• largest-mover ' +
+    'symbol gets an LLM judge synthesis',
+  pegSources: 'Exchanges polled in parallel for peg ground truth.\n\n' +
+    '• Coinbase v2 (CEX, USD spot)\n• Kraken (CEX, USD spot)\n' +
+    '• CoinGecko (aggregator — fills DEX-native gaps for FRAX/GHO/USDe etc.)' +
+    '\n\n✓ = sources agree within 5bp · ○ = only one source responded' +
+    ' · ✕ = sources disagreed (recorded honestly, flagged in resolution)',
+  braveQuota: 'Brave web-search calls used today out of the daily cap. ' +
+    'Searches are gated by interest + cached for 12h so quota lasts. ' +
+    'A 6-tick BURST burns ZERO new Brave calls in practice.',
+
+  // Ribbon
+  ribbonPill: 'Brand colour for this token. Used as a label only — ' +
+    'chart lines stay amber so they read consistently.',
+  ribbonVal: 'Peg deviation in basis points from $1.00. 1 bp = 0.01¢. ' +
+    'Positive = trading above peg, negative = trading below.',
+  ribbonDelta: 'Change in peg deviation since the previous tick.',
+  ribbonSpark: 'Recent peg deviation history — visual shape of where ' +
+    'this token has been over the last few ticks.',
+  pegTrack: 'Live position on a ±25bp peg-deviation scale. The brand ' +
+    'dot is current value; the centre line is the $1.00 peg.',
+
+  // Rail
+  railTitle: 'Tokens being watched. Live rows float to the top, sorted ' +
+    'by absolute 1-minute move. Faded rows have no peg data this cycle.',
+  railSpark: 'Recent peg-deviation history for this token.',
+  railVal: 'Current peg deviation in basis points (1 bp = 0.01¢).',
+  railDelta: 'Move since the previous tick.',
+
+  // Hero pane
+  heroSym: 'Focused token. Click any rail row or ribbon cell to swap.',
+  heroConf: 'IPCC-style confidence ladder word for the next prediction. ' +
+    '"very_likely" = high model confidence (narrow cone), "more_likely_' +
+    'than_not" = barely better than coin-flip.',
+  heroValBig: 'Current peg deviation in basis points. 1 bp = 0.01¢ off ' +
+    'the $1.00 peg.',
+  heroChart: 'Recent peg-deviation history (amber line) with the model ' +
+    'forecast cone projected forward. The "now" mark separates observed ' +
+    'from predicted.\n\nLeft of NOW = what actually happened (the ' +
+    'archived ticks). Right of NOW = what the model predicts for the ' +
+    'next horizon window. Once that window resolves, the prediction ' +
+    'gets scored against reality and added to the calibration archive.',
+  forecastCone: 'Forecast probability bands. Darker = tighter (p50: ' +
+    'middle 50% of outcomes). Lighter = wider (p95: 19-in-20 likelihood ' +
+    'of landing inside). The dashed centre line is the point estimate.',
+  zeroLine: 'The $1.00 peg. Above = trading rich, below = trading cheap.',
+  nowLine: 'Boundary between observed history (left) and the model\'s ' +
+    'forecast cone (right). Predictions on the right resolve at the ' +
+    '"horizon" minute mark — that resolution is then archived.',
+  prediction: 'What the model SAYS will happen in the horizon window:\n' +
+    '• point estimate (centre of the cone)\n• 50% band (the most ' +
+    'likely zone)\n• 80% band (4-in-5 likely)\n• 95% band (19-in-20 ' +
+    'likely)\n• confidence ladder word (IPCC-style)\n• probability the ' +
+    'next move is positive',
+  reality: 'What ACTUALLY happened after the horizon elapsed. The ' +
+    'resolver compares the prediction to the realised value, computes ' +
+    'a Brier score (for direction) and a normalised miss-distance (for ' +
+    'magnitude), and writes the row to the calibration archive. Lower ' +
+    'is better. The model only earns credibility when it beats the ' +
+    'climatology + persistence baselines.',
+
+  // Delta grid
+  delta1m: 'Move in the last minute (basis points).',
+  delta5m: 'Move in the last 5 minutes (basis points).',
+  delta1h: 'Move in the last hour (basis points).',
+  delta24h: 'Move in the last 24 hours (basis points).',
+  delta7d: 'Move in the last 7 days (basis points).',
+
+  // AI Judge + AI Commentary
+  judge: 'LLM narrative voice over the forecast. The judge runs on the ' +
+    'cycle\'s biggest mover only — it speaks where it matters.',
+  judgeSyn: 'Synthesis: what the model sees in plain English.',
+  judgeInsight: 'Insight: the non-obvious read that adds information ' +
+    'beyond the raw numbers.',
+  judgePitch: 'Consider: practical framing — not investment advice. ' +
+    'Hedge words mandatory; all claims must trace to cited sources.',
+  commentary: 'Per-token structural read. Cheat-sheet facts (issuer, ' +
+    'backing, audit cadence) plus a live read of where this token sits ' +
+    'inside its expected cone.',
+  citationN: 'Cited source. Click to open the issuer\'s transparency ' +
+    'page in a new tab.',
+
+  // WIRE
+  wire: 'Live event feed from the simulator. 4-letter glyphs tag what ' +
+    'happened. Filter by clicking a glyph in the legend.',
+  pulley: 'Active stage of the current cycle. The four jobs run in ' +
+    'order: PREDICT (model emits forecast) → ATTRIBUTE (gather cited ' +
+    'drivers) → SCORE (compare last cycle\'s prediction to reality) → ' +
+    'NARRATE (LLM judge writes the read).',
+  stagePredict: 'Deterministic forecast. EWMA point estimate + ' +
+    'asymmetric volatility cone. No LLM at this stage.',
+  stageAttribute: 'Gather cited drivers from corpus + observability ' +
+    'events. Each driver carries a trust tier.',
+  stageScore: 'Compare last cycle\'s prediction to reality. Brier for ' +
+    'direction, miss-distance for continuous magnitude.',
+  stageNarrate: 'LLM judge writes synthesis + insight + consider, ' +
+    'grounded in the cited drivers. Largest-mover only.',
+
+  // WIRE glyphs
+  glyphTICK: 'TICK — completed forecast cycle. The pipeline ran end-to-end.',
+  glyphKICK: 'KICK — manual cycle started by the operator (TICK NOW).',
+  glyphRESV: 'RESV — a previously-made prediction has been resolved ' +
+    'against reality and scored.',
+  glyphBRAV: 'BRAV — Brave web-search call made (real outbound HTTP, ' +
+    'counts against daily quota).',
+  glyphCACH: 'CACH — Brave cache hit. No new HTTP call; result served ' +
+    'from the 12h cache.',
+  glyphSKIP: 'SKIP — calm + near-peg, so we skipped the optional Brave ' +
+    'lookup to conserve quota.',
+  glyphDISP: 'DISP — peg sources disagreed beyond the 5bp tolerance. ' +
+    'Recorded but flagged as contested ground truth.',
+  glyphSLNT: 'SLNT — no peg source responded this cycle. We stay silent ' +
+    'rather than fabricating a value.',
+  glyphJUDG: 'JUDG — LLM judge ran for the cycle\'s largest mover.',
+  glyphSCHM: 'SCHM — store schema check. The required migration ' +
+    'columns are present (or honestly reported missing).',
+  glyphSTAL: 'STAL — Brave fetch failed; we served the previous cached ' +
+    'reply with a staleness note.',
+  glyphQHIT: 'QHIT — daily Brave quota reached. Further calls suppressed.',
+  glyphCONF: 'CONF — operator updated the simulator config (cadence, ' +
+    'horizon, symbols).',
+  glyphFORG: 'FORG — LLM emitted a citation index that did not match ' +
+    'the verified list; index stripped before display.',
+  glyphVOIC: 'VOIC — judge output tripped a voice rule (em-dash / weasel ' +
+    'word). Audit-logged and post-stripped.',
+  glyphCAPS: 'CAPS — judge field exceeded the per-field word cap. ' +
+    'Truncated cleanly.',
+  glyphNOLL: 'NOLL — LLM was unavailable this cycle. Deterministic ' +
+    'fallback used; honest "n/a" in the narrative slot.',
+  glyphSAVD: 'SAVD — supply snapshot persisted to the time-series store.',
+  glyphSVAL: 'SVAL — supply snapshot passed validation checks.',
+  glyphPEGD: 'PEGD — peg-source dispute detected (≥5bp disagreement).',
+  glyphPFAL: 'PFAL — failed to persist a peg tick (storage issue). ' +
+    'Cycle continues; archive integrity flagged.',
+  glyphRFAL: 'RFAL — resolver could not enumerate pending predictions ' +
+    'this cycle. Re-tried next tick.',
+
+  // Calibration
+  calibration: 'How well the model\'s probability estimates match reality ' +
+    'over time. Calibration is more honest than "accuracy" — a well-' +
+    'calibrated 70%-confidence prediction should be right ~70% of the time.',
+  brierModel: 'Brier score: mean squared error between predicted ' +
+    'probability and actual outcome. Range [0,1]. Lower is better. ' +
+    'A coin-flip baseline is 0.25.',
+  brierClim: 'Climatology baseline: forecast = the empirical base rate. ' +
+    'The model has to beat this number to earn its keep.',
+  brierPersist: 'Persistence baseline: forecast = the last observed ' +
+    'direction. Tough for a model to beat when nothing is moving.',
+  missDist: 'Normalised miss distance for continuous-magnitude ' +
+    'predictions. How far the actual value fell outside the forecast ' +
+    'band, scaled by the band\'s own width. Lower is better.',
+  reliability: 'Each dot is a probability bucket: x = what the model ' +
+    'said, y = how often that bucket actually came true. Closer to the ' +
+    'diagonal = better calibrated. Dot size = sample count.',
+  histInside50: 'Outcomes that landed inside the model\'s tightest ' +
+    'forecast band (middle 50% of probability mass).',
+  histInside80: 'Outcomes that landed inside the p80 band (80% of ' +
+    'probability mass).',
+  histInside95: 'Outcomes that landed inside the p95 band (95% of ' +
+    'probability mass) — but outside p80.',
+  histOutside: 'Outcomes that fell completely outside the p95 band. ' +
+    'A well-calibrated model should see ~5% land here.',
+
+  // Config
+  cfgTick: 'How often the ticker fires (minutes). Default 10. Lower = ' +
+    'noisier short-horizon archive; higher = sparser data.',
+  cfgHorizon: 'Prediction window (minutes). Default 60. Below 30m is ' +
+    'noisy for most targets; we still render the call but the archive ' +
+    'will reflect the noise.',
+  cfgSymbols: 'Tokens the ticker watches. Comma-separated. Must have a ' +
+    'registered peg source (Coinbase, Kraken, or CoinGecko).',
+  cfgKinds: 'Prediction kinds to enable. "peg deviation" is the live ' +
+    'one; "net flow direction" requires observability flow events.',
+};
+
 // ── Bloomberg ribbon ──────────────────────────────────────────────
 // Two-row scrolling tape. Row A: per-token brand-pill + symbol +
 // value + colored delta + inline sparkline. Row B: peg-deviation
@@ -6644,14 +6836,32 @@ function simBloombergRibbon(tokens) {
 
 function simRibbonCell(t) {
   const brand = t.brand || { accent: '#D4A24A', name: '' };
+  const meta = t.meta || {};
+  const yld = !!meta.yield_bearing;
   const v = t.current_bps;
   const d1m = (t.deltas || {}).d1m;
   const dColor = (d1m == null) ? 'sim-delta-flat'
     : d1m > 0 ? 'sim-delta-up'
     : d1m < 0 ? 'sim-delta-down' : 'sim-delta-flat';
+  const venue = meta.venue_type || 'CEX';
+  const venueTip = venue === 'DEX'
+    ? 'primary liquidity on DEX pools (Curve / Uniswap / Balancer)'
+    : venue === 'MIXED'
+    ? 'meaningful volume on both CEX and DEX'
+    : 'primary liquidity on centralised exchanges';
+  const tip = yld
+    ? t.symbol + ' · YIELD-BEARING (' + venue + '). This token drifts ' +
+      'above $1.00 by design as yield accrues — the bp figure is the ' +
+      'drift, not a depeg. ' + venueTip + '. Click to focus.'
+    : t.symbol + ' · ' + venue + ' · click to focus. Brand pill is a ' +
+      'label only (chart lines stay amber). Value = peg deviation in ' +
+      'bp from $1.00. Delta = move since the previous tick. ' + venueTip + '.';
   const cell = el('div', {
     class: 'sim-ribbon-cell',
     'data-sim-sym': t.symbol,
+    'data-tip': tip,
+    'data-tip-pos': 'below',
+    'data-tip-size': 'lg',
     onclick: 'location.hash="#simulator/' + t.symbol + '"',
   },
     el('span', {
@@ -6659,12 +6869,20 @@ function simRibbonCell(t) {
       style: 'background:' + brand.accent + '; box-shadow: 0 0 6px ' + brand.glow,
     }),
     el('span', { class: 'sim-ribbon-sym' }, t.symbol),
+    yld
+      ? el('span', { class: 'sim-yld-tag',
+          'data-tip': 'Yield-bearing — drifts above $1.00 by design ' +
+            'as yield accrues. Treat the bp value as drift, not depeg.' },
+          'YLD')
+      : null,
     el('span', {
-      class: 'sim-ribbon-val',
+      class: 'sim-ribbon-val' + (yld ? ' sim-ribbon-val-yld' : ''),
       'data-sim-val': '',
       'data-prev': v == null ? '' : String(v),
     }, v == null ? '—'
-       : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'bp'),
+       : yld
+         ? (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'bp drift'
+         : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'bp'),
     el('span', {
       class: 'sim-ribbon-delta ' + dColor,
       'data-sim-delta': 'd1m',
@@ -6686,7 +6904,12 @@ function simPegTrack(t) {
   // Map [-max, max] → [0%, 100%]
   const leftPct = ((clamped + max) / (2 * max)) * 100;
   const brand = t.brand || { accent: '#D4A24A' };
-  return el('div', { class: 'sim-pegtrack' },
+  const tip = v == null
+    ? t.symbol + ' · ' + SIM_TIP.pegTrack + ' No data this cycle.'
+    : t.symbol + ' · ' + SIM_TIP.pegTrack +
+      ' Currently ' + (v >= 0 ? '+' : '') + v.toFixed(2) + 'bp from $1.00.';
+  return el('div', { class: 'sim-pegtrack',
+      'data-tip': tip, 'data-tip-pos': 'below', 'data-tip-size': 'lg' },
     el('span', { class: 'sim-pegtrack-sym' }, t.symbol),
     el('div', { class: 'sim-pegtrack-rail' },
       el('div', { class: 'sim-pegtrack-zero' }),
@@ -6694,7 +6917,6 @@ function simPegTrack(t) {
         class: 'sim-pegtrack-dot',
         style: 'left:' + leftPct.toFixed(1) + '%; background:' +
                brand.accent + '; box-shadow: 0 0 10px ' + brand.glow,
-        title: t.symbol + ' peg deviation ' + v.toFixed(2) + 'bp',
       }) : null));
 }
 
@@ -6714,28 +6936,32 @@ function simStatusBar(feed) {
     else if (ck === 'single') singleCount++;
   }
   return el('section', { class: 'sim-status fade-in' },
-    el('div', { class: 'sim-status-cell' },
-      el('span', { class: 'sim-live-dot sim-live-dot-beat',
-        title: 'Stream is live' }),
+    el('div', { class: 'sim-status-cell', 'data-tip': SIM_TIP.live,
+        'data-tip-pos': 'below' },
+      el('span', { class: 'sim-live-dot sim-live-dot-beat' }),
       el('span', { class: 'sim-status-lbl' }, 'LIVE'),
       el('span', { class: 'sim-status-val' },
         ticker.running ? 'STREAMING' : 'IDLE')),
-    el('div', { class: 'sim-status-cell' },
+    el('div', { class: 'sim-status-cell', 'data-tip': SIM_TIP.lastTick,
+        'data-tip-pos': 'below' },
       el('span', { class: 'sim-status-lbl' }, 'LAST TICK'),
       el('span', { class: 'sim-status-val' }, lastTickAgo)),
-    el('div', { class: 'sim-status-cell' },
+    el('div', { class: 'sim-status-cell', 'data-tip': SIM_TIP.cadence,
+        'data-tip-pos': 'below' },
       el('span', { class: 'sim-status-lbl' }, 'CADENCE'),
       el('span', { class: 'sim-status-val' },
         (cfg.tick_interval_minutes || 10) + 'm · ' +
         (cfg.horizon_minutes || 60) + 'm horizon')),
-    el('div', { class: 'sim-status-cell' },
+    el('div', { class: 'sim-status-cell', 'data-tip': SIM_TIP.pegSources,
+        'data-tip-pos': 'below', 'data-tip-size': 'lg' },
       el('span', { class: 'sim-status-lbl' }, 'PEG SOURCES'),
       el('span', { class: 'sim-status-val' },
         sources.map(s => s.name).join('+') || 'none',
         el('span', { style: 'color:var(--muted-2); margin-left:6px' },
           '· ' + agreedCount + '✓ ' + singleCount + '○ ' +
           disputedCount + '✕'))),
-    el('div', { class: 'sim-status-cell' },
+    el('div', { class: 'sim-status-cell', 'data-tip': SIM_TIP.braveQuota,
+        'data-tip-pos': 'below' },
       el('span', { class: 'sim-status-lbl' }, 'BRAVE QUOTA'),
       el('span', { class: 'sim-status-val', 'data-sim-quota': '' },
         String(q.calls || 0) + ' / ' + String(q.cap || '?'))));
@@ -6766,8 +6992,13 @@ function simTokenRail(tokens, focused) {
   const liveCount = sorted.filter(t => t.current_bps != null).length;
   return el('aside', { class: 'sim-rail-left' },
     el('div', { class: 'sim-rail-head' },
-      el('span', { class: 'sim-rail-title' }, 'INSTRUMENTS'),
-      el('span', { class: 'sim-rail-count' },
+      el('span', { class: 'sim-rail-title tip',
+        'data-tip': SIM_TIP.railTitle, 'data-tip-pos': 'below',
+        'data-tip-size': 'lg' }, 'INSTRUMENTS'),
+      el('span', { class: 'sim-rail-count',
+        'data-tip': liveCount + ' tokens reporting · ' +
+          (tokens.length - liveCount) + ' with no data this cycle',
+        'data-tip-pos': 'below' },
         String(liveCount) + ' / ' + String(tokens.length))),
     el('div', { class: 'sim-rail-list' },
       sorted.map(t => simRailRow(t, focused && t.symbol === focused.symbol))));
@@ -6775,22 +7006,44 @@ function simTokenRail(tokens, focused) {
 
 function simRailRow(t, isFocused) {
   const brand = t.brand || { accent: '#D4A24A', name: '' };
+  const meta = t.meta || {};
+  const yld = !!meta.yield_bearing;
   const v = t.current_bps;
   const d1m = (t.deltas || {}).d1m;
   const noData = v == null;
   const dColor = (d1m == null) ? 'sim-delta-flat'
     : d1m > 0 ? 'sim-delta-up'
     : d1m < 0 ? 'sim-delta-down' : 'sim-delta-flat';
+  const venue = meta.venue_type || 'CEX';
+  const venueLine = ' · ' + venue + (
+    venue === 'DEX' ? ' (DEX-native)'
+    : venue === 'MIXED' ? ' (CEX+DEX)'
+    : ' (CEX-listed)');
+  const rowTip = noData
+    ? t.symbol + ' · ' + (brand.name || '') + venueLine +
+      ' · no peg data this cycle. Click to focus.'
+    : yld
+    ? t.symbol + ' · ' + (brand.name || '') + venueLine +
+      ' · YIELD-BEARING: ' + (v >= 0 ? '+' : '') + Number(v).toFixed(2) +
+      'bp is the design drift above $1.00, not a depeg. Click to focus.'
+    : t.symbol + ' · ' + (brand.name || '') + venueLine +
+      ' · ' + (v >= 0 ? '+' : '') + Number(v).toFixed(2) +
+      'bp from $1.00. Click to focus this token in the hero pane.';
   const row = el('div', {
     class: 'sim-rail-row ' + (isFocused ? 'sim-rail-row-focused' : '') +
       (noData ? ' sim-rail-row-empty' : ''),
     'data-sim-sym': t.symbol,
+    'data-tip': rowTip,
+    'data-tip-pos': 'right',
+    'data-tip-size': 'lg',
     onclick: 'location.hash="#simulator/' + t.symbol + '"',
   },
     el('div', { class: 'sim-rail-bar',
       style: 'background:' + brand.accent }),
     el('div', { class: 'sim-rail-meta' },
-      el('div', { class: 'sim-rail-sym' }, t.symbol),
+      el('div', { class: 'sim-rail-sym' }, t.symbol,
+        yld ? el('span', { class: 'sim-yld-tag sim-yld-tag-inline' },
+          'YLD') : null),
       el('div', { class: 'sim-rail-name' }, brand.name || '—')),
     el('div', { class: 'sim-rail-spark' },
       sparklineSvg(t.sparkline || [], brand.accent, 70, 22)),
@@ -6815,23 +7068,50 @@ function simHeroPane(focused, feed) {
       el('p', {}, 'Press BURST ×6 to populate the archive.'));
   }
   const brand = focused.brand || { accent: '#D4A24A', name: '' };
+  const fMeta = focused.meta || {};
+  const fYld = !!fMeta.yield_bearing;
+  const fVenue = fMeta.venue_type || 'CEX';
   return el('main', { class: 'sim-hero' },
     el('div', { class: 'sim-hero-head',
       style: 'border-left-color:' + brand.accent },
       el('div', { class: 'sim-hero-headline' },
         el('span', { class: 'sim-hero-sym',
+          'data-tip': SIM_TIP.heroSym, 'data-tip-pos': 'below',
           style: 'color:' + brand.accent }, focused.symbol),
         el('span', { class: 'sim-hero-name' }, brand.name || ''),
+        el('span', { class: 'sim-hero-venue tip',
+          'data-tip': fVenue === 'DEX'
+            ? 'DEX-native — primary liquidity on Curve / Uniswap / Balancer.'
+            : fVenue === 'MIXED'
+            ? 'Mixed — meaningful volume on both CEX and DEX.'
+            : 'CEX-listed — primary liquidity on centralised exchanges.',
+          'data-tip-pos': 'below' }, fVenue),
+        fYld
+          ? el('span', { class: 'sim-yld-tag sim-yld-tag-hero',
+              'data-tip': 'Yield-bearing. The bp figure below is the ' +
+                'design drift above $1.00 as yield accrues, not a depeg.',
+              'data-tip-pos': 'below', 'data-tip-size': 'lg' },
+              'YIELD-BEARING')
+          : null,
         focused.latest_prediction && focused.latest_prediction.confidence_word
-          ? el('span', { class: 'sim-hero-conf' },
+          ? el('span', { class: 'sim-hero-conf',
+              'data-tip': SIM_TIP.heroConf, 'data-tip-pos': 'below',
+              'data-tip-size': 'lg' },
               focused.latest_prediction.confidence_word.replace(/_/g, ' '))
           : null),
       el('div', { class: 'sim-hero-value' },
         el('span', {
           class: 'sim-hero-val-big ' + (focused.current_bps == null ? ''
+            : fYld ? 'sim-hero-val-yld'
             : focused.current_bps > 0 ? 'sim-delta-up'
             : focused.current_bps < 0 ? 'sim-delta-down' : ''),
           'data-sim-sym': focused.symbol,
+          'data-tip': fYld
+            ? 'NAV drift above $1.00. This token is yield-bearing — ' +
+              'the figure reflects accrued return, not a peg violation.'
+            : SIM_TIP.heroValBig,
+          'data-tip-pos': 'below',
+          'data-tip-size': 'lg',
         },
           el('span', { 'data-sim-val': '',
             'data-prev': focused.current_bps == null ? ''
@@ -6840,7 +7120,7 @@ function simHeroPane(focused, feed) {
               : (focused.current_bps >= 0 ? '+' : '') +
                 Number(focused.current_bps).toFixed(2) + 'bp')),
         el('span', { class: 'sim-hero-val-sub' },
-          'peg deviation · last tick'))),
+          fYld ? 'NAV drift · last tick' : 'peg deviation · last tick'))),
     simDeltaGrid(focused),
     simHeroChart(focused),
     simHeroJudge(focused),
@@ -6860,7 +7140,9 @@ function simHeroCommentary(focused) {
     'data-sym': focused.symbol,
   },
     el('div', { class: 'sim-hero-commentary-kick' },
-      el('span', { class: 'sim-hero-commentary-tag' }, 'AI COMMENTARY'),
+      el('span', { class: 'sim-hero-commentary-tag tip',
+        'data-tip': SIM_TIP.commentary, 'data-tip-size': 'lg' },
+        'AI COMMENTARY'),
       el('span', { class: 'sim-hero-commentary-meta' },
         'grounded in cited sources')),
     el('div', { class: 'sim-hero-commentary-body' },
@@ -6901,6 +7183,20 @@ async function loadCommentary(wrap, symbol) {
       para.innerHTML = txt;
       body.append(para);
     }
+    // P&L lens — short, hedged framing on what holders gain or lose.
+    // Renders as a distinct sub-section so investors see the risk
+    // posture without having to read the whole body.
+    if (data.pl_lens) {
+      const pl = el('div', { class: 'sim-commentary-pl',
+        'data-tip': 'Path to profitability or loss — hedged framing on ' +
+          'what holders gain or risk. Not investment advice.',
+        'data-tip-size': 'lg' });
+      pl.append(el('span', { class: 'sim-commentary-pl-tag' },
+        'P&L LENS'));
+      pl.append(el('span', { class: 'sim-commentary-pl-body' },
+        data.pl_lens));
+      body.append(pl);
+    }
     if (data.citations && data.citations.length) {
       const cites = el('div', { class: 'sim-commentary-cites' });
       cites.append(el('span', { class: 'sim-commentary-cites-lbl' },
@@ -6914,7 +7210,7 @@ async function loadCommentary(wrap, symbol) {
       body.append(cites);
     }
     body.append(el('div', { class: 'sim-commentary-disclaimer' },
-      'AI-generated summary. Verify before acting.'));
+      'AI-generated summary. Not investment advice — verify before acting.'));
   } catch (e) {
     const body = wrap.querySelector('.sim-hero-commentary-body');
     if (body) body.textContent = 'commentary unavailable.';
@@ -6924,11 +7220,11 @@ async function loadCommentary(wrap, symbol) {
 // 5-cell delta grid for the focused token. 1m / 5m / 1h / 24h / 7d
 function simDeltaGrid(t) {
   const cells = [
-    { lbl: '1M',  k: 'd1m'  },
-    { lbl: '5M',  k: 'd5m'  },
-    { lbl: '1H',  k: 'd1h'  },
-    { lbl: '24H', k: 'd24h' },
-    { lbl: '7D',  k: 'd7d'  },
+    { lbl: '1M',  k: 'd1m',  tip: SIM_TIP.delta1m  },
+    { lbl: '5M',  k: 'd5m',  tip: SIM_TIP.delta5m  },
+    { lbl: '1H',  k: 'd1h',  tip: SIM_TIP.delta1h  },
+    { lbl: '24H', k: 'd24h', tip: SIM_TIP.delta24h },
+    { lbl: '7D',  k: 'd7d',  tip: SIM_TIP.delta7d  },
   ];
   return el('div', { class: 'sim-delta-grid' },
     cells.map(c => {
@@ -6938,7 +7234,8 @@ function simDeltaGrid(t) {
         : v < 0 ? 'sim-delta-down' : 'sim-delta-flat';
       const glyph = (v == null) ? '◇'
         : v > 0 ? '▲' : v < 0 ? '▼' : '◇';
-      return el('div', { class: 'sim-delta-cell ' + cls },
+      return el('div', { class: 'sim-delta-cell ' + cls,
+          'data-tip': c.tip, 'data-tip-pos': 'below' },
         el('div', { class: 'sim-delta-lbl' }, c.lbl),
         el('div', { class: 'sim-delta-val' },
           el('span', { class: 'sim-delta-glyph' }, glyph),
@@ -7015,6 +7312,10 @@ function simHeroChart(t) {
   parts.push(`<circle cx="${x(Date.parse(last.t))}" cy="${y(last.v)}" r="3" fill="${brand.accent}" class="sim-hero-pulse"/>`);
   const wrap = document.createElement('div');
   wrap.className = 'sim-hero-chart';
+  wrap.setAttribute('data-tip', SIM_TIP.heroChart + ' Bands inside the ' +
+    'cone: tighter = p50 (50% likely), wider = p95 (95% likely).');
+  wrap.setAttribute('data-tip-pos', 'below');
+  wrap.setAttribute('data-tip-size', 'lg');
   wrap.innerHTML = `<svg class="sim-hero-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
   return wrap;
 }
@@ -7023,44 +7324,74 @@ function simHeroJudge(t) {
   const p = t.latest_prediction;
   if (!p || (!p.judge_synthesis && !p.judge_insight && !p.judge_pitch)) {
     return el('div', { class: 'sim-hero-judge sim-hero-judge-empty' },
-      el('span', { class: 'sim-hero-judge-tag' }, 'AI JUDGE'),
-      ' Awaiting LLM synthesis on the next tick.');
+      el('span', { class: 'sim-hero-judge-tag tip',
+        'data-tip': SIM_TIP.judge, 'data-tip-size': 'lg' }, 'AI JUDGE'),
+      el('span', { class: 'sim-hero-judge-empty-msg' },
+        ' Reserved for the cycle\'s biggest mover. ',
+        t.symbol, ' will get a synthesis when it tops the daily delta list. ',
+        el('span', { class: 'sim-hero-judge-empty-sub' },
+          'See AI COMMENTARY below for the persistent structural read.')));
   }
   return el('div', { class: 'sim-hero-judge' },
-    el('div', { class: 'sim-hero-judge-tag' }, 'AI JUDGE'),
+    el('div', { class: 'sim-hero-judge-tag tip',
+      'data-tip': SIM_TIP.judge, 'data-tip-size': 'lg' }, 'AI JUDGE'),
     p.judge_synthesis
-      ? el('div', { class: 'sim-hero-judge-syn' }, p.judge_synthesis)
+      ? el('div', { class: 'sim-hero-judge-syn',
+          'data-tip': SIM_TIP.judgeSyn, 'data-tip-size': 'lg' },
+          p.judge_synthesis)
       : null,
     el('div', { class: 'sim-hero-judge-row' },
       p.judge_insight
         ? el('div', { class: 'sim-hero-judge-insight' },
-            el('span', { class: 'sim-hero-judge-sub' }, 'INSIGHT'),
+            el('span', { class: 'sim-hero-judge-sub tip',
+              'data-tip': SIM_TIP.judgeInsight, 'data-tip-size': 'lg' },
+              'INSIGHT'),
             p.judge_insight)
         : null,
       p.judge_pitch
         ? el('div', { class: 'sim-hero-judge-pitch' },
-            el('span', { class: 'sim-hero-judge-sub' }, 'CONSIDER'),
+            el('span', { class: 'sim-hero-judge-sub tip',
+              'data-tip': SIM_TIP.judgePitch, 'data-tip-size': 'lg' },
+              'CONSIDER'),
             p.judge_pitch)
         : null));
 }
 
 // RIGHT RAIL — THE WIRE: streaming event feed
 function simWire(feed) {
+  const stageTips = {
+    PREDICT:   SIM_TIP.stagePredict,
+    ATTRIBUTE: SIM_TIP.stageAttribute,
+    SCORE:     SIM_TIP.stageScore,
+    NARRATE:   SIM_TIP.stageNarrate,
+  };
+  const rows = SIM_VIEW.wireRows || [];
+  // Group consecutive same-glyph events into a single collapsed row
+  // so a cycle of N CACH events becomes "CACH ×N · symbols X, Y, Z"
+  // instead of N lookalike rows. Order preserved (newest first).
+  const grouped = groupWireRows(rows);
+  // Activity legend at the top: tally by glyph for the visible buffer.
+  const legend = buildWireLegend(rows);
   return el('aside', { class: 'sim-rail-right' },
     el('div', { class: 'sim-wire-head' },
-      el('h3', { class: 'sim-wire-title' }, 'THE WIRE'),
+      el('h3', { class: 'sim-wire-title tip',
+        'data-tip': SIM_TIP.wire, 'data-tip-size': 'lg' }, 'THE WIRE'),
       el('span', { class: 'sim-wire-sub' },
         'live · ticker + judge + resolutions')),
+    legend,
     el('div', { class: 'sim-wire-rows' },
-      (SIM_VIEW.wireRows || []).map(renderWireRow)),
+      grouped.map(renderWireRow)),
     el('div', { class: 'sim-wire-foot' },
-      el('span', { class: 'sim-wire-foot-lbl' }, 'PIPELINE'),
+      el('span', { class: 'sim-wire-foot-lbl tip',
+        'data-tip': SIM_TIP.pulley, 'data-tip-size': 'lg' }, 'PIPELINE'),
       el('div', { class: 'sim-pulley-vertical' },
         el('div', { class: 'sim-pulley-vrail' }),
         el('div', { class: 'sim-pulley-marker',
           'data-seq': String(SIM_VIEW.pulseSeq) }),
         ['PREDICT', 'ATTRIBUTE', 'SCORE', 'NARRATE'].map(s =>
-          el('div', { class: 'sim-pulley-vstation' },
+          el('div', { class: 'sim-pulley-vstation',
+              'data-tip': stageTips[s], 'data-tip-pos': 'right',
+              'data-tip-size': 'lg' },
             el('div', { class: 'sim-pulley-dot' }),
             el('span', { class: 'sim-pulley-label' }, s))))));
 }
@@ -7070,57 +7401,177 @@ function renderWireRow(ev) {
   const time = ev.ts ? new Date(ev.ts).toISOString().slice(11, 19) : '--:--:--';
   const levelCls = ev.level === 'warn' ? 'sim-wire-warn'
     : ev.level === 'error' ? 'sim-wire-error' : '';
-  return el('div', { class: 'sim-wire-row ' + levelCls,
-      'data-ts': ev.ts || '' },
+  const isGroup = ev._group_count && ev._group_count > 1;
+  const display = isGroup
+    ? humaniseGroupSummary(ev)
+    : humaniseSummary(ev);
+  return el('div', { class: 'sim-wire-row ' + levelCls +
+      (isGroup ? ' sim-wire-row-group' : ''),
+      'data-ts': ev.ts || '',
+      'data-tip': glyph.tip + (display.tip ? '\n\n' + display.tip : ''),
+      'data-tip-pos': 'right',
+      'data-tip-size': 'lg' },
     el('span', { class: 'sim-wire-time' }, time),
     el('span', { class: 'sim-wire-glyph ' + glyph.cls }, glyph.label),
-    ev.symbol
-      ? el('span', { class: 'sim-wire-sym' }, ev.symbol)
-      : null,
-    el('span', { class: 'sim-wire-msg' }, ev.summary || ev.kind || ''));
+    isGroup
+      ? el('span', { class: 'sim-wire-count' }, '×' + ev._group_count)
+      : (ev.symbol
+          ? el('span', { class: 'sim-wire-sym' }, ev.symbol)
+          : null),
+    el('span', { class: 'sim-wire-msg' }, display.text));
+}
+
+// Collapse consecutive events sharing the same 4-letter glyph into a
+// single row with a count + symbol list. Order preserved (newest first
+// as the buffer arrives).
+function groupWireRows(rows) {
+  if (!rows || rows.length === 0) return [];
+  const out = [];
+  let cur = null;
+  for (const ev of rows) {
+    const g = wireGlyphFor(ev.kind);
+    if (cur && cur._glyph === g.label && cur.kind === ev.kind) {
+      cur._group_count = (cur._group_count || 1) + 1;
+      if (ev.symbol && !cur._group_symbols.includes(ev.symbol)) {
+        cur._group_symbols.push(ev.symbol);
+      }
+      // Keep the newest timestamp at the top
+      if (!cur.ts || (ev.ts && ev.ts > cur.ts)) cur.ts = ev.ts;
+      continue;
+    }
+    cur = Object.assign({}, ev, {
+      _glyph: g.label,
+      _group_count: 1,
+      _group_symbols: ev.symbol ? [ev.symbol] : [],
+    });
+    out.push(cur);
+  }
+  return out;
+}
+
+// Humanise event summary text. Backend writes machine-y summaries like
+// 'brave cache hit · age 26464s' — turn that into 'Brave cache hit
+// (7h old)'. The display string is the user-facing copy; the original
+// summary still appears in the tooltip via `tip`.
+function humaniseSummary(ev) {
+  const raw = ev.summary || ev.kind || '';
+  if (!raw) return { text: '', tip: '' };
+  // Replace 'age 1234s' with 'X min/h/d ago'
+  let txt = raw.replace(/age\s+(\d+)s/gi, (m, s) => {
+    const v = Number(s);
+    if (v < 60)   return v + 's old';
+    if (v < 3600) return Math.round(v / 60) + 'm old';
+    if (v < 86400) return Math.round(v / 3600) + 'h old';
+    return Math.round(v / 86400) + 'd old';
+  });
+  // Title-case the leading word.
+  txt = txt.replace(/^([a-z])/, (m) => m.toUpperCase());
+  return { text: txt, tip: raw };
+}
+
+function humaniseGroupSummary(ev) {
+  const base = humaniseSummary(ev);
+  const syms = ev._group_symbols || [];
+  if (syms.length === 0) return base;
+  const first3 = syms.slice(0, 3).join(', ');
+  const rest = syms.length > 3 ? ` +${syms.length - 3} more` : '';
+  return {
+    text: `${first3}${rest} · ${base.text}`,
+    tip: `${ev._group_count} events grouped: ${syms.join(', ')}\n\n${base.tip}`,
+  };
+}
+
+// Activity legend strip — tally of recent glyphs so the operator sees
+// at a glance what kinds of events are dominating the cycle.
+function buildWireLegend(rows) {
+  if (!rows || rows.length === 0) return null;
+  const counts = {};
+  const cls = {};
+  for (const ev of rows) {
+    const g = wireGlyphFor(ev.kind);
+    counts[g.label] = (counts[g.label] || 0) + 1;
+    cls[g.label] = g.cls;
+  }
+  const entries = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8);
+  return el('div', { class: 'sim-wire-legend',
+    'data-tip': 'Tally of recent event glyphs. The 8 most frequent ' +
+      'glyphs across the last 40 events. Click an entry to filter ' +
+      '(not yet wired).', 'data-tip-size': 'lg' },
+    el('span', { class: 'sim-wire-legend-lbl' }, 'ACTIVITY'),
+    entries.map(([label, n]) =>
+      el('span', { class: 'sim-wire-legend-chip ' + (cls[label] || '') },
+        el('span', { class: 'sim-wire-legend-glyph' }, label),
+        el('span', { class: 'sim-wire-legend-n' }, '×' + n))));
 }
 
 function wireGlyphFor(kind) {
-  if (!kind) return { label: 'EVNT', cls: '' };
+  if (!kind) return { label: 'EVNT', cls: '', tip: 'Untagged event.' };
   // Specific kinds first; substring matchers below.
   const map = {
-    'movement.ticker.cycle':       { label: 'TICK', cls: 'sim-wire-tick' },
-    'movement.tick.manual':        { label: 'KICK', cls: 'sim-wire-tick' },
-    'movement.resolver.graded':    { label: 'RESV', cls: 'sim-wire-resv' },
-    'movement.resolver.list_failed': { label: 'RFAL', cls: 'sim-wire-warn' },
-    'movement.brave.fetched':      { label: 'BRAV', cls: 'sim-wire-brav' },
-    'movement.brave.cache_hit':    { label: 'CACH', cls: 'sim-wire-cach' },
-    'movement.brave.skip_calm':    { label: 'SKIP', cls: 'sim-wire-skip' },
-    'movement.brave.quota_hit':    { label: 'QHIT', cls: 'sim-wire-warn' },
+    'movement.ticker.cycle':       { label: 'TICK', cls: 'sim-wire-tick',
+                                     tip: SIM_TIP.glyphTICK },
+    'movement.tick.manual':        { label: 'KICK', cls: 'sim-wire-tick',
+                                     tip: SIM_TIP.glyphKICK },
+    'movement.resolver.graded':    { label: 'RESV', cls: 'sim-wire-resv',
+                                     tip: SIM_TIP.glyphRESV },
+    'movement.resolver.list_failed': { label: 'RFAL', cls: 'sim-wire-warn',
+                                     tip: SIM_TIP.glyphRFAL },
+    'movement.brave.fetched':      { label: 'BRAV', cls: 'sim-wire-brav',
+                                     tip: SIM_TIP.glyphBRAV },
+    'movement.brave.cache_hit':    { label: 'CACH', cls: 'sim-wire-cach',
+                                     tip: SIM_TIP.glyphCACH },
+    'movement.brave.skip_calm':    { label: 'SKIP', cls: 'sim-wire-skip',
+                                     tip: SIM_TIP.glyphSKIP },
+    'movement.brave.quota_hit':    { label: 'QHIT', cls: 'sim-wire-warn',
+                                     tip: SIM_TIP.glyphQHIT },
     'movement.brave.fetch_failed_served_stale':
-                                   { label: 'STAL', cls: 'sim-wire-warn' },
+                                   { label: 'STAL', cls: 'sim-wire-warn',
+                                     tip: SIM_TIP.glyphSTAL },
     'movement.peg_tick.dispute_persisted':
-                                   { label: 'DISP', cls: 'sim-wire-disp' },
+                                   { label: 'DISP', cls: 'sim-wire-disp',
+                                     tip: SIM_TIP.glyphDISP },
     'movement.peg_tick.persist_failed':
-                                   { label: 'PFAL', cls: 'sim-wire-warn' },
+                                   { label: 'PFAL', cls: 'sim-wire-warn',
+                                     tip: SIM_TIP.glyphPFAL },
     'movement.judge.citation_forged':
-                                   { label: 'FORG', cls: 'sim-wire-warn' },
+                                   { label: 'FORG', cls: 'sim-wire-warn',
+                                     tip: SIM_TIP.glyphFORG },
     'movement.judge.voice_rule_triggered':
-                                   { label: 'VOIC', cls: 'sim-wire-judg' },
+                                   { label: 'VOIC', cls: 'sim-wire-judg',
+                                     tip: SIM_TIP.glyphVOIC },
     'movement.judge.length_cap_triggered':
-                                   { label: 'CAPS', cls: 'sim-wire-judg' },
+                                   { label: 'CAPS', cls: 'sim-wire-judg',
+                                     tip: SIM_TIP.glyphCAPS },
     'movement.judge.llm_unavailable':
-                                   { label: 'NOLL', cls: 'sim-wire-warn' },
-    'movement.config.updated':     { label: 'CONF', cls: 'sim-wire-judg' },
-    'peg_price.dispute':           { label: 'PEGD', cls: 'sim-wire-disp' },
+                                   { label: 'NOLL', cls: 'sim-wire-warn',
+                                     tip: SIM_TIP.glyphNOLL },
+    'movement.config.updated':     { label: 'CONF', cls: 'sim-wire-judg',
+                                     tip: SIM_TIP.glyphCONF },
+    'peg_price.dispute':           { label: 'PEGD', cls: 'sim-wire-disp',
+                                     tip: SIM_TIP.glyphPEGD },
     'peg_price.no_source_responded':
-                                   { label: 'SLNT', cls: 'sim-wire-warn' },
-    'store.schema_missing':        { label: 'SCHM', cls: 'sim-wire-warn' },
-    'snapshot.validated':          { label: 'SVAL', cls: 'sim-wire-cach' },
-    'snapshot.saved':              { label: 'SAVD', cls: 'sim-wire-tick' },
+                                   { label: 'SLNT', cls: 'sim-wire-warn',
+                                     tip: SIM_TIP.glyphSLNT },
+    'store.schema_missing':        { label: 'SCHM', cls: 'sim-wire-warn',
+                                     tip: SIM_TIP.glyphSCHM },
+    'snapshot.validated':          { label: 'SVAL', cls: 'sim-wire-cach',
+                                     tip: SIM_TIP.glyphSVAL },
+    'snapshot.saved':              { label: 'SAVD', cls: 'sim-wire-tick',
+                                     tip: SIM_TIP.glyphSAVD },
   };
   if (map[kind]) return map[kind];
   // Fallback heuristics.
-  if (kind.includes('resolver')) return { label: 'RESV', cls: 'sim-wire-resv' };
-  if (kind.includes('brave'))    return { label: 'BRAV', cls: 'sim-wire-brav' };
-  if (kind.includes('judge'))    return { label: 'JUDG', cls: 'sim-wire-judg' };
-  if (kind.includes('peg'))      return { label: 'PEG ', cls: 'sim-wire-disp' };
-  return { label: 'EVNT', cls: '' };
+  if (kind.includes('resolver')) return { label: 'RESV', cls: 'sim-wire-resv',
+                                          tip: SIM_TIP.glyphRESV };
+  if (kind.includes('brave'))    return { label: 'BRAV', cls: 'sim-wire-brav',
+                                          tip: SIM_TIP.glyphBRAV };
+  if (kind.includes('judge'))    return { label: 'JUDG', cls: 'sim-wire-judg',
+                                          tip: 'JUDG — LLM judge stage event.' };
+  if (kind.includes('peg'))      return { label: 'PEG ', cls: 'sim-wire-disp',
+                                          tip: 'Peg-source event. See PEG SOURCES status cell for details.' };
+  return { label: 'EVNT', cls: '', tip: 'Generic pipeline event.' };
 }
 
 // Inline sparkline SVG. Returns a DOM element. Brand-colored,
@@ -7165,33 +7616,43 @@ function simCalibrationPanel(calibration) {
         'per probability band; the archive fills as the ticker runs.'));
   }
   return el('section', { class: 'sim-calibration fade-in' },
-    el('h2', { class: 'sim-calibration-head' }, 'Calibration archive'),
+    el('h2', { class: 'sim-calibration-head tip',
+      'data-tip': SIM_TIP.calibration, 'data-tip-size': 'lg' },
+      'Calibration archive'),
     el('p', { class: 'sim-calibration-body' },
       el('b', {}, String(count)),
       ' prediction',
       count === 1 ? '' : 's',
       ' resolved. ',
-      'Brier and CRPS are strictly proper scoring rules — lower is ',
-      'better. The model only earns credibility when its Brier ',
-      'beats the climatology baseline (0.25).'),
+      'Brier and miss-distance are strictly proper scoring rules — ',
+      'lower is better. The model only earns credibility when its ',
+      'Brier beats the climatology baseline (0.25).'),
     el('div', { class: 'sim-cal-grid' },
       simCalMetric('BRIER (model)', c.brier_mean,
-        'Lower is better. Range [0,1].'),
+        'Lower is better. Range [0,1].', SIM_TIP.brierModel),
       simCalMetric('BRIER (climatology)', c.baseline_climatology_brier_mean,
         'Baseline: empirical base rate (falls back to 50/50 ' +
-        'when archive is thin).'),
+        'when archive is thin).', SIM_TIP.brierClim),
       simCalMetric('BRIER (persistence)', c.baseline_persistence_brier_mean,
-        'Baseline: forecast = last observed direction.'),
+        'Baseline: forecast = last observed direction.',
+        SIM_TIP.brierPersist),
       simCalMetric('CRPS (model)', c.crps_mean,
-        'Continuous Ranked Probability Score.')),
+        'Normalised miss-distance (continuous targets).',
+        SIM_TIP.missDist)),
     simReliabilityBins(c.reliability_bins || []),
     simOutcomeHistogram(c.outcome_histogram || {}));
 }
 
-function simCalMetric(label, value, sub) {
+function simCalMetric(label, value, sub, tip) {
   const display = (value === null || value === undefined)
     ? '—' : Number(value).toFixed(3);
-  return el('div', { class: 'sim-cal-metric' },
+  const attrs = { class: 'sim-cal-metric' };
+  if (tip) {
+    attrs['data-tip'] = tip;
+    attrs['data-tip-pos'] = 'below';
+    attrs['data-tip-size'] = 'lg';
+  }
+  return el('div', attrs,
     el('div', { class: 'sim-cal-metric-label' }, label),
     el('div', { class: 'sim-cal-metric-value' }, display),
     el('div', { class: 'sim-cal-metric-sub' }, sub));
@@ -7246,7 +7707,9 @@ function simReliabilityBins(bins) {
     ')" text-anchor="middle">empirical</text>');
   svg.innerHTML = parts.join('');
   return el('div', { class: 'sim-rel-wrap' },
-    el('div', { class: 'sim-rel-kick' }, 'RELIABILITY DIAGRAM'),
+    el('div', { class: 'sim-rel-kick tip',
+      'data-tip': SIM_TIP.reliability, 'data-tip-size': 'lg' },
+      'RELIABILITY DIAGRAM'),
     svg,
     el('div', { class: 'sim-rel-note' },
       'Dot size = sample count. Closer to the diagonal = better ',
@@ -7256,12 +7719,27 @@ function simReliabilityBins(bins) {
 function simOutcomeHistogram(hist) {
   const order = ['inside_p50', 'inside_p80', 'inside_p95', 'outside',
     'hit', 'partial', 'miss'];
+  const tipFor = {
+    inside_p50: SIM_TIP.histInside50,
+    inside_p80: SIM_TIP.histInside80,
+    inside_p95: SIM_TIP.histInside95,
+    outside:    SIM_TIP.histOutside,
+    hit:        'Direction predicted correctly with high confidence.',
+    partial:    'Direction predicted correctly but with hedged confidence.',
+    miss:       'Direction predicted incorrectly.',
+  };
   const total = Object.values(hist).reduce((a, b) => a + b, 0) || 1;
   return el('div', { class: 'sim-hist' },
-    el('div', { class: 'sim-hist-kick' }, 'OUTCOME HISTOGRAM'),
+    el('div', { class: 'sim-hist-kick tip',
+      'data-tip': 'Where resolved predictions landed relative to ' +
+        'the model\'s forecast cone. A well-calibrated p95 band ' +
+        'should contain ~95% of outcomes.',
+      'data-tip-size': 'lg' }, 'OUTCOME HISTOGRAM'),
     el('div', { class: 'sim-hist-row' },
       order.filter(k => hist[k] > 0).map(k =>
-        el('div', { class: 'sim-hist-bucket sim-hist-' + k },
+        el('div', { class: 'sim-hist-bucket sim-hist-' + k,
+            'data-tip': tipFor[k] || k, 'data-tip-pos': 'below',
+            'data-tip-size': 'lg' },
           el('div', { class: 'sim-hist-bar', style: 'width:' +
               Math.max(20, (hist[k] / total) * 200) + 'px' }),
           el('div', { class: 'sim-hist-lbl' },
@@ -7339,16 +7817,24 @@ function simConfigPanel(config) {
       'targets; we render the call honestly but the calibration ',
       'archive will reflect the noise.'),
     el('div', { class: 'sim-config-grid' },
-      el('label', { class: 'sim-config-cell' },
+      el('label', { class: 'sim-config-cell',
+          'data-tip': SIM_TIP.cfgTick, 'data-tip-pos': 'below',
+          'data-tip-size': 'lg' },
         el('span', { class: 'sim-config-lbl' }, 'TICK INTERVAL (min)'),
         tick),
-      el('label', { class: 'sim-config-cell' },
+      el('label', { class: 'sim-config-cell',
+          'data-tip': SIM_TIP.cfgHorizon, 'data-tip-pos': 'below',
+          'data-tip-size': 'lg' },
         el('span', { class: 'sim-config-lbl' }, 'PREDICTION HORIZON (min)'),
         horizon),
-      el('label', { class: 'sim-config-cell sim-config-cell-wide' },
+      el('label', { class: 'sim-config-cell sim-config-cell-wide',
+          'data-tip': SIM_TIP.cfgSymbols, 'data-tip-pos': 'below',
+          'data-tip-size': 'lg' },
         el('span', { class: 'sim-config-lbl' }, 'SYMBOLS'),
         symbols),
-      el('div', { class: 'sim-config-cell' },
+      el('div', { class: 'sim-config-cell',
+          'data-tip': SIM_TIP.cfgKinds, 'data-tip-pos': 'below',
+          'data-tip-size': 'lg' },
         el('span', { class: 'sim-config-lbl' }, 'KINDS'),
         el('label', { class: 'sim-config-kind' }, peg,
           el('span', {}, 'peg deviation')),

@@ -230,12 +230,37 @@ def run_attestation_gap_sweep() -> dict[str, int]:
 
 
 # ── daemon loop ───────────────────────────────────────────────────────
-def _loop() -> None:
-    """The forever-loop body. Sleep first so startup is never delayed.
+def _last_sweep_at() -> float:
+    """Unix seconds of the last completed canary sweep, or 0.0 if
+    unknown. Persisted in a sibling file next to HEALTH_STATE_PATH so
+    restart-frequent development cycles can still get a sweep when
+    one is genuinely due, while production stampede protection holds.
+    """
+    p = HEALTH_STATE_PATH.parent / "health_last_sweep.txt"
+    try:
+        return float(p.read_text(encoding="utf-8").strip() or "0")
+    except (OSError, ValueError):
+        return 0.0
 
-    A sleep-then-work shape (vs work-then-sleep) means a fast process
-    restart loop can't trigger a canary stampede against regulators —
-    the thread always waits one full interval before its first sweep.
+
+def _mark_sweep_done(ts: float | None = None) -> None:
+    p = HEALTH_STATE_PATH.parent / "health_last_sweep.txt"
+    try:
+        p.write_text(str(ts or time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _loop() -> None:
+    """The forever-loop body. Sleep first so startup is never delayed,
+    EXCEPT when the last sweep is older than the interval — then we run
+    immediately so a restart-frequent dev cycle doesn't perpetually
+    skip the canary.
+
+    Stampede-safe: only the leader-elected worker runs this loop, and
+    we record `last_sweep_at` on disk so two workers can't both decide
+    to fire immediately on the same boot.
+
     Crashes inside `run_health_cycle` are caught there; if something
     catastrophic escapes here (e.g. KeyboardInterrupt in a test), we
     log it and exit the thread — better than busy-looping on a fault.
@@ -243,9 +268,18 @@ def _loop() -> None:
     try:
         interval = _interval_seconds()
         while True:
-            time.sleep(interval)
+            last = _last_sweep_at()
+            now = time.time()
+            elapsed = now - last if last > 0 else interval + 1
+            if elapsed < interval:
+                time.sleep(interval - elapsed)
+            else:
+                # First-sweep-on-boot path: yield briefly so startup
+                # observability gets a clean window, then run.
+                time.sleep(5.0)
             try:
                 run_health_cycle()
+                _mark_sweep_done()
             except Exception as exc:  # noqa: BLE001 - never die on one bad cycle
                 log_event(
                     "health.cycle.failed", level="error",

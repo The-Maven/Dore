@@ -2221,12 +2221,37 @@ def simulator_feed() -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             cal = {}
 
+        # Structural metadata from the token-context registry. Used by
+        # the UI to (a) tag yield-bearing tokens distinctly so they
+        # are not misread as deeply-depegged, (b) show CEX vs DEX
+        # venue type in source tooltips, (c) carry the P&L lens copy
+        # into the commentary card without a second round trip.
+        from sca.movement.token_context import get_context as _get_ctx
+        _ctx_for_payload = _get_ctx(sym_u) or _get_ctx(sym)
+        meta = {
+            "yield_bearing": bool(
+                getattr(_ctx_for_payload, "yield_bearing", False)),
+            "venue_type": getattr(_ctx_for_payload, "venue_type", "CEX"),
+            "issuer": getattr(_ctx_for_payload, "issuer", ""),
+            "backing_model": getattr(
+                _ctx_for_payload, "backing_model", ""),
+            "structural_one_liner": getattr(
+                _ctx_for_payload, "structural_one_liner", ""),
+            "cone_normal_bps": (
+                _ctx_for_payload.cone_thresholds_bps[0]
+                if _ctx_for_payload else None),
+            "cone_alert_bps": (
+                _ctx_for_payload.cone_thresholds_bps[1]
+                if _ctx_for_payload else None),
+        }
+
         tokens_out.append({
             "symbol": sym_u,
             "brand": brand,
             "current_bps": current,
             "deltas": deltas,
             "sparkline": spark,
+            "meta": meta,
             "consensus": {
                 "kind": consensus_now,
                 "max_disagreement_bps": max_disagreement_now,
@@ -2432,10 +2457,22 @@ def simulator_commentary(symbol: str, refresh: bool = False) -> dict[str, Any]:
             "simulator.commentary.live_state_failed", level="info",
             symbol=sym, error_class=type(exc).__name__,
         )
-    commentary = get_commentary(sym, live, force=refresh)
+    # UX-fast default: serve cached-or-deterministic instantly and
+    # schedule a background LLM refresh. `?refresh=true` waits for a
+    # fresh LLM call (operator-initiated).
+    commentary = get_commentary(
+        sym, live,
+        force=refresh,
+        wait_for_llm=refresh,
+    )
     if commentary is None:
         raise HTTPException(
             404, f"no structural context registered for symbol: {sym}")
+    # Carry the structural overlay fields (pl_lens, yield_bearing,
+    # venue_type, issuer) directly so the card can render P&L framing
+    # without a second round trip to /api/simulator/feed.
+    from sca.movement.token_context import get_context as _get_ctx
+    ctx = _get_ctx(sym)
     return {
         "symbol": commentary.symbol,
         "headline": commentary.headline,
@@ -2445,6 +2482,11 @@ def simulator_commentary(symbol: str, refresh: bool = False) -> dict[str, Any]:
         "cone_normal_bps": commentary.cone_normal_bps,
         "cone_alert_bps": commentary.cone_alert_bps,
         "model": commentary.model,
+        "pl_lens": getattr(ctx, "pl_lens", "") or "",
+        "yield_bearing": bool(getattr(ctx, "yield_bearing", False)),
+        "venue_type": getattr(ctx, "venue_type", "CEX"),
+        "issuer": getattr(ctx, "issuer", "") if ctx else "",
+        "backing_model": getattr(ctx, "backing_model", "") if ctx else "",
     }
 
 

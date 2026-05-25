@@ -36,6 +36,23 @@ class TokenContext:
     watchlist_signal: str    # what to watch beyond peg
     structural_one_liner: str  # 1 sentence the LLM card opens with
     cone_thresholds_bps: tuple[float, float]  # (normal max, alert threshold)
+    # — v3.2 additions —
+    # When True, the token's market price drifts above $1.00 by design
+    # as yield accrues (tokenised T-bills, staked wrappers, NAV-rebased
+    # notes). The peg-deviation lens does NOT apply; the UI should
+    # render these with a YLD tag and the engine should not flag the
+    # drift as an alert.
+    yield_bearing: bool = False
+    # Primary venue type for traders moving real volume. CEX = listed
+    # on a centralised exchange (Coinbase, Kraken, Binance). DEX =
+    # primary liquidity sits on Curve / Uniswap / Balancer pools.
+    # MIXED = meaningful volume on both. Used to colour the source
+    # tooltip and to set commentary tone.
+    venue_type: str = "CEX"   # CEX | DEX | MIXED
+    # Risk / yield profile in plain English — what an investor stands
+    # to gain or lose from holding this token relative to its peg or
+    # NAV. Short, hedged, no advice. Renders inside Commentary.
+    pl_lens: str = ""
 
 
 _REGISTRY: dict[str, TokenContext] = {
@@ -294,17 +311,199 @@ _REGISTRY: dict[str, TokenContext] = {
 }
 
 
+# v3.2 overlay — extends entries above with three new fields without
+# rewriting every constructor. Empty strings / False / "CEX" use the
+# dataclass defaults.
+_OVERLAY: dict[str, dict] = {
+    "USDC": {
+        "venue_type": "MIXED",
+        "pl_lens": (
+            "Holders earn nothing directly; the issuer captures "
+            "Treasury yield. Loss happens only if reserves fail an "
+            "attestation or Circle is unable to honour 1:1 redemption."
+        ),
+    },
+    "USDT": {
+        "venue_type": "MIXED",
+        "pl_lens": (
+            "Holders earn nothing directly; Tether keeps reserve "
+            "yield. Loss tail is reserve-mix opacity (commercial "
+            "paper, secured loans). Cone widens during Asia-session "
+            "stress windows."
+        ),
+    },
+    "DAI": {
+        "venue_type": "DEX",
+        "pl_lens": (
+            "Holders earn the Dai Savings Rate via sDAI; raw DAI is "
+            "yield-passive. Loss happens if the PSM USDC anchor "
+            "depegs or PSM caps fill."
+        ),
+    },
+    "PYUSD": {
+        "pl_lens": (
+            "Holders earn nothing directly; Paxos captures Treasury "
+            "yield. Loss is concentrated in PayPal payment-rail "
+            "availability and NYDFS posture."
+        ),
+    },
+    "USDP": {
+        "pl_lens": (
+            "Holders earn nothing; Paxos captures yield. Float has "
+            "been shrinking — secondary-market liquidity is thinner "
+            "than peers, widening exit slippage."
+        ),
+    },
+    "TUSD": {
+        "pl_lens": (
+            "Holders earn nothing; issuer captures yield. Wider "
+            "structural cone reflects 2023-24 transparency events; "
+            "treat any sustained depeg above 15bp as a redemption "
+            "stress signal."
+        ),
+    },
+    "FDUSD": {
+        "venue_type": "CEX",
+        "pl_lens": (
+            "Holders earn nothing; First Digital captures yield. "
+            "Single-venue concentration on Binance means any HK "
+            "regulatory event hits liquidity faster than diversified "
+            "peers."
+        ),
+    },
+    "GUSD": {
+        "pl_lens": (
+            "Holders earn nothing; Gemini captures yield. Small "
+            "float — useful for low-slippage settlement but not "
+            "deep liquidity at scale."
+        ),
+    },
+    "USDe": {
+        "venue_type": "DEX",
+        "pl_lens": (
+            "Raw USDe is yield-passive; the yield lives in sUSDe. "
+            "Loss tail is perp-funding inversion: when basis turns "
+            "negative the delta-neutral position bleeds and the peg "
+            "is structurally exposed."
+        ),
+    },
+    "sUSDe": {
+        "yield_bearing": True,
+        "venue_type": "DEX",
+        "pl_lens": (
+            "Staked wrapper that accrues USDe yield by drifting "
+            "above $1.00. Returns reflect Ethena's delta-neutral "
+            "harvest; loss is unwind risk if funding inverts for "
+            "an extended window."
+        ),
+    },
+    "FRAX": {
+        "venue_type": "DEX",
+        "pl_lens": (
+            "Yield-passive at the FRAX level (sFRAX is the wrapper). "
+            "Loss tail is collateral-ratio decline below 100% — the "
+            "v3 design has shrunk this surface but it is not zero."
+        ),
+    },
+    "GHO": {
+        "venue_type": "DEX",
+        "pl_lens": (
+            "Yield-passive; borrowers pay variable rate to Aave "
+            "treasury. Loss tail is facilitator-cap saturation and "
+            "GHO trading persistently below peg as borrowers monetise "
+            "the discount."
+        ),
+    },
+    "crvUSD": {
+        "venue_type": "DEX",
+        "pl_lens": (
+            "Yield-passive; LLAMMA soft-liquidations are the peg "
+            "defence. Loss tail is band integrity failure on the "
+            "largest collateral market (wstETH today)."
+        ),
+    },
+    "LUSD": {
+        "venue_type": "DEX",
+        "pl_lens": (
+            "Yield-passive; Stability Pool depositors capture "
+            "liquidation gains. LUSD frequently trades at a premium "
+            "(redemption fee pricing) — premium is normal, not a "
+            "depeg."
+        ),
+    },
+    "USDD": {
+        "venue_type": "DEX",
+        "pl_lens": (
+            "Yield-passive; TRON DAO subsidises via PSM. Loss tail "
+            "is TRX/BTC reserve mark-to-market — when reserves "
+            "underperform a sustained discount emerges."
+        ),
+    },
+    "USDS": {
+        "venue_type": "DEX",
+        "pl_lens": (
+            "Yield-passive at the USDS level; sUSDS captures the Sky "
+            "Savings Rate. Loss tail is PSM imbalance and any "
+            "DAI-conversion stress."
+        ),
+    },
+    "RLUSD": {
+        "pl_lens": (
+            "Holders earn nothing; Ripple captures Treasury yield. "
+            "New launch (late 2024) means liquidity is still thin "
+            "vs majors — exit slippage matters for size."
+        ),
+    },
+    "USDY": {
+        "yield_bearing": True,
+        "venue_type": "CEX",
+        "pl_lens": (
+            "NAV-rebased tokenised note; holders earn underlying "
+            "Treasury yield directly via daily NAV adjustment. Loss "
+            "tail is NAV-feed staleness (>24h) and Ondo's Bermuda-"
+            "domiciled custody chain."
+        ),
+    },
+    "USDM": {
+        "yield_bearing": True,
+        "venue_type": "DEX",
+        "pl_lens": (
+            "Daily NAV rebase; holders earn Treasury yield directly. "
+            "Bermuda BMA regulated. Loss tail is NAV-feed staleness "
+            "and any Mountain Protocol custody-chain event."
+        ),
+    },
+}
+
+
+def _apply_overlay(ctx: TokenContext) -> TokenContext:
+    """Merge overlay fields into a base TokenContext if present.
+    Returns a NEW frozen instance — never mutates the registry."""
+    over = _OVERLAY.get(ctx.symbol)
+    if not over:
+        # Case-insensitive overlay lookup so 'CRVUSD' matches 'crvUSD'.
+        sym_l = ctx.symbol.lower()
+        for k, v in _OVERLAY.items():
+            if k.lower() == sym_l:
+                over = v
+                break
+    if not over:
+        return ctx
+    from dataclasses import replace
+    return replace(ctx, **over)
+
+
 def get_context(symbol: str) -> TokenContext | None:
     """Look up the cheat sheet for a symbol. The registry uses
     mixed-case keys (crvUSD, sUSDe) because that's how the issuers
     capitalise their tickers. Callers may send any case; we try
     exact, then case-insensitive across all keys."""
     if symbol in _REGISTRY:
-        return _REGISTRY[symbol]
+        return _apply_overlay(_REGISTRY[symbol])
     sym_l = symbol.lower()
     for k, v in _REGISTRY.items():
         if k.lower() == sym_l:
-            return v
+            return _apply_overlay(v)
     return None
 
 

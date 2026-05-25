@@ -136,6 +136,127 @@ def test_voice_rules_strip_weasels_and_em_dashes(tmp_path, monkeypatch):
     assert "perhaps" not in low
 
 
+def test_yield_bearing_tokens_carry_the_tag():
+    """USDY / sUSDe / USDM drift above $1 by design as yield accrues.
+    The token context registry must mark them so the UI does not read
+    them as deeply-depegged stablecoins."""
+    for sym in ("USDY", "sUSDe", "USDM"):
+        ctx = token_context.get_context(sym)
+        assert ctx is not None, f"missing context for {sym}"
+        assert ctx.yield_bearing is True, (
+            f"{sym} is yield-bearing by design — must be flagged")
+
+
+def test_venue_type_classification():
+    """Venue type drives the source-tooltip copy: CEX / DEX / MIXED.
+    USDC + USDT are MIXED (both venues), DAI + crvUSD are DEX-native,
+    GUSD + RLUSD are primarily CEX."""
+    assert token_context.get_context("USDC").venue_type == "MIXED"
+    assert token_context.get_context("USDT").venue_type == "MIXED"
+    assert token_context.get_context("DAI").venue_type == "DEX"
+    assert token_context.get_context("crvUSD").venue_type == "DEX"
+    assert token_context.get_context("USDe").venue_type == "DEX"
+    assert token_context.get_context("GUSD").venue_type == "CEX"
+    assert token_context.get_context("RLUSD").venue_type == "CEX"
+
+
+def test_pl_lens_present_on_every_token():
+    """Every token in the registry must have a P&L lens — short,
+    hedged framing on what holders gain or lose. This is what powers
+    the path-to-profitability/loss commentary block."""
+    for sym in token_context.all_known_symbols():
+        ctx = token_context.get_context(sym)
+        assert ctx is not None
+        assert ctx.pl_lens, (
+            f"{sym} missing pl_lens — every registered token needs "
+            "a path-to-profitability framing for the commentary card")
+        # Hedged language discipline — no absolute promises
+        low = ctx.pl_lens.lower()
+        for banned in ("guaranteed", "will earn", "always", "risk-free"):
+            assert banned not in low, (
+                f"{sym}.pl_lens contains '{banned}' — must hedge")
+
+
+def test_deterministic_fallback_includes_pl_lens():
+    """The fallback card must surface the P&L lens so investors see
+    the risk posture even when the LLM is unavailable."""
+    ctx = token_context.get_context("USDC")
+    out = commentary._deterministic_fallback(
+        ctx, {"current_bps": -1.5, "cone_p80_bps": 2.0})
+    assert "P&L lens" in out.body
+    # USDC pl_lens mentions reserves
+    assert "reserves" in out.body.lower() or "redemption" in out.body.lower()
+
+
+def test_yield_bearing_fallback_names_the_drift():
+    """For yield-bearing tokens, the deterministic fallback must
+    explicitly tell the reader that the bp figure is design drift,
+    not a depeg signal."""
+    ctx = token_context.get_context("USDY")
+    out = commentary._deterministic_fallback(
+        ctx, {"current_bps": 1300.0, "cone_p80_bps": 80.0})
+    low = out.body.lower()
+    assert "yield-bearing" in low
+    assert "drift" in low
+    assert "peg-deviation lens does not apply" in low \
+        or "design" in low
+
+
+def test_wait_for_llm_false_serves_cache_instantly(tmp_path, monkeypatch):
+    """The UX-fast path must serve a cached entry from ANY regime
+    bucket if one exists — no LLM call, no wait. This is the fix for
+    the slow "loading…" commentary card."""
+    monkeypatch.setattr(commentary, "_CACHE_PATH",
+                        tmp_path / "comm.json")
+    call_count = {"n": 0}
+
+    class _CountingLLM(_FakeLLM):
+        def complete(self, *, system, prompt, max_tokens=300):
+            call_count["n"] += 1
+            return '{"headline": "x", "body": "y see [1]."}'
+
+    # Prime the cache with a 'tight' regime entry.
+    commentary.get_commentary(
+        "USDC", {"current_bps": -1.0, "cone_p80_bps": 2.0},
+        llm_client=_CountingLLM())
+    primed_calls = call_count["n"]
+    assert primed_calls == 1
+
+    # Request the SAME symbol in a DIFFERENT regime (alert: very wide cone).
+    # With wait_for_llm=False the cached tight-regime entry should serve
+    # instantly without burning another LLM call.
+    out = commentary.get_commentary(
+        "USDC", {"current_bps": -1.0, "cone_p80_bps": 50.0},
+        llm_client=_CountingLLM(),
+        wait_for_llm=False,
+    )
+    assert out is not None
+    assert out.symbol == "USDC"
+    # No new LLM call on the foreground path.
+    assert call_count["n"] == primed_calls, (
+        "wait_for_llm=False must NOT block on the LLM")
+
+
+def test_wait_for_llm_false_falls_back_to_deterministic_on_cold_cache(
+        tmp_path, monkeypatch):
+    """Cold cache + wait_for_llm=False → return the deterministic
+    fallback immediately. The UI never sees 'loading…' for more than
+    a network round-trip."""
+    monkeypatch.setattr(commentary, "_CACHE_PATH",
+                        tmp_path / "cold.json")
+
+    out = commentary.get_commentary(
+        "DAI", {"current_bps": -0.3, "cone_p80_bps": 1.5},
+        llm_client=_FakeLLM('{"headline": "x", "body": "y [1]."}'),
+        wait_for_llm=False,
+    )
+    assert out is not None
+    assert out.symbol == "DAI"
+    # The body should be the deterministic fallback (uses ctx.structural_one_liner)
+    ctx = token_context.get_context("DAI")
+    assert ctx.structural_one_liner[:30] in out.body
+
+
 def test_cache_returns_quickly_on_second_call(tmp_path, monkeypatch):
     """Second invocation in the same regime bucket must hit cache —
     no second LLM call."""

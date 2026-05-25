@@ -177,13 +177,20 @@ def _clean(text: str | None) -> str | None:
 
 # ── public API ──────────────────────────────────────────────────────
 def get_commentary(symbol: str, live: dict, *,
-                    llm_client=None, force: bool = False) -> Optional[Commentary]:
+                    llm_client=None, force: bool = False,
+                    wait_for_llm: bool = True) -> Optional[Commentary]:
     """Return a Commentary for `symbol`. `live` is the current
     forecast snippet: current_bps, cone_p80_bps, d1h.
 
     Cache key includes the symbol AND a coarse bucket of the live
     cone width so the cached body stays valid as long as the regime
     hasn't shifted. Forces a fresh LLM call when `force=True`.
+
+    `wait_for_llm=False` (the UX-fast path): return the cached entry
+    if ANY exists for this symbol (regardless of regime), else the
+    deterministic fallback — and schedule a background LLM refresh
+    so the next read is properly warm. This kills the "loading…"
+    UX without sacrificing the LLM-grounded body.
     """
     ctx = get_context(symbol)
     if ctx is None:
@@ -207,7 +214,32 @@ def get_commentary(symbol: str, live: dict, *,
         except Exception:  # noqa: BLE001
             pass
 
-    # Fresh LLM call.
+    # UX-fast path: serve any-regime cached entry instantly + schedule
+    # a background refresh for the right regime.
+    if not wait_for_llm and not force:
+        any_entry = _find_any_cached(cache, symbol)
+        if any_entry is not None:
+            try:
+                cached = Commentary(**any_entry["payload"])
+                log_event(
+                    "movement.commentary.served_stale", level="info",
+                    symbol=symbol, target_regime=regime,
+                    age_s=int(now - any_entry.get("ts", 0)),
+                )
+                _schedule_background_refresh(symbol, live)
+                return cached
+            except Exception:  # noqa: BLE001
+                pass
+        # No cache at all — return deterministic immediately + schedule
+        # a real LLM warm-up for the next focus.
+        _schedule_background_refresh(symbol, live)
+        log_event(
+            "movement.commentary.served_deterministic", level="info",
+            symbol=symbol, regime=regime,
+        )
+        return _deterministic_fallback(ctx, live)
+
+    # Fresh LLM call (slow path, retained for force=True and tests).
     if llm_client is None:
         try:
             from sca.llm import get_llm
@@ -254,14 +286,25 @@ def get_commentary(symbol: str, live: dict, *,
 def _deterministic_fallback(ctx, live: dict) -> Commentary:
     """Honest n/a path — the LLM is unavailable, parsing failed, or
     we want to ship cold without the LLM. Builds the card from the
-    cheat sheet alone, names the gap clearly."""
+    cheat sheet alone, names the gap clearly.
+
+    Includes the P&L lens (pl_lens) when set — short hedged framing
+    on what holders gain or lose, so the deterministic card is still
+    useful for first-time readers."""
     cone_w = live.get("cone_p80_bps")
     cone_part = (f"current 80% cone {cone_w:.1f}bp" if cone_w is not None
                  else "live cone unavailable")
+    yld_tag = ""
+    if getattr(ctx, "yield_bearing", False):
+        yld_tag = (" Note: this token is yield-bearing and drifts above "
+                   "$1.00 by design — the peg-deviation lens does not "
+                   "apply.")
+    pl = getattr(ctx, "pl_lens", "") or ""
+    pl_part = f" P&L lens: {pl}" if pl else ""
     body = (
         f"{ctx.structural_one_liner} "
-        f"Today's read: {cone_part}. "
-        f"Watchlist signal: {ctx.watchlist_signal}. "
+        f"Today's read: {cone_part}.{yld_tag} "
+        f"Watchlist signal: {ctx.watchlist_signal}.{pl_part} "
         f"For details, see [1]."
     )
     citations = [{
@@ -277,3 +320,60 @@ def _deterministic_fallback(ctx, live: dict) -> Commentary:
         cone_normal_bps=ctx.cone_thresholds_bps[0],
         cone_alert_bps=ctx.cone_thresholds_bps[1],
     )
+
+
+# ── UX-fast helpers ─────────────────────────────────────────────────
+def _find_any_cached(cache: dict, symbol: str) -> dict | None:
+    """Find any cached entry for `symbol` regardless of regime bucket.
+    Returns the most-recent entry; used for stale-while-revalidate."""
+    sym_l = symbol.lower()
+    best = None
+    best_ts = 0.0
+    for k, v in cache.items():
+        # key shape is 'SYMBOL::regime'
+        key_sym = k.split("::", 1)[0]
+        if key_sym == symbol or key_sym.lower() == sym_l:
+            ts = v.get("ts") or 0.0
+            if ts > best_ts:
+                best_ts = ts
+                best = v
+    return best
+
+
+_REFRESH_INFLIGHT: set[str] = set()
+_REFRESH_LOCK = None
+
+
+def _schedule_background_refresh(symbol: str, live: dict) -> None:
+    """Kick off a background thread to populate the proper-regime
+    cache entry. Idempotent — if a refresh is already in flight for
+    this symbol, do nothing. The thread is daemon so it does not
+    prevent process exit during tests / shutdown."""
+    import threading
+    global _REFRESH_LOCK
+    if _REFRESH_LOCK is None:
+        _REFRESH_LOCK = threading.Lock()
+    with _REFRESH_LOCK:
+        if symbol in _REFRESH_INFLIGHT:
+            return
+        _REFRESH_INFLIGHT.add(symbol)
+
+    def _worker():
+        try:
+            # Call the synchronous LLM path; populates the cache.
+            get_commentary(symbol, live, force=True, wait_for_llm=True)
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                "movement.commentary.background_refresh_failed",
+                level="warn", symbol=symbol,
+                error_class=type(exc).__name__,
+            )
+        finally:
+            with _REFRESH_LOCK:
+                _REFRESH_INFLIGHT.discard(symbol)
+
+    t = threading.Thread(
+        target=_worker, name=f"commentary-refresh-{symbol}",
+        daemon=True,
+    )
+    t.start()
