@@ -5157,8 +5157,12 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .sim-rail-count {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 10px;
-  color: var(--sim-amber);
+  color: var(--muted-2);
+  letter-spacing: 0.02em;
+  cursor: help;
 }
+.sim-rail-count-n { color: var(--sim-amber); font-weight: 600; }
+.sim-rail-count-sep { color: var(--muted-2); }
 .sim-rail-list {
   display: flex;
   flex-direction: column;
@@ -5189,6 +5193,9 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   min-width: 0;
 }
 .sim-rail-sym {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-family: 'IBM Plex Mono', monospace;
   font-size: 12px;
   font-weight: 600;
@@ -5197,6 +5204,22 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.sim-rail-sym .sim-yld-tag-inline { margin-left: 0; }
+.sim-rail-delta-lbl {
+  color: var(--muted, #6E6B66);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  margin-right: 5px;
+  text-transform: uppercase;
+}
+.sim-rail-delta-none {
+  color: var(--muted-2, #9A9590);
+  font-style: italic;
+  font-size: 10px;
+  letter-spacing: 0.02em;
 }
 .sim-rail-name {
   font-family: 'IBM Plex Mono', monospace;
@@ -5461,17 +5484,20 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
    annotation per the research. Sits directly under the SVG. */
 .sim-cone-callout {
   margin: 10px 6px 8px;
-  padding: 9px 12px;
+  padding: 10px 14px;
   background: rgba(212, 162, 74, 0.05);
   border-left: 2px solid var(--sim-amber);
   border-radius: 0 4px 4px 0;
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  gap: 6px;
+}
+.sim-cone-callout-row {
+  display: flex;
+  align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
 }
 .sim-cone-callout-tag {
-  flex: 0 0 auto;
   color: var(--sim-amber);
   font-family: 'IBM Plex Mono', monospace;
   font-size: 9px;
@@ -5479,15 +5505,21 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   letter-spacing: 0.18em;
 }
 .sim-cone-callout-body {
-  flex: 1 1 60%;
   color: var(--paper);
   font-family: 'IBM Plex Sans', system-ui, sans-serif;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
   font-variant-numeric: tabular-nums;
 }
+.sim-cone-callout-anchor {
+  color: var(--paper);
+  font-weight: 500;
+}
+.sim-cone-callout-regime {
+  color: var(--muted-2);
+  font-style: italic;
+}
 .sim-cone-callout-conf {
-  flex: 0 0 auto;
   padding: 2px 8px;
   background: rgba(212, 162, 74, 0.12);
   border: 1px solid rgba(212, 162, 74, 0.32);

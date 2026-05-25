@@ -82,13 +82,30 @@ _FALLBACK_PALETTE = [
 def brand_for(symbol: str) -> dict[str, str]:
     """Return {accent, glow, name, branded} for `symbol`. `branded`
     is True when the entry came from the registry; False when we
-    fell back to an anonymous slot."""
+    fell back to an anonymous slot.
+
+    Case discipline: the registry keys reflect issuer-canonical
+    capitalisation (crvUSD, sUSDe, syrupUSDC). The simulator
+    upper-cases symbols when serialising the feed, so an exact-case
+    match alone misses mixed-case entries. Try exact → upper → lower
+    → case-insensitive scan so 'CRVUSD' and 'USDE' both find their
+    issuer name."""
     sym = (symbol or "").strip()
     sym_u = sym.upper()
-    # Try exact case first (crvUSD's mixed case matters) then upper.
-    for key in (sym, sym_u):
+    sym_l = sym.lower()
+    for key in (sym, sym_u, sym_l):
         if key in TOKEN_BRAND_COLOURS:
             row = TOKEN_BRAND_COLOURS[key]
+            return {
+                "accent": row["accent"],
+                "glow": row["glow"],
+                "name": row.get("name", ""),
+                "branded": True,
+            }
+    # Final fallback: case-insensitive linear scan. Cheap — the
+    # registry is ~30 entries.
+    for k, row in TOKEN_BRAND_COLOURS.items():
+        if k.lower() == sym_l:
             return {
                 "accent": row["accent"],
                 "glow": row["glow"],

@@ -6688,9 +6688,17 @@ const SIM_TIP = {
 
   // Hero pane
   heroSym: 'Focused token. Click any rail row or ribbon cell to swap.',
-  heroConf: 'IPCC-style confidence ladder word for the next prediction. ' +
-    '"very_likely" = high model confidence (narrow cone), "more_likely_' +
-    'than_not" = barely better than coin-flip.',
+  heroConf: 'Confidence the model attaches to its forecast, mapped to ' +
+    'the IPCC probability ladder:\n\n' +
+    '• virtually certain: ≥99% chance\n' +
+    '• very likely: ≥90%\n' +
+    '• likely: ≥66%\n' +
+    '• more likely than not: ≥50%\n' +
+    '• about as likely as not: 33–66%\n' +
+    '• unlikely: ≤33%\n' +
+    '• very unlikely: ≤10%\n\n' +
+    'Lower-confidence words = wider forecast cone. The chip reflects ' +
+    'the band-width the model emits, not the direction.',
   heroValBig: 'Current peg deviation in basis points. 1 bp = 0.01¢ off ' +
     'the $1.00 peg.',
   heroChart: 'Recent peg-deviation history (amber line) with the model ' +
@@ -7013,10 +7021,14 @@ function simTokenRail(tokens, focused) {
         'data-tip': SIM_TIP.railTitle, 'data-tip-pos': 'below',
         'data-tip-size': 'lg' }, 'INSTRUMENTS'),
       el('span', { class: 'sim-rail-count',
-        'data-tip': liveCount + ' tokens reporting · ' +
-          (tokens.length - liveCount) + ' with no data this cycle',
-        'data-tip-pos': 'below' },
-        String(liveCount) + ' / ' + String(tokens.length))),
+        'data-tip': liveCount + ' reporting peg data · ' +
+          (tokens.length - liveCount) + ' silent this cycle (no source ' +
+          'responded). Tokens float in by absolute 1m move.',
+        'data-tip-pos': 'below', 'data-tip-size': 'lg' },
+        el('span', { class: 'sim-rail-count-n' }, String(liveCount)),
+        el('span', { class: 'sim-rail-count-sep' }, ' live · '),
+        el('span', { class: 'sim-rail-count-n' }, String(tokens.length)),
+        el('span', { class: 'sim-rail-count-sep' }, ' watched'))),
     el('div', { class: 'sim-rail-list' },
       sorted.map(t => simRailRow(t, focused && t.symbol === focused.symbol))));
 }
@@ -7061,7 +7073,7 @@ function simRailRow(t, isFocused) {
       el('div', { class: 'sim-rail-sym' }, t.symbol,
         yld ? el('span', { class: 'sim-yld-tag sim-yld-tag-inline' },
           'YLD') : null),
-      el('div', { class: 'sim-rail-name' }, brand.name || '—')),
+      el('div', { class: 'sim-rail-name' }, brand.name || 'unbranded')),
     el('div', { class: 'sim-rail-spark' },
       sparklineSvg(t.sparkline || [], brand.accent, 70, 22)),
     el('div', { class: 'sim-rail-values' },
@@ -7071,9 +7083,19 @@ function simRailRow(t, isFocused) {
       el('div', {
         class: 'sim-rail-delta ' + dColor,
         'data-sim-delta': 'd1m',
-      }, d1m == null ? '—'
-         : (d1m >= 0 ? '▲ ' : '▼ ') +
-           Math.abs(Number(d1m)).toFixed(2))));
+        'data-tip': d1m == null
+          ? 'No 1-minute delta yet — needs a second tick within the ' +
+            'past minute. The 5M / 1H deltas usually have data sooner.'
+          : '1-minute move: ' +
+            (d1m >= 0 ? '+' : '') + Number(d1m).toFixed(2) + 'bp',
+        'data-tip-pos': 'right',
+      },
+        el('span', { class: 'sim-rail-delta-lbl' }, '1m'),
+        d1m == null
+          ? el('span', { class: 'sim-rail-delta-none' }, 'no recent move')
+          : el('span', {},
+              (d1m >= 0 ? '▲ ' : '▼ ') +
+              Math.abs(Number(d1m)).toFixed(2) + 'bp'))));
   return row;
 }
 
@@ -7137,7 +7159,9 @@ function simHeroPane(focused, feed) {
               : (focused.current_bps >= 0 ? '+' : '') +
                 Number(focused.current_bps).toFixed(2) + 'bp')),
         el('span', { class: 'sim-hero-val-sub' },
-          fYld ? 'NAV drift · last tick' : 'peg deviation · last tick'))),
+          fYld
+            ? 'drift above $1.00 issuance peg · last tick'
+            : 'vs $1.00 peg · last tick'))),
     simDeltaGrid(focused),
     simHeroChart(focused),
     simHeroJudge(focused),
@@ -7255,10 +7279,13 @@ function simDeltaGrid(t) {
           'data-tip': c.tip, 'data-tip-pos': 'below' },
         el('div', { class: 'sim-delta-lbl' }, c.lbl),
         el('div', { class: 'sim-delta-val' },
-          el('span', { class: 'sim-delta-glyph' }, glyph),
-          ' ', v == null ? '—'
-            : (v >= 0 ? '+' : '') + Number(v).toFixed(2),
-          el('span', { class: 'sim-delta-unit' }, 'bp')));
+          v == null
+            ? el('span', { class: 'sim-delta-empty' }, 'no data')
+            : [
+                el('span', { class: 'sim-delta-glyph' }, glyph), ' ',
+                (v >= 0 ? '+' : '') + Number(v).toFixed(2),
+                el('span', { class: 'sim-delta-unit' }, 'bp'),
+              ]));
     }));
 }
 
@@ -7368,9 +7395,10 @@ function _simHeroChartSvg(sp, pred, brand, yld) {
     parts.push(`<text x="${padL + 6}" y="${y0 - 4}" class="sim-cone-anchor-lbl">${anchorLbl}</text>`);
   }
 
-  // Y bounds (kept terse — primary read is endpoint labels not gridlines).
-  parts.push(`<text x="${padL - 4}" y="${padT + 9}" class="sim-hero-axlbl" text-anchor="end">${hi.toFixed(1)}</text>`);
-  parts.push(`<text x="${padL - 4}" y="${padT + innerH + 1}" class="sim-hero-axlbl" text-anchor="end">${lo.toFixed(1)}</text>`);
+  // Y bounds with bp unit — bare numbers near the axis read as dollars
+  // or percentages on quick glance. The "bp" suffix anchors the unit.
+  parts.push(`<text x="${padL - 4}" y="${padT + 9}" class="sim-hero-axlbl" text-anchor="end">${hi >= 0 ? '+' : ''}${hi.toFixed(1)}bp</text>`);
+  parts.push(`<text x="${padL - 4}" y="${padT + innerH + 1}" class="sim-hero-axlbl" text-anchor="end">${lo >= 0 ? '+' : ''}${lo.toFixed(1)}bp</text>`);
 
   // ── FORECAST CONE ───────────────────────────────────────────────
   if (pred && pred.point != null && pred.p95_low != null) {
@@ -7474,17 +7502,29 @@ function _simHeroChartSvg(sp, pred, brand, yld) {
 }
 
 
-// "Model says" callout — the plain-English sentence Metaculus + Manifold
-// teach as the right read alongside the bands. Also surfaces the
-// confidence-ladder word + calibration trust line when data exists.
+// "Model says" callout — plain-English read of the cone alongside the
+// bands. Three clauses by design:
+//   1. Anchor — where the peg is RIGHT NOW (the reader's starting frame)
+//   2. Forecast — where the model expects it to go (hedged language)
+//   3. Regime — is the 80% band width normal or wide for THIS token?
+//
+// The third clause is the value-add over a raw "p50 / p80" readout — it
+// tells the reader whether the model's confidence is consistent with
+// the token's structural cone (cheap, calm, attested) or stretched
+// (alert, volatile, watchlist-worthy).
 function _simHeroChartCallout(t) {
   const pred = t.latest_prediction;
   if (!pred || pred.point == null) return null;
+  const meta = t.meta || {};
+  const yld = !!meta.yield_bearing;
+  const current = t.current_bps;
   const point = (pred.point >= 0 ? '+' : '') + Number(pred.point).toFixed(1);
   const p80lo = pred.p80_low != null
     ? (pred.p80_low >= 0 ? '+' : '') + Number(pred.p80_low).toFixed(1) : null;
   const p80hi = pred.p80_high != null
     ? (pred.p80_high >= 0 ? '+' : '') + Number(pred.p80_high).toFixed(1) : null;
+  const halfWidth = (pred.p80_high != null && pred.p80_low != null)
+    ? (pred.p80_high - pred.p80_low) / 2 : null;
   const hMin = pred.horizon_minutes;
   const conf = (pred.confidence_word || '').replace(/_/g, ' ');
   // Resolution time as wall-clock — easier to map than a relative number.
@@ -7495,17 +7535,54 @@ function _simHeroChartCallout(t) {
       resolves = d.toISOString().slice(11, 16) + ' UTC';
     }
   }
-  const sentence = (p80lo != null && p80hi != null)
-    ? `Model says ${t.symbol} peg lands at ${point} bp by ${resolves || ('+' + hMin + 'min')} — 80% chance between ${p80lo} and ${p80hi} bp.`
-    : `Model says ${t.symbol} peg lands at ${point} bp by ${resolves || ('+' + hMin + 'min')}.`;
-  const wrap = el('div', { class: 'sim-cone-callout' },
-    el('span', { class: 'sim-cone-callout-tag' }, 'MODEL SAYS'),
-    el('span', { class: 'sim-cone-callout-body' }, sentence));
-  if (conf) {
-    wrap.appendChild(el('span', { class: 'sim-cone-callout-conf',
-      'data-tip': SIM_TIP.heroConf, 'data-tip-size': 'lg' },
-      conf));
+  const horizonLbl = resolves || ('the next ' + hMin + ' min');
+
+  // ── Clause 1: anchor — where it is right now ─────────────────────
+  let anchor = '';
+  if (current != null) {
+    if (yld) {
+      anchor = `${t.symbol} is currently ${current >= 0 ? '+' : ''}${current.toFixed(1)}bp above the $1.00 issuance peg (yield-bearing — drift is by design).`;
+    } else {
+      const dir = current > 0 ? 'above'
+        : current < 0 ? 'below' : 'on';
+      const mag = Math.abs(current);
+      anchor = `${t.symbol} is trading ${mag.toFixed(2)}bp ${dir} the $1.00 peg.`;
+    }
   }
+
+  // ── Clause 2: forecast — what the model expects ─────────────────
+  const forecast = (p80lo != null && p80hi != null)
+    ? `Over ${horizonLbl} the model expects the peg around ${point}bp, with 80% confidence the next reading falls between ${p80lo} and ${p80hi}bp.`
+    : `Over ${horizonLbl} the model expects the peg around ${point}bp.`;
+
+  // ── Clause 3: regime — is the band width normal or wide? ────────
+  let regime = '';
+  if (halfWidth != null) {
+    const normal = meta.cone_normal_bps;
+    const alert = meta.cone_alert_bps;
+    const widthStr = `±${halfWidth.toFixed(1)}bp`;
+    if (alert != null && halfWidth >= alert) {
+      regime = ` The ${widthStr} 80% band is wider than ${t.symbol}’s alert threshold (${alert.toFixed(0)}bp) — uncertainty is elevated.`;
+    } else if (normal != null && halfWidth <= normal) {
+      regime = ` The ${widthStr} band is inside ${t.symbol}’s normal envelope (≤${normal.toFixed(0)}bp) — quiet regime.`;
+    } else if (normal != null) {
+      regime = ` The ${widthStr} band sits between ${t.symbol}’s normal (${normal.toFixed(0)}bp) and alert (${(alert ?? 0).toFixed(0)}bp) thresholds.`;
+    } else {
+      regime = ` Cone half-width: ${widthStr}.`;
+    }
+  }
+
+  const wrap = el('div', { class: 'sim-cone-callout' },
+    el('div', { class: 'sim-cone-callout-row' },
+      el('span', { class: 'sim-cone-callout-tag' }, 'MODEL SAYS'),
+      conf
+        ? el('span', { class: 'sim-cone-callout-conf',
+            'data-tip': SIM_TIP.heroConf, 'data-tip-size': 'lg' }, conf)
+        : null),
+    el('div', { class: 'sim-cone-callout-body' },
+      anchor ? el('span', { class: 'sim-cone-callout-anchor' }, anchor + ' ') : null,
+      forecast,
+      regime ? el('span', { class: 'sim-cone-callout-regime' }, regime) : null));
   return wrap;
 }
 
