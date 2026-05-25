@@ -7663,6 +7663,30 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   cursor: help;
 }
 
+/* Payout-timeline chip: lightning-bolt prefixed time-to-cash. */
+.sim-hero-payout {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  background: rgba(79, 157, 255, 0.08);
+  color: #6FAFFF;
+  border: 1px solid rgba(79, 157, 255, 0.32);
+  border-radius: 2px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.5;
+  vertical-align: middle;
+  cursor: help;
+  white-space: nowrap;
+}
+:root[data-theme="light"] .sim-hero-payout {
+  background: rgba(31, 93, 168, 0.08);
+  color: #1F5DA8;
+  border-color: rgba(31, 93, 168, 0.42);
+}
+
 /* Empty AI Judge — keep terminal-quiet but readable */
 .sim-hero-judge-empty-msg {
   color: var(--muted-2, #9A9590);

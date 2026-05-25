@@ -160,6 +160,38 @@ def test_venue_type_classification():
     assert token_context.get_context("RLUSD").venue_type == "CEX"
 
 
+def test_payout_timeline_set_on_every_token():
+    """Every registered token must carry a payout_timeline_label +
+    payout_details so the UI's PAYOUT chip never goes blank. Time-
+    to-cash is a real trading consideration; we don't ship "unknown"."""
+    for sym in token_context.all_known_symbols():
+        ctx = token_context.get_context(sym)
+        assert ctx is not None
+        assert ctx.payout_timeline_label, (
+            f"{sym} missing payout_timeline_label — every registered "
+            "token needs a redemption-timeline annotation")
+        assert ctx.payout_details, (
+            f"{sym} missing payout_details — short tag is not enough; "
+            "we owe the user a sentence on the exact mechanism")
+
+
+def test_payout_timeline_reflects_real_mechanisms():
+    """Sanity-check the payout taxonomy is consistent with each
+    token's actual redemption mechanism. A few spot-checks against
+    publicly-documented facts:
+      - USDC, PYUSD, GUSD: same-day via issuer
+      - USDT: T+0 to T+2 depending on banking
+      - DAI: instant on-chain via PSM
+      - sUSDe: 7-day cooldown (Ethena protocol)
+      - USDY: 40-day lockup, then daily NAV redemption
+    """
+    assert token_context.get_context("USDC").payout_timeline_label == "same-day"
+    assert "T+" in token_context.get_context("USDT").payout_timeline_label
+    assert "instant" in token_context.get_context("DAI").payout_timeline_label
+    assert "cooldown" in token_context.get_context("sUSDe").payout_timeline_label
+    assert "lockup" in token_context.get_context("USDY").payout_timeline_label
+
+
 def test_pl_lens_present_on_every_token():
     """Every token in the registry must have a P&L lens — short,
     hedged framing on what holders gain or lose. This is what powers

@@ -53,6 +53,14 @@ class TokenContext:
     # to gain or lose from holding this token relative to its peg or
     # NAV. Short, hedged, no advice. Renders inside Commentary.
     pl_lens: str = ""
+    # Payout / redemption timeline — how quickly a holder can convert
+    # to USD via the issuer's mint/redeem path. Different mechanisms
+    # have very different time-to-cash economics: a PSM swap is
+    # instant, a tokenised-treasury redeem can be 40 days, a CEX
+    # withdrawal is same-day to T+1. Critical for sizing and
+    # liquidity planning.
+    payout_timeline_label: str = ""    # short tag e.g. "same-day", "T+1", "instant on-chain"
+    payout_details: str = ""           # one-sentence explanation
 
 
 _REGISTRY: dict[str, TokenContext] = {
@@ -322,6 +330,12 @@ _OVERLAY: dict[str, dict] = {
             "Treasury yield. Loss happens only if reserves fail an "
             "attestation or Circle is unable to honour 1:1 redemption."
         ),
+        "payout_timeline_label": "same-day",
+        "payout_details": (
+            "Circle Mint redeems 1:1 to USD same-day for qualified "
+            "accounts (~10-30min via CEX off-ramps). On-chain swap "
+            "via Curve 3pool is instant at <5bp slippage."
+        ),
     },
     "USDT": {
         "venue_type": "MIXED",
@@ -331,6 +345,13 @@ _OVERLAY: dict[str, dict] = {
             "paper, secured loans). Cone widens during Asia-session "
             "stress windows."
         ),
+        "payout_timeline_label": "T+0 to T+2",
+        "payout_details": (
+            "Tether direct-redeem requires KYC + $100k minimum; "
+            "settlement T+0 to T+2 depending on banking rail. "
+            "Retail exit via CEX off-ramps (Binance / Bitfinex / "
+            "Bybit) is same-day."
+        ),
     },
     "DAI": {
         "venue_type": "DEX",
@@ -339,12 +360,23 @@ _OVERLAY: dict[str, dict] = {
             "yield-passive. Loss happens if the PSM USDC anchor "
             "depegs or PSM caps fill."
         ),
+        "payout_timeline_label": "instant on-chain",
+        "payout_details": (
+            "MakerDAO PSM (USDC/DAI) swaps 1:1 instantly at zero fee "
+            "until the cap fills. Conversion to USD then depends on "
+            "USDC's off-ramp (same-day via Circle)."
+        ),
     },
     "PYUSD": {
         "pl_lens": (
             "Holders earn nothing directly; Paxos captures Treasury "
             "yield. Loss is concentrated in PayPal payment-rail "
             "availability and NYDFS posture."
+        ),
+        "payout_timeline_label": "same-day",
+        "payout_details": (
+            "Paxos direct-redeem same-day for qualified accounts. "
+            "PayPal users can convert to USD inside the app (T+0)."
         ),
     },
     "USDP": {
@@ -353,6 +385,12 @@ _OVERLAY: dict[str, dict] = {
             "been shrinking — secondary-market liquidity is thinner "
             "than peers, widening exit slippage."
         ),
+        "payout_timeline_label": "same-day",
+        "payout_details": (
+            "Paxos direct-redeem same-day for qualified accounts. "
+            "Thinner secondary liquidity means wider exit spread "
+            "for size; T+0 settlement once the swap clears."
+        ),
     },
     "TUSD": {
         "pl_lens": (
@@ -360,6 +398,12 @@ _OVERLAY: dict[str, dict] = {
             "structural cone reflects 2023-24 transparency events; "
             "treat any sustained depeg above 15bp as a redemption "
             "stress signal."
+        ),
+        "payout_timeline_label": "T+1 to T+2",
+        "payout_details": (
+            "Techteryx direct-redeem subject to bank settlement (T+1 "
+            "to T+2). Real-time PoR feed is informational, not "
+            "operational — it does not accelerate USD payout."
         ),
     },
     "FDUSD": {
@@ -370,12 +414,25 @@ _OVERLAY: dict[str, dict] = {
             "regulatory event hits liquidity faster than diversified "
             "peers."
         ),
+        "payout_timeline_label": "T+1",
+        "payout_details": (
+            "First Digital Trust direct-redeem T+1 typical (HK "
+            "banking hours). Retail exit via Binance USDT pair is "
+            "fastest in practice; off-ramp speed depends on the "
+            "destination."
+        ),
     },
     "GUSD": {
         "pl_lens": (
             "Holders earn nothing; Gemini captures yield. Small "
             "float — useful for low-slippage settlement but not "
             "deep liquidity at scale."
+        ),
+        "payout_timeline_label": "same-day",
+        "payout_details": (
+            "Gemini exchange redeems 1:1 same-day for verified "
+            "users. Float is small ($300M-ish) so deep-size exits "
+            "may need to be staged."
         ),
     },
     "USDe": {
@@ -385,6 +442,13 @@ _OVERLAY: dict[str, dict] = {
             "Loss tail is perp-funding inversion: when basis turns "
             "negative the delta-neutral position bleeds and the peg "
             "is structurally exposed."
+        ),
+        "payout_timeline_label": "instant on-chain",
+        "payout_details": (
+            "Ethena mint/redeem is instant on-chain via the basis-"
+            "trade harvest mechanism (no cooldown for raw USDe). "
+            "USD conversion then via Curve / Uniswap (instant) → "
+            "USDC → Circle off-ramp."
         ),
     },
     "sUSDe": {
@@ -396,6 +460,13 @@ _OVERLAY: dict[str, dict] = {
             "harvest; loss is unwind risk if funding inverts for "
             "an extended window."
         ),
+        "payout_timeline_label": "7-day cooldown",
+        "payout_details": (
+            "Unstaking sUSDe → USDe is gated by a 7-day cooldown "
+            "(protocol-enforced). Then USDe redeems instantly. "
+            "Secondary-market exit via Curve sUSDe/USDe pool is "
+            "available but at a discount to NAV."
+        ),
     },
     "FRAX": {
         "venue_type": "DEX",
@@ -403,6 +474,12 @@ _OVERLAY: dict[str, dict] = {
             "Yield-passive at the FRAX level (sFRAX is the wrapper). "
             "Loss tail is collateral-ratio decline below 100% — the "
             "v3 design has shrunk this surface but it is not zero."
+        ),
+        "payout_timeline_label": "instant on-chain",
+        "payout_details": (
+            "v3 collateral redemption via Frax AMO is instant on-"
+            "chain. Practical exit: swap to USDC via Curve FRAX/"
+            "USDC pool, then Circle off-ramp same-day."
         ),
     },
     "GHO": {
@@ -413,6 +490,12 @@ _OVERLAY: dict[str, dict] = {
             "GHO trading persistently below peg as borrowers monetise "
             "the discount."
         ),
+        "payout_timeline_label": "AMM exit only",
+        "payout_details": (
+            "No direct holder-redeem mechanism — exit via Balancer "
+            "GHO/USDC pool or Aave repay (for borrowers). Liquidity "
+            "thinner than peers; size-impact matters."
+        ),
     },
     "crvUSD": {
         "venue_type": "DEX",
@@ -420,6 +503,12 @@ _OVERLAY: dict[str, dict] = {
             "Yield-passive; LLAMMA soft-liquidations are the peg "
             "defence. Loss tail is band integrity failure on the "
             "largest collateral market (wstETH today)."
+        ),
+        "payout_timeline_label": "AMM exit only",
+        "payout_details": (
+            "No direct redemption — exit via Curve crvUSD/USDC pool "
+            "or LLAMMA repay (for borrowers). LLAMMA bands provide "
+            "soft liquidation; not the same as a 1:1 redeem."
         ),
     },
     "LUSD": {
@@ -430,6 +519,13 @@ _OVERLAY: dict[str, dict] = {
             "(redemption fee pricing) — premium is normal, not a "
             "depeg."
         ),
+        "payout_timeline_label": "instant on-chain (premium)",
+        "payout_details": (
+            "Liquity protocol redeems LUSD for ETH at the minimum "
+            "collateralisation ratio — instant on-chain but holders "
+            "absorb a redemption fee (0.5%+). Curve LUSD/3pool is "
+            "the practical exit path."
+        ),
     },
     "USDD": {
         "venue_type": "DEX",
@@ -437,6 +533,13 @@ _OVERLAY: dict[str, dict] = {
             "Yield-passive; TRON DAO subsidises via PSM. Loss tail "
             "is TRX/BTC reserve mark-to-market — when reserves "
             "underperform a sustained discount emerges."
+        ),
+        "payout_timeline_label": "PSM swap",
+        "payout_details": (
+            "TRON DAO PSM swaps USDD for USDT on JustLend (subject "
+            "to caps). Tron-native, so off-ramping to USD requires "
+            "a second hop (USDD→USDT→USD via CEX), typically same-"
+            "day to T+1."
         ),
     },
     "USDS": {
@@ -446,12 +549,25 @@ _OVERLAY: dict[str, dict] = {
             "Savings Rate. Loss tail is PSM imbalance and any "
             "DAI-conversion stress."
         ),
+        "payout_timeline_label": "instant on-chain",
+        "payout_details": (
+            "Sky PSM swaps USDS for DAI 1:1 instantly (no fee). DAI "
+            "then redeems via MakerDAO PSM to USDC, then Circle off-"
+            "ramp same-day."
+        ),
     },
     "RLUSD": {
         "pl_lens": (
             "Holders earn nothing; Ripple captures Treasury yield. "
             "New launch (late 2024) means liquidity is still thin "
             "vs majors — exit slippage matters for size."
+        ),
+        "payout_timeline_label": "same-day",
+        "payout_details": (
+            "Standard Custody (NYDFS trust) redeems 1:1 same-day "
+            "for qualified accounts via BNY Mellon. Thin secondary "
+            "liquidity means wider exit spread; this will improve "
+            "as the float grows."
         ),
     },
     "USDY": {
@@ -463,6 +579,14 @@ _OVERLAY: dict[str, dict] = {
             "tail is NAV-feed staleness (>24h) and Ondo's Bermuda-"
             "domiciled custody chain."
         ),
+        "payout_timeline_label": "40-day lockup, then daily",
+        "payout_details": (
+            "Ondo USDY has a 40-day initial lockup from mint, then "
+            "daily NAV-rebased redemption (T+1 banking settlement). "
+            "Not a fast-exit asset — secondary market is the only "
+            "way to get short-dated liquidity, and it usually trades "
+            "at a discount to NAV."
+        ),
     },
     "USDM": {
         "yield_bearing": True,
@@ -471,6 +595,13 @@ _OVERLAY: dict[str, dict] = {
             "Daily NAV rebase; holders earn Treasury yield directly. "
             "Bermuda BMA regulated. Loss tail is NAV-feed staleness "
             "and any Mountain Protocol custody-chain event."
+        ),
+        "payout_timeline_label": "T+0 mint/redeem (capped)",
+        "payout_details": (
+            "Mountain Protocol direct mint/redeem T+0 for qualified "
+            "accounts, subject to daily caps. Secondary market "
+            "(Curve USDM/USDC) trades at a discount to NAV — that's "
+            "the liquidity-premium economics for yield-bearing tokens."
         ),
     },
 }

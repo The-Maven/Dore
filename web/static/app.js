@@ -7887,6 +7887,20 @@ function simHeroPane(focused, feed) {
             ? 'Mixed — meaningful volume on both CEX and DEX.'
             : 'CEX-listed — primary liquidity on centralised exchanges.',
           'data-tip-pos': 'below' }, fVenue),
+        // PAYOUT TIMELINE chip — time-to-cash for this token. Critical
+        // for sizing decisions: an instant-PSM token gets a different
+        // entry size than a 40-day-lockup token. Tooltip explains the
+        // exact redemption mechanism.
+        fMeta.payout_timeline_label
+          ? el('span', {
+              class: 'sim-hero-payout tip',
+              'data-tip': 'PAYOUT TIMELINE — ' +
+                fMeta.payout_timeline_label.toUpperCase() + '\n\n' +
+                (fMeta.payout_details || 'No payout detail recorded.'),
+              'data-tip-pos': 'below', 'data-tip-size': 'lg',
+            },
+            '⌁ ' + fMeta.payout_timeline_label)
+          : null,
         fYld
           ? el('span', { class: 'sim-yld-tag sim-yld-tag-hero',
               'data-tip': 'Yield-bearing — the token\'s NAV climbs ' +

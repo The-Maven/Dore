@@ -2300,6 +2300,14 @@ def _fetch_token_block(store, sym: str, brand_for, now):
         "cone_alert_bps": (
             _ctx_for_payload.cone_thresholds_bps[1]
             if _ctx_for_payload else None),
+        # Payout / redemption timeline — used by the hero pane to
+        # show time-to-cash. Different tokens have very different
+        # liquidity profiles (instant PSM swap vs 40-day lockup)
+        # and that drives sizing + carry decisions.
+        "payout_timeline_label": getattr(
+            _ctx_for_payload, "payout_timeline_label", ""),
+        "payout_details": getattr(
+            _ctx_for_payload, "payout_details", ""),
     }
 
     return {
