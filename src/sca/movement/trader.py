@@ -303,7 +303,11 @@ def _size_position(
 def _build_one_token_block(store, raw_sym: str) -> dict | None:
     """Build one token's block. Used by build_token_blocks_for_trader's
     ThreadPoolExecutor — kept as a top-level function so the executor
-    can pickle / dispatch it cleanly."""
+    can pickle / dispatch it cleanly.
+
+    Carries the LATEST peg_tick's consensus state + per-source readings
+    so the trader can stamp them on the receipt at entry/exit. Without
+    this the receipt fields are empty and the audit trail is broken."""
     sym_u = (raw_sym or "").upper()
     if not sym_u:
         return None
@@ -312,11 +316,28 @@ def _build_one_token_block(store, raw_sym: str) -> dict | None:
     except Exception:  # noqa: BLE001
         ticks = []
     current = None
+    # Consensus block — used by the trader to (1) refuse to trade on
+    # DISPUTED and (2) populate the receipt's source snapshot.
+    consensus: dict = {
+        "kind": "",
+        "max_disagreement_bps": 0.0,
+        "sources": [],
+    }
     if ticks:
+        latest_tick = ticks[0]
         try:
-            current = float(ticks[0].get("deviation_bps") or 0.0)
+            current = float(latest_tick.get("deviation_bps") or 0.0)
         except (TypeError, ValueError):
             current = None
+        consensus["kind"] = latest_tick.get("consensus_kind", "") or ""
+        try:
+            consensus["max_disagreement_bps"] = float(
+                latest_tick.get("max_disagreement_bps") or 0.0)
+        except (TypeError, ValueError):
+            consensus["max_disagreement_bps"] = 0.0
+        raw_sources = latest_tick.get("sources") or []
+        if isinstance(raw_sources, list):
+            consensus["sources"] = raw_sources
     try:
         preds = store.list_predictions(
             symbol=sym_u, kind="peg_deviation", limit=1) or []
@@ -349,6 +370,7 @@ def _build_one_token_block(store, raw_sym: str) -> dict | None:
         "current_bps": current,
         "meta": meta,
         "latest_prediction": latest_pred,
+        "consensus": consensus,
     }
 
 

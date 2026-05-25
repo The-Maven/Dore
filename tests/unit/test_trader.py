@@ -637,6 +637,37 @@ def test_v3_pnl_math_loss_when_market_moves_against():
     assert abs(r["pnl_bps"] + 5.0) < 1e-6
 
 
+def test_build_token_blocks_propagates_consensus_to_trader():
+    """Regression for the autonomous-check finding: empty receipts.
+
+    `build_token_blocks_for_trader` MUST include the latest peg_tick's
+    consensus_kind + sources + max_disagreement_bps so the trader can
+    stamp them on the receipt. Without this, every trade in production
+    showed entry_sources=[] and entry_consensus_kind=""."""
+    class _StoreWithConsensus:
+        def list_peg_ticks(self, sym, limit=1):
+            return [{
+                "deviation_bps": -8.0,
+                "consensus_kind": "agreed",
+                "max_disagreement_bps": 0.45,
+                "sources": [
+                    {"name": "coinbase", "price": 0.99920, "fetched_at": 1.0},
+                    {"name": "kraken", "price": 0.99924, "fetched_at": 1.1},
+                ],
+            }]
+        def list_predictions(self, *a, **kw): return []
+    block = trader._build_one_token_block(_StoreWithConsensus(), "USDC")
+    assert block is not None
+    cons = block.get("consensus") or {}
+    assert cons.get("kind") == "agreed", (
+        "consensus_kind must propagate through to the trader — "
+        "without it, the receipt audit trail is empty")
+    assert abs(cons.get("max_disagreement_bps") - 0.45) < 1e-6
+    assert len(cons.get("sources") or []) == 2
+    src_names = [s.get("name") for s in cons["sources"]]
+    assert "coinbase" in src_names and "kraken" in src_names
+
+
 def test_v3_position_size_scales_with_edge():
     """Larger predicted edge → larger position. Two trades with the
     same cone width but different edges should produce different
