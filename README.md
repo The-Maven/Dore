@@ -1,13 +1,31 @@
 # Doré — by Rayleigh Stark
 
-**Doré** verifies stablecoin issuers' *claims* against on-chain *reality*.
+**Institutional verification & intelligence for stablecoin treasury.**
+
+Doré reconciles what stablecoin issuers *claim* against what the blockchain
+actually shows — cited, guardrailed, and honest, including when the honest
+answer is "we cannot yet tell." Built for the CFOs, risk teams, and
+regulators who hold (or oversee holdings of) digital dollars and need a
+trust archive they can audit, not a dashboard they have to take on faith.
 
 A doré bar is the semi-pure gold a mine produces before it is assayed to
 certified purity — raw claimed value that must be checked. A stablecoin
-issuer's reserve attestation is the same: a claim. Doré is the assay. It
-reconciles what issuers attest against what the blockchain actually shows,
-and reports it cited, guardrailed, and honest — including when the honest
-answer is "we cannot yet tell."
+issuer's reserve attestation is the same: a claim. Doré is the assay.
+
+## What the product actually is
+
+- **Verification engine** — reserve attestations, sanctions screening,
+  redemption capacity. Three deterministic surfaces; every result cited
+  to the section.
+- **Trust archive** — every prediction the model makes is scored against
+  what actually happened. The calibration archive (`F9`) is the
+  programmatic proof the engine has skill, not a sales claim. The
+  simulated trader inside it is the proof-of-skill loop, not the
+  business.
+- **Live intelligence** — peg health, source-disagreement signals,
+  payout-timeline labels, structural cheat sheets across 18+ tokens.
+  Designed for the operator who needs to act now, not the analyst
+  reading a report next quarter.
 
 ## Three compliance surfaces
 

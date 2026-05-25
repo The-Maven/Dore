@@ -6460,7 +6460,8 @@ function viewSimulator(symbolArg) {
       'history floor.',
   }, icon('i-frame'), 'BURST ×6');
   app.append(viewHead('F9', 'SIMULATOR',
-    'predict · attribute · score · narrate. the track record is the product.',
+    'the calibration archive — every prediction scored, every claim cited. ' +
+    'live trader receipts are the proof, not the product.',
     refreshBtn, tickNowBtn, burstBtn));
   const mount = el('div', { class: 'view-body sim-body' });
   app.append(mount);
