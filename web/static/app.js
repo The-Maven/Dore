@@ -6376,23 +6376,29 @@ function viewSimulator(symbolArg) {
   loadSimulator(mount, symbolArg);
 }
 
+// Per-view state for the simulator: which tokens are visible on
+// the multi-token candle overlay, and the live-poll timer handle.
+// Object (not class) so the live poll can mutate it freely.
+const SIM_VIEW = {
+  selected: null,      // Set of selected symbols; null = "all"
+  pollTimer: null,
+  lastTimeline: null,
+  pulseSeq: 0,         // bumps every tick so pulley animation restarts
+};
+
 async function loadSimulator(mount, symbolArg) {
   mount.innerHTML = '';
   mount.append(el('div', { class: 'sim-loading' },
     el('span', { class: 'spinner' }),
     ' composing forecast archive…'));
 
-  let state, preds, calibration;
-  try {
-    const [stateResp, predsResp, calResp] = await Promise.all([
-      fetch('/api/simulator/state'),
-      fetch('/api/simulator/predictions?limit=200'),
-      fetch('/api/simulator/calibration'),
-    ]);
-    state = await stateResp.json();
-    preds = await predsResp.json();
-    calibration = await calResp.json();
-  } catch (err) {
+  if (SIM_VIEW.pollTimer) {
+    clearInterval(SIM_VIEW.pollTimer);
+    SIM_VIEW.pollTimer = null;
+  }
+
+  const data = await fetchSimulatorData();
+  if (!data) {
     mount.innerHTML = '';
     mount.append(el('div', { class: 'sim-error' },
       'Simulator endpoints unreachable. The ticker may not have started yet — ',
@@ -6400,19 +6406,79 @@ async function loadSimulator(mount, symbolArg) {
     return;
   }
 
+  // Seed selection: all symbols with at least one tick, or fall
+  // back to the config's symbol list. Persists across polls via
+  // SIM_VIEW.selected.
+  if (SIM_VIEW.selected === null) {
+    SIM_VIEW.selected = new Set(
+      (data.timeline.tokens || [])
+        .filter(t => (t.ticks || []).length > 0)
+        .map(t => t.symbol));
+    if (SIM_VIEW.selected.size === 0) {
+      SIM_VIEW.selected = new Set(data.state.config.symbols || []);
+    }
+  }
+
   mount.innerHTML = '';
-  renderSimulator(mount, state, preds, calibration, symbolArg);
+  renderSimulator(mount, data, symbolArg);
+
+  // Breathing: poll every 15s so the chart visibly updates without
+  // a full re-render. Pauses when the tab is hidden so we don't
+  // burn CPU on a backgrounded page.
+  SIM_VIEW.pollTimer = setInterval(async () => {
+    if (document.hidden) return;
+    const next = await fetchSimulatorData();
+    if (!next) return;
+    redrawSimulator(mount, next);
+  }, 15000);
 }
 
-function renderSimulator(mount, state, preds, calibration, symbolArg) {
-  // SOTU strip — at-a-glance liveness.
+async function fetchSimulatorData() {
+  try {
+    const [stateResp, predsResp, calResp, timelineResp] = await Promise.all([
+      fetch('/api/simulator/state'),
+      fetch('/api/simulator/predictions?limit=60'),
+      fetch('/api/simulator/calibration'),
+      fetch('/api/simulator/timeline?limit_per_symbol=120&bin_minutes=5'),
+    ]);
+    const out = {
+      state: await stateResp.json(),
+      preds: await predsResp.json(),
+      calibration: await calResp.json(),
+      timeline: await timelineResp.json(),
+    };
+    SIM_VIEW.lastTimeline = out.timeline;
+    return out;
+  } catch (err) {
+    console.error('simulator data fetch failed', err);
+    return null;
+  }
+}
+
+function redrawSimulator(mount, data) {
+  // Bump pulse sequence — used to restart the pipeline pulley
+  // animation so the operator sees a fresh "tick fired" pulse on
+  // each successful poll cycle that emitted at least one row.
+  const lastSummary = (data.state.ticker || {}).last_summary || {};
+  const lastTickAt = (data.state.ticker || {}).last_tick_at;
+  if (lastTickAt && lastTickAt !== SIM_VIEW.lastTickAt) {
+    SIM_VIEW.pulseSeq++;
+    SIM_VIEW.lastTickAt = lastTickAt;
+  }
+  mount.innerHTML = '';
+  renderSimulator(mount, data, '');
+}
+
+function renderSimulator(mount, data, symbolArg) {
+  const { state, preds, calibration, timeline } = data;
+
+  // 1. Pipeline pulley — at the top, sets the visual tempo.
+  mount.append(simPipelinePulley(state));
+
+  // 2. Compact SOTU strip — liveness + quota at a glance.
   mount.append(simStateStrip(state));
 
-  // Schema-missing banner: if migration 0007 hasn't been applied, the
-  // store reports an empty archive with a schema_missing tag. Surface
-  // that explicitly so the operator knows what to do, instead of
-  // silently rendering an empty-archive page that looks identical to
-  // the cold-start state.
+  // 3. Schema-missing banner (only when the migration hasn't landed).
   if (preds && preds.schema_missing) {
     mount.append(el('section', { class: 'sim-schema-banner fade-in' },
       el('div', { class: 'sim-schema-kick' }, 'SCHEMA MISSING'),
@@ -6447,22 +6513,422 @@ function renderSimulator(mount, state, preds, calibration, symbolArg) {
     symbols.sort();
   }
 
-  if (symbols.length === 0) {
+  // 4. Main canvas — one hero with candle chart + token chips +
+  //    pistons + judge synthesis. The user's main breathing surface.
+  const tokens = (timeline.tokens || []);
+  const haveAnyTicks = tokens.some(t => (t.ticks || []).length > 0);
+  if (!haveAnyTicks && symbols.length === 0) {
     mount.append(simEmptyState());
   } else {
-    for (const sym of symbols) {
-      mount.append(simTokenPanel(sym, bySymbol.get(sym)));
+    mount.append(simMainCanvas(tokens, bySymbol));
+  }
+
+  // 5. Calibration page — the front door of the product.
+  mount.append(simCalibrationPanel(calibration));
+
+  // 6. Config panel — at the foot. Authoring requires sign-in.
+  mount.append(simConfigPanel(state.config || {}));
+}
+
+// ── pipeline pulley ─────────────────────────────────────────────────
+// Mechanical horizontal ribbon: predict → attribute → score → narrate.
+// A marker slides station-to-station whenever a tick fires (every poll
+// that detects a new last_tick_at re-arms it). Idle = static gold
+// rule. The animation is CSS keyframes driven; nothing JS-paced.
+function simPipelinePulley(state) {
+  const t = state.ticker || {};
+  const last = t.last_tick_at ? agoLabel(t.last_tick_at) : '—';
+  const stations = ['PREDICT', 'ATTRIBUTE', 'SCORE', 'NARRATE'];
+  return el('section', { class: 'sim-pulley fade-in' },
+    el('div', { class: 'sim-pulley-rail' },
+      stations.map((s, i) =>
+        el('div', { class: 'sim-pulley-station' },
+          el('div', { class: 'sim-pulley-dot' }),
+          el('div', { class: 'sim-pulley-label' }, s))),
+      el('div', {
+        class: 'sim-pulley-marker',
+        // Bumping the data attr restarts the CSS animation.
+        'data-seq': String(SIM_VIEW.pulseSeq),
+        'aria-label': 'current pipeline activity',
+      })),
+    el('div', { class: 'sim-pulley-foot' },
+      el('span', { class: 'sim-pulley-foot-lbl' }, 'LAST CYCLE'),
+      el('span', { class: 'sim-pulley-foot-val' }, last)));
+}
+
+// ── main canvas ─────────────────────────────────────────────────────
+// One hero panel: token chips at the top, multi-token candle SVG in
+// the middle, forecast pistons on the right, judge synthesis below.
+// Replaces the per-token panel layout — operator wants ONE breathing
+// surface, not a stack.
+function simMainCanvas(tokens, predsBySymbol) {
+  // Default to all tokens when selection isn't initialised yet
+  // (the first render from loadSimulator seeds it; direct calls
+  // from tests / soft-redraws may skip that). Empty Set means
+  // 'user explicitly deselected everything' — keep it empty.
+  const selected = SIM_VIEW.selected || new Set(tokens.map(t => t.symbol));
+  const activeTokens = tokens.filter(t => selected.has(t.symbol));
+  return el('section', { class: 'sim-canvas fade-in' },
+    el('div', { class: 'sim-canvas-head' },
+      el('h2', { class: 'sim-canvas-title' }, 'Peg movement — live'),
+      el('div', { class: 'sim-canvas-sub' },
+        '5-minute OHLC candles · forecast cone projects from the ',
+        'last close · click a token chip to toggle its overlay')),
+    simTokenChips(tokens),
+    el('div', { class: 'sim-canvas-body' },
+      el('div', { class: 'sim-candle-wrap' },
+        candleChartSvg(activeTokens)),
+      el('div', { class: 'sim-pistons-wrap' },
+        forecastPistons(activeTokens))),
+    simJudgeCarousel(activeTokens));
+}
+
+function simTokenChips(tokens) {
+  const wrap = el('div', { class: 'sim-chips' });
+  // Always-visible 'ALL' / 'NONE' toggles for quick batch ops.
+  const allBtn = el('button', { class: 'sim-chip sim-chip-batch' }, 'ALL');
+  const noneBtn = el('button', { class: 'sim-chip sim-chip-batch' }, 'NONE');
+  allBtn.addEventListener('click', () => {
+    SIM_VIEW.selected = new Set(tokens.map(t => t.symbol));
+    softRedrawMain();
+  });
+  noneBtn.addEventListener('click', () => {
+    SIM_VIEW.selected = new Set();
+    softRedrawMain();
+  });
+  wrap.append(allBtn, noneBtn);
+  const effective = SIM_VIEW.selected ||
+    new Set(tokens.map(t => t.symbol));
+  for (const tk of tokens) {
+    const isOn = effective.has(tk.symbol);
+    const haveData = (tk.ticks || []).length > 0;
+    const chip = el('button', {
+      class: 'sim-chip ' + (isOn ? 'sim-chip-on' : '') +
+        (haveData ? '' : ' sim-chip-empty'),
+      title: haveData
+        ? `${tk.ticks.length} tick${tk.ticks.length === 1 ? '' : 's'} on record`
+        : 'no data yet for this token',
+    },
+      el('span', { class: 'sim-chip-dot' }),
+      tk.symbol);
+    chip.addEventListener('click', () => {
+      if (!SIM_VIEW.selected) {
+        SIM_VIEW.selected = new Set(tokens.map(t => t.symbol));
+      }
+      if (isOn) SIM_VIEW.selected.delete(tk.symbol);
+      else SIM_VIEW.selected.add(tk.symbol);
+      softRedrawMain();
+    });
+    wrap.append(chip);
+  }
+  return wrap;
+}
+
+// Soft redraw of just the main canvas + judge carousel without
+// touching the pipeline pulley, SOTU strip, calibration, or config.
+// Keeps the page feeling live instead of jittering on every chip click.
+function softRedrawMain() {
+  const old = document.querySelector('.sim-canvas');
+  if (!old) return;
+  const tokens = (SIM_VIEW.lastTimeline && SIM_VIEW.lastTimeline.tokens) || [];
+  const replacement = simMainCanvas(tokens, new Map());
+  old.replaceWith(replacement);
+}
+
+// ── candle chart (SVG, multi-token overlay) ─────────────────────────
+// Per-token deterministic palette so a USDC chip and a USDC candle
+// share the same hue. Adapted to the gold/paper scheme — every
+// shade is a tasteful step off the gold accent.
+const SIM_TOKEN_PALETTE = [
+  '#D4A24A', '#C68A8F', '#92C180', '#A7C8E0',
+  '#C6A8D4', '#E0BC7A', '#88B0B0', '#D49D6A',
+];
+function colourFor(symbol) {
+  let h = 0;
+  for (const c of symbol) h = (h * 31 + c.charCodeAt(0)) | 0;
+  return SIM_TOKEN_PALETTE[Math.abs(h) % SIM_TOKEN_PALETTE.length];
+}
+
+function candleChartSvg(activeTokens) {
+  // No selection or no data = paused breathing state with a calm
+  // editorial line instead of a chart full of nothing.
+  if (!activeTokens.length) {
+    return el('div', { class: 'sim-candle-empty' },
+      'Toggle a token chip above to begin overlaying its peg series.');
+  }
+  const anyData = activeTokens.some(t => (t.candles || []).length > 0);
+  if (!anyData) {
+    return el('div', { class: 'sim-candle-empty' },
+      'No peg history yet for the selected tokens. ',
+      'BURST ×6 will warm the cache and fill the first candles.');
+  }
+
+  // Geometry
+  const W = 820, H = 320, padL = 44, padR = 96, padT = 18, padB = 24;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  // Y-axis: span the widest data range across selected tokens
+  // plus any forecast cone projecting forward.
+  let lo = Infinity, hi = -Infinity;
+  for (const tk of activeTokens) {
+    for (const c of (tk.candles || [])) {
+      lo = Math.min(lo, c.low); hi = Math.max(hi, c.high);
+    }
+    const p = tk.latest_prediction;
+    if (p) {
+      if (p.p95_low != null) lo = Math.min(lo, p.p95_low);
+      if (p.p95_high != null) hi = Math.max(hi, p.p95_high);
+    }
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) { lo = -5; hi = 5; }
+  if (hi - lo < 1) { hi += 1; lo -= 1; }
+  const padRange = (hi - lo) * 0.08;
+  lo -= padRange; hi += padRange;
+
+  // X-axis: time across the union of all candle bins for active
+  // tokens, plus 25% extra room on the right for the forecast cone.
+  let tMin = Infinity, tMax = -Infinity;
+  for (const tk of activeTokens) {
+    for (const c of (tk.candles || [])) {
+      const a = Date.parse(c.t_start);
+      const b = Date.parse(c.t_end);
+      if (Number.isFinite(a)) tMin = Math.min(tMin, a);
+      if (Number.isFinite(b)) tMax = Math.max(tMax, b);
+    }
+  }
+  if (!Number.isFinite(tMin)) { tMin = Date.now() - 60 * 60_000; tMax = Date.now(); }
+  const histSpan = tMax - tMin;
+  // Cone projects 0.25 × history span forward
+  const projectionMs = Math.max(histSpan * 0.25, 5 * 60_000);
+  const xMax = tMax + projectionMs;
+
+  const x = (ms) => padL + innerW * ((ms - tMin) / (xMax - tMin));
+  const y = (v) => padT + innerH * (1 - (v - lo) / (hi - lo));
+
+  const parts = [];
+  // Frame + zero line
+  parts.push(svgEl('rect', { x: padL, y: padT, width: innerW, height: innerH,
+    class: 'sim-candle-frame' }));
+  if (lo <= 0 && hi >= 0) {
+    const y0 = y(0);
+    parts.push(svgEl('line', { x1: padL, y1: y0, x2: padL + innerW, y2: y0,
+      class: 'sim-candle-zero' }));
+    parts.push(svgEl('text', { x: padL - 6, y: y0 + 3,
+      class: 'sim-candle-axlbl', 'text-anchor': 'end' }, '0bp'));
+  }
+  // Y-axis tick labels at lo / mid / hi
+  for (const v of [lo + padRange, (lo + hi) / 2, hi - padRange]) {
+    parts.push(svgEl('text', {
+      x: padL - 6, y: y(v) + 3,
+      class: 'sim-candle-axlbl', 'text-anchor': 'end',
+    }, v.toFixed(1) + 'bp'));
+  }
+  // Vertical "now" rule between history and projection
+  const xNow = x(tMax);
+  parts.push(svgEl('line', {
+    x1: xNow, y1: padT, x2: xNow, y2: padT + innerH,
+    class: 'sim-candle-now',
+  }));
+  parts.push(svgEl('text', { x: xNow + 4, y: padT + 12,
+    class: 'sim-candle-axlbl' }, 'now'));
+
+  // Per-token rendering: forecast cone first (background), then
+  // candles, then last-tick marker. Newest token drawn last so it
+  // sits on top.
+  for (const tk of activeTokens) {
+    const c = colourFor(tk.symbol);
+    const candles = tk.candles || [];
+    const binMs = candles.length >= 2
+      ? Date.parse(candles[1].t_start) - Date.parse(candles[0].t_start)
+      : 5 * 60_000;
+    const bodyW = Math.max(3,
+      Math.min(14, (binMs / (xMax - tMin)) * innerW * 0.6));
+
+    // Forecast cone — stepped bands at 50/80/95.
+    const p = tk.latest_prediction;
+    if (p && p.point != null && p.p95_low != null && p.p95_high != null) {
+      const t0 = Date.parse(p.made_at) || tMax;
+      const t1 = Date.parse(p.resolves_at) || (tMax + projectionMs);
+      const x0 = x(t0), x1 = x(t1);
+      const cone = (lowV, highV, opacity) => {
+        parts.push(svgEl('rect', {
+          x: x0, y: y(highV), width: x1 - x0, height: y(lowV) - y(highV),
+          fill: c, opacity: String(opacity),
+        }));
+      };
+      cone(p.p95_low, p.p95_high, 0.08);
+      if (p.p80_low != null) cone(p.p80_low, p.p80_high, 0.15);
+      if (p.p50_low != null) cone(p.p50_low, p.p50_high, 0.28);
+      // Modal forecast line
+      parts.push(svgEl('line', {
+        x1: x0, y1: y(p.point), x2: x1, y2: y(p.point),
+        stroke: c, 'stroke-width': '1.5',
+        'stroke-dasharray': '3 3', opacity: '0.85',
+      }));
+    }
+
+    // Candles
+    for (const cn of candles) {
+      const tStart = Date.parse(cn.t_start);
+      const xc = x(tStart + binMs / 2);
+      const wickX = xc;
+      parts.push(svgEl('line', {
+        x1: wickX, y1: y(cn.high), x2: wickX, y2: y(cn.low),
+        stroke: c, 'stroke-width': '1', opacity: '0.85',
+      }));
+      const bodyTop = Math.min(cn.open, cn.close);
+      const bodyBot = Math.max(cn.open, cn.close);
+      const isUp = cn.close >= cn.open;
+      parts.push(svgEl('rect', {
+        x: xc - bodyW / 2,
+        y: y(bodyBot),
+        width: bodyW,
+        height: Math.max(1, y(bodyTop) - y(bodyBot)),
+        fill: isUp ? c : 'rgba(0,0,0,0.4)',
+        stroke: c, 'stroke-width': '1',
+      }));
+    }
+
+    // Symbol legend dot at the rightmost tick value
+    const ticks = tk.ticks || [];
+    if (ticks.length > 0) {
+      const lastT = ticks[ticks.length - 1];
+      const lastV = lastT.v;
+      const lastMs = Date.parse(lastT.t);
+      if (Number.isFinite(lastMs)) {
+        parts.push(svgEl('circle', {
+          cx: x(lastMs), cy: y(lastV), r: '3',
+          fill: c, class: 'sim-candle-pulse',
+        }));
+        parts.push(svgEl('text', {
+          x: padL + innerW + 8, y: y(lastV) + 3,
+          fill: c, class: 'sim-candle-symlbl',
+        }, tk.symbol));
+      }
     }
   }
 
-  // Calibration page — the front door of the product. Lives below
-  // the per-token panels so investors who scroll see it without
-  // navigating; the explicit anchor in simStateStrip lets the
-  // operator jump to it directly.
-  mount.append(simCalibrationPanel(calibration));
+  // innerHTML on an already-constructed SVG element loses the SVG
+  // namespace (children become plain HTML). Build the whole SVG as
+  // an HTML string inside a wrapper div — that parse path keeps the
+  // SVG namespace intact.
+  const wrap = document.createElement('div');
+  wrap.className = 'sim-candle-svg-wrap';
+  wrap.innerHTML =
+    '<svg class="sim-candle-svg" viewBox="0 0 ' + W + ' ' + H + '" ' +
+    'xmlns="http://www.w3.org/2000/svg" ' +
+    'preserveAspectRatio="xMidYMid meet">' +
+    parts.join('') + '</svg>';
+  return wrap;
+}
 
-  // Config panel — at the foot. Authoring requires sign-in.
-  mount.append(simConfigPanel(state.config || {}));
+// SVG element string builder (avoids the HTML/SVG namespace
+// mismatch that el() would create).
+function svgEl(tag, attrs, text) {
+  const a = Object.entries(attrs).map(
+    ([k, v]) => `${k}="${String(v).replace(/"/g, '&quot;')}"`).join(' ');
+  if (text === undefined) return `<${tag} ${a}/>`;
+  return `<${tag} ${a}>${text}</${tag}>`;
+}
+
+// ── forecast pistons ───────────────────────────────────────────────
+// Vertical bars to the right of the candle chart, one per selected
+// token. Each piston's height = |point bp|; colour = the token's
+// palette colour; the active (largest |point|) piston gets the
+// breathing pulse animation so the eye lands on the live action.
+function forecastPistons(activeTokens) {
+  if (!activeTokens.length) {
+    return el('div', { class: 'sim-pistons-empty' }, '—');
+  }
+  // Find the largest absolute point across selected tokens so the
+  // pistons share a consistent scale.
+  let maxAbs = 1;
+  const rows = [];
+  for (const tk of activeTokens) {
+    const p = tk.latest_prediction;
+    const pt = p ? p.point : null;
+    if (pt != null) maxAbs = Math.max(maxAbs, Math.abs(pt));
+    rows.push({ symbol: tk.symbol, point: pt,
+      confidence: p ? p.confidence_word : null,
+      colour: colourFor(tk.symbol) });
+  }
+  // Determine the "loudest" piston for the active pulse.
+  let loudIdx = -1, loudAbs = -1;
+  rows.forEach((r, i) => {
+    if (r.point != null && Math.abs(r.point) > loudAbs) {
+      loudAbs = Math.abs(r.point); loudIdx = i;
+    }
+  });
+  return el('div', { class: 'sim-pistons' },
+    el('div', { class: 'sim-pistons-kick' }, 'FORECAST'),
+    el('div', { class: 'sim-pistons-row' },
+      rows.map((r, i) => {
+        const pct = r.point == null ? 0
+          : Math.min(1, Math.abs(r.point) / maxAbs);
+        const height = (pct * 100).toFixed(1);
+        const direction = (r.point || 0) >= 0 ? 'up' : 'down';
+        return el('div', { class: 'sim-piston-col' },
+          el('div', { class: 'sim-piston-track' },
+            el('div', {
+              class: 'sim-piston-bar ' +
+                (i === loudIdx ? 'sim-piston-active' : '') +
+                ' sim-piston-' + direction,
+              style: 'height:' + height + '%; background:' + r.colour,
+            })),
+          el('div', { class: 'sim-piston-lbl' }, r.symbol),
+          el('div', { class: 'sim-piston-val' },
+            r.point == null ? '—'
+              : (r.point >= 0 ? '+' : '') + r.point.toFixed(2) + 'bp'));
+      })),
+    el('div', { class: 'sim-pistons-foot' },
+      loudIdx >= 0 && rows[loudIdx].confidence
+        ? rows[loudIdx].symbol + ' · ' +
+          rows[loudIdx].confidence.replace(/_/g, ' ')
+        : 'waiting for first forecast'));
+}
+
+// ── judge synthesis carousel ────────────────────────────────────────
+// One card per selected token's latest synthesis. When >3 selected,
+// horizontally scrolls. Empty fields collapse honestly.
+function simJudgeCarousel(activeTokens) {
+  const cards = activeTokens
+    .map(tk => ({ tk, p: tk.latest_prediction }))
+    .filter(({ p }) => p && (p.judge_synthesis ||
+      p.judge_insight || p.judge_pitch));
+  if (!cards.length) {
+    return el('div', { class: 'sim-carousel sim-carousel-empty' },
+      el('div', { class: 'sim-carousel-empty-body' },
+        'AI judge layer has not synthesised any forecasts yet for the ',
+        'selected tokens. Synthesis appears here once the next tick ',
+        'completes against a non-empty forecast.'));
+  }
+  return el('div', { class: 'sim-carousel' },
+    el('div', { class: 'sim-carousel-kick' }, 'AI JUDGE · LIVE READS'),
+    el('div', { class: 'sim-carousel-row' },
+      cards.map(({ tk, p }) =>
+        el('div', { class: 'sim-card',
+            style: 'border-left-color:' + colourFor(tk.symbol) },
+          el('div', { class: 'sim-card-head' },
+            el('span', { class: 'sim-card-sym',
+                style: 'color:' + colourFor(tk.symbol) }, tk.symbol),
+            p.confidence_word
+              ? el('span', { class: 'sim-card-conf' },
+                  p.confidence_word.replace(/_/g, ' '))
+              : null),
+          p.judge_synthesis
+            ? el('div', { class: 'sim-card-syn' }, p.judge_synthesis)
+            : null,
+          p.judge_insight
+            ? el('div', { class: 'sim-card-insight' },
+                el('span', { class: 'sim-card-tag' }, 'INSIGHT'),
+                ' ', p.judge_insight)
+            : null,
+          p.judge_pitch
+            ? el('div', { class: 'sim-card-pitch' },
+                el('span', { class: 'sim-card-tag' }, 'CONSIDER'),
+                ' ', p.judge_pitch)
+            : null))));
 }
 
 // ── SOTU strip ───────────────────────────────────────────────────────

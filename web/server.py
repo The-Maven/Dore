@@ -1870,6 +1870,133 @@ def simulator_calibration(
         }
 
 
+@app.get("/api/simulator/timeline")
+def simulator_timeline(
+    symbols: str | None = None,
+    limit_per_symbol: int = 120,
+    bin_minutes: int = 5,
+) -> dict[str, Any]:
+    """Chart data for the main canvas.
+
+    Returns per-symbol time-series for the candle overlay:
+      - raw peg ticks (read_at, deviation_bps, consensus_kind)
+      - OHLC-binned candles (open, high, low, close, t_start, t_end)
+      - latest prediction with its bands so the cone can be drawn
+        forward from 'now'
+
+    `symbols`: comma-separated list, defaults to whatever the
+    simulator config has enabled.
+    `limit_per_symbol`: cap raw ticks pulled per symbol (default 120
+    = 2h at 1min cadence). The bin step is `bin_minutes` (default 5).
+    """
+    from sca.movement import config as sim_cfg
+    cfg = sim_cfg.load()
+    requested = (symbols or "").split(",") if symbols else cfg["symbols"]
+    requested = [s.strip().upper() for s in requested if s.strip()]
+    cap = max(10, min(limit_per_symbol, 1000))
+    bin_min = max(1, min(bin_minutes, 60))
+
+    store = get_store()
+    out: dict[str, Any] = {
+        "symbols": requested,
+        "bin_minutes": bin_min,
+        "tokens": [],
+    }
+    for sym in requested:
+        try:
+            ticks = store.list_peg_ticks(sym, limit=cap) or []
+        except Exception:  # noqa: BLE001
+            ticks = []
+        # Newest-first → oldest-first for plotting.
+        ticks = list(reversed(ticks))
+        candles = _bin_to_candles(ticks, bin_min)
+        # Latest prediction for the forecast cone.
+        try:
+            preds = store.list_predictions(
+                symbol=sym, kind="peg_deviation", limit=1) or []
+        except Exception:  # noqa: BLE001
+            preds = []
+        latest = preds[0] if preds else None
+        out["tokens"].append({
+            "symbol": sym,
+            "ticks": [{
+                "t": t.get("read_at"),
+                "v": float(t.get("deviation_bps") or 0.0),
+                "consensus_kind": t.get("consensus_kind") or "single",
+                "max_disagreement_bps": float(
+                    t.get("max_disagreement_bps") or 0.0),
+            } for t in ticks],
+            "candles": candles,
+            "latest_prediction": (latest and {
+                "made_at": latest.get("made_at"),
+                "resolves_at": latest.get("resolves_at"),
+                "point": _safe_float(latest.get("point")),
+                "p50_low": _safe_float(latest.get("p50_low")),
+                "p50_high": _safe_float(latest.get("p50_high")),
+                "p80_low": _safe_float(latest.get("p80_low")),
+                "p80_high": _safe_float(latest.get("p80_high")),
+                "p95_low": _safe_float(latest.get("p95_low")),
+                "p95_high": _safe_float(latest.get("p95_high")),
+                "confidence_word": latest.get("confidence_word"),
+                "horizon_minutes": latest.get("horizon_minutes"),
+                "judge_synthesis": latest.get("judge_synthesis"),
+                "judge_insight": latest.get("judge_insight"),
+                "judge_pitch": latest.get("judge_pitch"),
+            }) or None,
+        })
+    return out
+
+
+def _safe_float(v: Any) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _bin_to_candles(ticks: list[dict], bin_minutes: int) -> list[dict]:
+    """Aggregate raw peg-tick readings into OHLC candles per
+    `bin_minutes` window. Each candle: t_start, t_end, open, high,
+    low, close, count. Returns empty when no ticks land in any bin
+    (typically when the simulator hasn't accumulated history yet)."""
+    from collections import defaultdict
+    if not ticks:
+        return []
+    bin_s = bin_minutes * 60
+    buckets: dict[int, list[tuple[str, float]]] = defaultdict(list)
+    for t in ticks:
+        ts = t.get("read_at")
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
+        epoch = int(dt.timestamp())
+        bucket = (epoch // bin_s) * bin_s
+        buckets[bucket].append((ts, float(t.get("deviation_bps") or 0.0)))
+    candles: list[dict] = []
+    for bucket_start in sorted(buckets.keys()):
+        rows = buckets[bucket_start]
+        rows.sort(key=lambda r: r[0])
+        values = [v for _, v in rows]
+        candles.append({
+            "t_start": datetime.fromtimestamp(
+                bucket_start, timezone.utc).isoformat(timespec="seconds"),
+            "t_end": datetime.fromtimestamp(
+                bucket_start + bin_s, timezone.utc).isoformat(
+                    timespec="seconds"),
+            "open": values[0],
+            "high": max(values),
+            "low": min(values),
+            "close": values[-1],
+            "count": len(values),
+        })
+    return candles
+
+
 @app.get("/api/simulator/config")
 def simulator_config_get() -> dict[str, Any]:
     """Current simulator config — read by the configuration panel."""

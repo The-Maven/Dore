@@ -4512,3 +4512,399 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   padding: 1px 6px;
   border-radius: 2px;
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   F9 SIMULATOR · v2 — main canvas + pipeline pulley + pistons
+   ════════════════════════════════════════════════════════════════════
+   Industrial / breathing / candle-chart aesthetic. One hero panel
+   instead of the per-token stack. Token chips drive multi-overlay.
+   Pistons on the right add a mechanical pulse cue. Pipeline pulley
+   at the top sets the visual tempo for each tick. */
+
+/* ── pipeline pulley ────────────────────────────────────────────── */
+.sim-pulley {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 22px;
+  background: linear-gradient(180deg,
+    rgba(212,162,74,0.05) 0%, rgba(0,0,0,0) 100%);
+  border-bottom: 1px solid rgba(212,162,74,0.18);
+}
+.sim-pulley-rail {
+  flex: 1;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  align-items: center;
+  height: 32px;
+  margin-right: 24px;
+}
+.sim-pulley-rail::before {
+  content: '';
+  position: absolute;
+  left: 6%; right: 6%; top: 50%;
+  height: 1px;
+  background: linear-gradient(90deg,
+    rgba(212,162,74,0.1) 0%,
+    rgba(212,162,74,0.45) 50%,
+    rgba(212,162,74,0.1) 100%);
+}
+.sim-pulley-station {
+  position: relative;
+  text-align: center;
+  z-index: 2;
+}
+.sim-pulley-dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 1px solid var(--gold);
+  margin: 0 auto;
+}
+.sim-pulley-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.22em;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.sim-pulley-marker {
+  position: absolute;
+  top: 50%;
+  left: 6%;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 8px rgba(212,162,74,0.7);
+  transform: translate(-50%, -50%);
+  animation: sim-pulley-slide 6s linear;
+}
+@keyframes sim-pulley-slide {
+  0%   { left: 6%; opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { left: 94%; opacity: 0; }
+}
+.sim-pulley-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.sim-pulley-foot-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--muted-2);
+  text-transform: uppercase;
+}
+.sim-pulley-foot-val {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--paper);
+  letter-spacing: 0.04em;
+}
+
+/* ── main canvas hero ───────────────────────────────────────────── */
+.sim-canvas {
+  border: 1px solid rgba(212,162,74,0.28);
+  background:
+    radial-gradient(ellipse at top left,
+      rgba(212,162,74,0.04) 0%, rgba(0,0,0,0) 60%),
+    rgba(0,0,0,0.18);
+  padding: 22px 24px 24px;
+}
+.sim-canvas-head { margin-bottom: 16px; }
+.sim-canvas-title {
+  font-family: 'Bodoni Moda', serif;
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--paper);
+  margin: 0 0 6px;
+}
+.sim-canvas-sub {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 13px;
+  color: var(--muted-1);
+  font-style: italic;
+  line-height: 1.4;
+  max-width: 70ch;
+}
+.sim-canvas-body {
+  display: grid;
+  grid-template-columns: 1fr 200px;
+  gap: 20px;
+  align-items: stretch;
+  margin-top: 14px;
+}
+
+/* ── token chips ────────────────────────────────────────────────── */
+.sim-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.sim-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: transparent;
+  border: 1px solid rgba(212,162,74,0.22);
+  color: var(--muted-1);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.sim-chip:hover {
+  border-color: rgba(212,162,74,0.55);
+  color: var(--paper);
+}
+.sim-chip-on {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: rgba(212,162,74,0.08);
+}
+.sim-chip-empty {
+  opacity: 0.45;
+}
+.sim-chip-batch {
+  font-weight: 600;
+  letter-spacing: 0.2em;
+}
+.sim-chip-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ── candle chart ───────────────────────────────────────────────── */
+.sim-candle-wrap {
+  background: rgba(0,0,0,0.32);
+  border: 1px solid rgba(212,162,74,0.14);
+  border-radius: 1px;
+  padding: 4px 4px 0;
+  min-height: 320px;
+}
+.sim-candle-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.sim-candle-empty {
+  padding: 80px 24px;
+  text-align: center;
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 14px;
+  color: var(--muted-1);
+  font-style: italic;
+}
+.sim-candle-frame {
+  fill: rgba(212,162,74,0.015);
+  stroke: rgba(212,162,74,0.18);
+  stroke-width: 1;
+}
+.sim-candle-zero {
+  stroke: rgba(212,162,74,0.4);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+.sim-candle-now {
+  stroke: rgba(212,162,74,0.35);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+.sim-candle-axlbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  fill: var(--muted-2);
+  letter-spacing: 0.06em;
+}
+.sim-candle-symlbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+.sim-candle-pulse {
+  animation: sim-candle-pulse 2.4s ease-in-out infinite;
+}
+@keyframes sim-candle-pulse {
+  0%, 100% { r: 3; opacity: 1; }
+  50%      { r: 6; opacity: 0.55; }
+}
+
+/* ── pistons ────────────────────────────────────────────────────── */
+.sim-pistons {
+  background: rgba(0,0,0,0.32);
+  border: 1px solid rgba(212,162,74,0.14);
+  padding: 12px 12px 14px;
+  display: flex;
+  flex-direction: column;
+}
+.sim-pistons-kick {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.24em;
+  color: var(--gold);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.sim-pistons-row {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  align-items: stretch;
+  min-height: 180px;
+}
+.sim-piston-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+.sim-piston-track {
+  flex: 1;
+  width: 14px;
+  background: rgba(212,162,74,0.05);
+  border: 1px solid rgba(212,162,74,0.15);
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  margin-bottom: 4px;
+}
+.sim-piston-bar {
+  width: 100%;
+  background: var(--gold);
+  transition: height 600ms cubic-bezier(.34,.04,.16,1.01);
+  box-shadow: 0 -2px 8px rgba(212,162,74,0.18);
+}
+.sim-piston-active {
+  animation: sim-piston-pulse 1.6s ease-in-out infinite;
+}
+.sim-piston-down {
+  opacity: 0.55;
+}
+@keyframes sim-piston-pulse {
+  0%, 100% { box-shadow: 0 -2px 8px rgba(212,162,74,0.18); }
+  50%      { box-shadow: 0 -2px 18px rgba(212,162,74,0.55); }
+}
+.sim-piston-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--paper);
+  margin-top: 2px;
+}
+.sim-piston-val {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  color: var(--muted-2);
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.sim-pistons-foot {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--muted-1);
+  text-align: center;
+  text-transform: uppercase;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(212,162,74,0.18);
+}
+.sim-pistons-empty {
+  color: var(--muted-2);
+  text-align: center;
+  padding: 40px 8px;
+}
+
+/* ── judge carousel ─────────────────────────────────────────────── */
+.sim-carousel {
+  margin-top: 18px;
+}
+.sim-carousel-kick {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--gold);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.sim-carousel-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.sim-carousel-empty {
+  border-left: 3px solid rgba(212,162,74,0.2);
+  background: rgba(212,162,74,0.02);
+  padding: 14px 18px;
+}
+.sim-carousel-empty-body {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--muted-2);
+  font-style: italic;
+}
+.sim-card {
+  flex: 0 0 280px;
+  border-left: 3px solid var(--gold);
+  background: rgba(212,162,74,0.03);
+  padding: 12px 14px;
+}
+.sim-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.sim-card-sym {
+  font-family: 'Bodoni Moda', serif;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.sim-card-conf {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.18em;
+  color: var(--muted-1);
+  text-transform: uppercase;
+}
+.sim-card-syn {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--paper);
+  margin-bottom: 6px;
+}
+.sim-card-insight,
+.sim-card-pitch {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 11.5px;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+.sim-card-insight { color: var(--muted-1); font-style: italic; }
+.sim-card-pitch { color: var(--gold); }
+.sim-card-tag {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.18em;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+
+@media (max-width: 900px) {
+  .sim-canvas-body { grid-template-columns: 1fr; }
+  .sim-pistons-row { min-height: 120px; }
+}

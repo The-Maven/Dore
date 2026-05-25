@@ -125,33 +125,89 @@ test('renderMarket skips the freshness footer when freshness block is empty', ()
     'footer should be absent when no freshness data is available');
 });
 
-test('renderSimulator renders SOTU + token panel + calibration + config', () => {
+// Build a minimal timeline shape that matches what /api/simulator/
+// timeline returns. The candle chart needs ticks + candles; the
+// pistons need latest_prediction.
+function simulatorTimelineFixture(symbol = 'USDC') {
+  const now = Date.now();
+  const ticks = [];
+  const candles = [];
+  for (let i = 5; i >= 0; i--) {
+    const t = new Date(now - i * 5 * 60_000).toISOString();
+    const v = 2 + Math.sin(i) * 1.5;
+    ticks.push({ t, v, consensus_kind: 'agreed', max_disagreement_bps: 1 });
+    candles.push({
+      t_start: new Date(now - (i + 1) * 5 * 60_000).toISOString(),
+      t_end: t, open: v - 0.4, high: v + 0.6,
+      low: v - 0.6, close: v, count: 1,
+    });
+  }
+  return {
+    symbols: [symbol], bin_minutes: 5,
+    tokens: [{
+      symbol, ticks, candles,
+      latest_prediction: {
+        made_at: new Date(now).toISOString(),
+        resolves_at: new Date(now + 60 * 60_000).toISOString(),
+        point: 3.2,
+        p50_low: 1.5, p50_high: 4.9,
+        p80_low: -0.4, p80_high: 6.8,
+        p95_low: -2.6, p95_high: 9.0,
+        confidence_word: 'likely',
+        horizon_minutes: 60,
+        judge_synthesis: 'USDC sits inside the 50% band at +3.2bp.',
+        judge_insight: 'Peg holds within stated cone.',
+        judge_pitch: 'no action',
+      },
+    }],
+  };
+}
+
+function buildSimData(overrides = {}) {
+  return {
+    state: simulatorStateFixture(overrides.stateOverrides || {}),
+    preds: overrides.preds ||
+      { predictions: [simulatorPredictionFixture()], count: 1 },
+    calibration: overrides.calibration ||
+      simulatorCalibrationFixture(),
+    timeline: overrides.timeline || simulatorTimelineFixture(),
+  };
+}
+
+test('renderSimulator renders pulley + SOTU + canvas + carousel + calibration', () => {
   const { window } = loadApp();
   const mount = window.document.createElement('div');
   window.document.body.appendChild(mount);
+  // Reset the persistent SIM_VIEW state so this test runs cold.
+  if (window.SIM_VIEW) window.SIM_VIEW.selected = null;
+  // Seed the selection so the canvas shows the test token.
+  if (window.SIM_VIEW) window.SIM_VIEW.selected = new Set(['USDC']);
   assert.doesNotThrow(() =>
-    window.renderSimulator(
-      mount,
-      simulatorStateFixture(),
-      { predictions: [simulatorPredictionFixture()], count: 1 },
-      simulatorCalibrationFixture(),
-      '',
-    )
+    window.renderSimulator(mount, buildSimData(), '')
   );
-  // SOTU strip is present and includes the Brave quota cell.
+  // Pipeline pulley at the top.
+  assert.ok(mount.querySelector('.sim-pulley'),
+    'pipeline pulley should render');
+  // SOTU strip with Brave quota.
   assert.ok(mount.querySelector('.sim-sotu'), 'SOTU strip should render');
   const sotuText = mount.querySelector('.sim-sotu').textContent;
   assert.match(sotuText, /BRAVE QUOTA/);
-  assert.match(sotuText, /12 \/ 200/);
-  // Token panel + fan chart.
-  assert.ok(mount.querySelector('.sim-token-panel'),
-    'per-token panel should render');
-  assert.ok(mount.querySelector('.fan-svg'), 'fan chart SVG should render');
-  // Judge synthesis present.
-  assert.ok(mount.querySelector('.sim-judge'), 'judge panel should render');
-  const judgeText = mount.querySelector('.sim-judge').textContent;
-  assert.match(judgeText, /SYNTHESIS/);
-  assert.match(judgeText, /3\.2bp/);
+  assert.match(sotuText, /PEG SOURCES/);
+  // Main canvas + chips + candle SVG.
+  assert.ok(mount.querySelector('.sim-canvas'),
+    'main canvas hero should render');
+  assert.ok(mount.querySelector('.sim-chips'),
+    'token chips ribbon should render');
+  assert.ok(mount.querySelector('.sim-candle-svg'),
+    'candle chart SVG should render');
+  // Pistons present.
+  assert.ok(mount.querySelector('.sim-pistons'),
+    'forecast pistons column should render');
+  // Judge carousel surfaces synthesis.
+  assert.ok(mount.querySelector('.sim-carousel'),
+    'judge carousel should render');
+  assert.match(mount.querySelector('.sim-carousel').textContent,
+    /3\.2bp/);
   // Calibration page present.
   assert.ok(mount.querySelector('.sim-calibration'),
     'calibration page should render');
@@ -161,17 +217,18 @@ test('renderSimulator handles empty archive gracefully', () => {
   const { window } = loadApp();
   const mount = window.document.createElement('div');
   window.document.body.appendChild(mount);
+  if (window.SIM_VIEW) window.SIM_VIEW.selected = new Set();
+  const emptyTimeline = { symbols: [], bin_minutes: 5, tokens: [] };
+  const emptyCal = { count: 0, brier_mean: null, crps_mean: null,
+    outcome_histogram: {}, reliability_bins: [],
+    baseline_persistence_brier_mean: null,
+    baseline_climatology_brier_mean: null };
   assert.doesNotThrow(() =>
-    window.renderSimulator(
-      mount,
-      simulatorStateFixture(),
-      { predictions: [], count: 0 },
-      { count: 0, brier_mean: null, crps_mean: null,
-        outcome_histogram: {}, reliability_bins: [],
-        baseline_persistence_brier_mean: null,
-        baseline_climatology_brier_mean: null },
-      '',
-    )
+    window.renderSimulator(mount, buildSimData({
+      preds: { predictions: [], count: 0 },
+      calibration: emptyCal,
+      timeline: emptyTimeline,
+    }), '')
   );
   assert.ok(mount.querySelector('.sim-empty'),
     'empty-state panel should render when no predictions');
@@ -179,26 +236,24 @@ test('renderSimulator handles empty archive gracefully', () => {
     'empty calibration message should render');
 });
 
-test('renderSimulator absent-judge falls back to engine notes', () => {
+test('renderSimulator carousel collapses when no judge output present', () => {
   const { window } = loadApp();
   const mount = window.document.createElement('div');
   window.document.body.appendChild(mount);
-  const pred = simulatorPredictionFixture({
-    judge_synthesis: null, judge_insight: null,
-    judge_pitch: null, judge_model: null,
-  });
+  if (window.SIM_VIEW) window.SIM_VIEW.selected = new Set(['USDC']);
+  const tl = simulatorTimelineFixture();
+  tl.tokens[0].latest_prediction.judge_synthesis = null;
+  tl.tokens[0].latest_prediction.judge_insight = null;
+  tl.tokens[0].latest_prediction.judge_pitch = null;
   assert.doesNotThrow(() =>
-    window.renderSimulator(
-      mount,
-      simulatorStateFixture(),
-      { predictions: [pred], count: 1 },
-      simulatorCalibrationFixture(),
-      '',
-    )
+    window.renderSimulator(mount, buildSimData({ timeline: tl }), '')
   );
-  const judge = mount.querySelector('.sim-judge-absent');
-  assert.ok(judge, 'absent-judge fallback should render');
-  assert.match(judge.textContent, /No judge layer ran/);
+  // Empty-judge carousel renders its honest fallback message.
+  assert.ok(mount.querySelector('.sim-carousel-empty'),
+    'empty carousel should render its fallback when no judge text');
+  const empty = mount.querySelector('.sim-carousel-empty');
+  assert.match(empty.textContent,
+    /has not synthesised|judge layer has not/);
 });
 
 test('renderRedemption handles crypto-collateralized (no tiers)', () => {
