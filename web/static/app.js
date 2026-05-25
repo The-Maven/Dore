@@ -5867,7 +5867,9 @@ function viewMarket() {
       + 'instantly on subsequent loads for 30 minutes.',
   }, icon('i-supply'), 'REFRESH');
   app.append(viewHead('◈', 'MARKET',
-    'cross-token state of the stablecoin universe — composed every 30 minutes',
+    'the institutional trust briefing — verification health, concentration ' +
+    'risk, freshness, and what moved overnight. composed every 30 minutes ' +
+    'from the deterministic surfaces beneath.',
     runBtn));
   const mount = el('div', { class: 'view-body market-body' });
   app.append(mount);
