@@ -6334,31 +6334,45 @@ function viewSimulator(symbolArg) {
     icon('i-supply'), 'REFRESH');
   const tickNowBtn = el('button', {
     class: 'btn ghost',
-    title: 'Run the simulator cycle synchronously (curator only).',
+    title: 'Fire one ticker cycle synchronously.',
   }, icon('i-frame'), 'TICK NOW');
+  // Burst variant for fast testing: fires 6 cycles back-to-back so
+  // the engine clears the insufficient-history floor in one click.
+  const burstBtn = el('button', {
+    class: 'btn ghost',
+    title: 'Fire 6 ticker cycles in one shot. Useful for warming ' +
+      'the calibration archive past the 6-reading insufficient-' +
+      'history floor.',
+  }, icon('i-frame'), 'BURST ×6');
   app.append(viewHead('F9', 'SIMULATOR',
     'predict · attribute · score · narrate. the track record is the product.',
-    refreshBtn, tickNowBtn));
+    refreshBtn, tickNowBtn, burstBtn));
   const mount = el('div', { class: 'view-body sim-body' });
   app.append(mount);
 
   refreshBtn.addEventListener('click', () => loadSimulator(mount, symbolArg));
-  tickNowBtn.addEventListener('click', async () => {
-    tickNowBtn.disabled = true;
-    const orig = tickNowBtn.innerHTML;
-    tickNowBtn.replaceChildren(el('span', { class: 'spinner' }),
-      document.createTextNode(' TICKING'));
+  const runTick = async (btn, count, label) => {
+    btn.disabled = true;
+    const orig = btn.innerHTML;
+    btn.replaceChildren(el('span', { class: 'spinner' }),
+      document.createTextNode(' ' + label));
     try {
-      const resp = await fetch('/api/simulator/tick', { method: 'POST' });
+      const url = '/api/simulator/tick' +
+        (count > 1 ? '?count=' + count : '');
+      const resp = await fetch(url, { method: 'POST' });
       if (!resp.ok) throw new Error('tick failed: ' + resp.status);
       await loadSimulator(mount, symbolArg);
     } catch (err) {
       console.error('simulator tick failed', err);
     } finally {
-      tickNowBtn.disabled = false;
-      tickNowBtn.innerHTML = orig;
+      btn.disabled = false;
+      btn.innerHTML = orig;
     }
-  });
+  };
+  tickNowBtn.addEventListener('click', () =>
+    runTick(tickNowBtn, 1, 'TICKING'));
+  burstBtn.addEventListener('click', () =>
+    runTick(burstBtn, 6, 'BURSTING'));
   loadSimulator(mount, symbolArg);
 }
 

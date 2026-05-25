@@ -1906,22 +1906,50 @@ def simulator_config_set(
 
 @app.post("/api/simulator/tick")
 def simulator_tick_now(
+    count: int = 1,
     user: dict[str, Any] | None = Depends(current_user),
 ) -> dict[str, Any]:
-    """Kick a ticker cycle synchronously, bypassing the schedule.
-    Auth-optional by operator preference: heavy testing iterates on
-    this endpoint and signing in for every kick is friction. The
-    cycle costs real LLM + Brave budget though, so the audit log
-    captures who triggered it when sign-in is available."""
+    """Kick ticker cycle(s) synchronously, bypassing the schedule.
+
+    `count` (default 1) fires N back-to-back cycles. Useful for
+    bootstrapping past the 6-reading insufficient-history floor in
+    one click. Capped at 20 so a copy-paste typo can't drain the
+    Brave / LLM budget.
+
+    Auth-optional by operator preference (heavy testing iterates on
+    this endpoint). The cycle costs real LLM + Brave budget though,
+    so the audit log captures who triggered it + the burst size.
+    """
     from sca.movement.ticker import _tick_once
-    summary = _tick_once()
+    n = max(1, min(count, 20))
+    summaries = []
+    for _ in range(n):
+        summaries.append(_tick_once())
     by = (user or {}).get("user", {}).get("id") if user else "anonymous"
     log_event(
         "movement.tick.manual", level="info",
-        by=by,
-        symbols=len(summary.get("per_symbol", [])),
+        by=by, burst=n,
+        symbols=len(summaries[-1].get("per_symbol", [])),
     )
-    return summary
+    # Return the last cycle's full summary plus a roll-up so a
+    # caller iterating on the UI can see what landed across the
+    # burst without having to parse N nested objects.
+    last = summaries[-1]
+    emitted_total = sum(
+        sum(1 for v in (s.get("emitted") or {}).values() if v)
+        for cycle in summaries
+        for s in (cycle.get("per_symbol") or [])
+    )
+    graded_total = sum(
+        (cycle.get("resolver") or {}).get("graded", 0)
+        for cycle in summaries
+    )
+    last["burst"] = {
+        "cycles": n,
+        "emitted_total": emitted_total,
+        "graded_total": graded_total,
+    }
+    return last
 
 
 @app.get("/")
