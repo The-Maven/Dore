@@ -9329,6 +9329,43 @@ function _renderTradeReceipt(trade) {
     wrap.appendChild(cal);
   }
 
+  // Section 5: MARKET CONTEXT — Brave web-search snippets the trader
+  // could see at decision time. Cached 12h via brave_context.py so
+  // showing them costs no API quota.
+  const news = trade.entry_news_context || [];
+  if (news.length) {
+    const ctx = el('div', { class: 'sim-trade-receipt-section' });
+    ctx.appendChild(el('div', { class: 'sim-trade-receipt-head' },
+      el('span', { class: 'sim-trade-receipt-tag' }, 'MARKET CONTEXT'),
+      el('span', { class: 'sim-trade-receipt-sub' },
+        'web search at entry · ' + news.length + ' result' +
+        (news.length === 1 ? '' : 's'))));
+    for (const n of news.slice(0, 3)) {
+      const item = el('div', { class: 'sim-trade-receipt-news' });
+      const titleLine = el('div', { class: 'sim-trade-receipt-news-title' });
+      if (n.url) {
+        titleLine.appendChild(el('a', {
+          class: 'sim-trade-receipt-news-link',
+          href: n.url, target: '_blank', rel: 'noopener',
+        }, n.title || n.url));
+      } else {
+        titleLine.appendChild(el('span', {}, n.title || '(no title)'));
+      }
+      if (n.trust_tier) {
+        titleLine.appendChild(el('span', { class: 'sim-trade-receipt-news-trust' },
+          n.trust_tier));
+      }
+      item.appendChild(titleLine);
+      if (n.snippet) {
+        item.appendChild(el('div', { class: 'sim-trade-receipt-news-snippet' },
+          (n.snippet || '').slice(0, 200) +
+          ((n.snippet || '').length > 200 ? '…' : '')));
+      }
+      ctx.appendChild(item);
+    }
+    wrap.appendChild(ctx);
+  }
+
   return wrap;
 }
 

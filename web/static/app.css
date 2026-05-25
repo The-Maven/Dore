@@ -6788,6 +6788,60 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   color: var(--sim-down, #FF433D);
 }
 
+/* Market context (Brave snippets) section in the receipt */
+.sim-trade-receipt-news {
+  margin-top: 4px;
+  padding: 5px 8px;
+  background: rgba(212, 162, 74, 0.05);
+  border-left: 2px solid rgba(212, 162, 74, 0.32);
+  border-radius: 0 2px 2px 0;
+}
+.sim-trade-receipt-news-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--paper, #EFEAE0);
+  margin-bottom: 2px;
+}
+.sim-trade-receipt-news-link {
+  color: var(--sim-amber, #D4A24A);
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(212, 162, 74, 0.45);
+}
+.sim-trade-receipt-news-link:hover {
+  border-bottom-style: solid;
+}
+.sim-trade-receipt-news-trust {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8.5px;
+  font-weight: 700;
+  color: var(--muted-2, #9A9590);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  background: rgba(212, 162, 74, 0.08);
+  border: 1px solid rgba(212, 162, 74, 0.18);
+  border-radius: 2px;
+}
+.sim-trade-receipt-news-snippet {
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted-2, #9A9590);
+  font-style: italic;
+}
+:root[data-theme="light"] .sim-trade-receipt-news {
+  background: rgba(212, 162, 74, 0.10);
+  border-left-color: #8B6720;
+}
+:root[data-theme="light"] .sim-trade-receipt-news-link {
+  color: #8B6720;
+}
+
 :root[data-theme="light"] .sim-trade-receipt {
   background: rgba(28, 26, 20, 0.04);
   border-color: rgba(212, 162, 74, 0.24);

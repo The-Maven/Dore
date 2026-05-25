@@ -126,6 +126,13 @@ class Trade:
     paired_with: Optional[str] = None    # pairs_divergence: other leg's symbol
     venue_outlier: Optional[str] = None  # cross_venue_arb: outlier source name
     priority_score: float = 0.0          # the score the candidate had at decision time
+    # v5 — market context. Recent web-search results surfaced at
+    # decision time so the rationale + receipt include the news /
+    # corpus state the trader could see. Cached aggressively via
+    # brave_context.py (12h TTL + dual interest gate + daily quota
+    # cap), so adding this layer does NOT burn through the Brave
+    # token budget.
+    entry_news_context: list = field(default_factory=list)
     # Filled when the trade resolves:
     status: str = "open"      # 'open' | 'resolved'
     exit_bps: Optional[float] = None
@@ -532,6 +539,23 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
             if entry_consensus_price is None and isinstance(current, (int, float)):
                 entry_consensus_price = 1.0 + (current / 10_000.0)
 
+            # Market context — pull Brave web-search results for the
+            # symbol from the existing cached layer (12h TTL + interest
+            # gate + daily quota cap). Cheap when cached (just a JSON
+            # read); never makes a network call when on calm forecast
+            # OR the cache is warm. Stamps the receipt with the news
+            # the trader could see at decision time.
+            news_context = []
+            try:
+                from sca.movement.brave_context import fetch_context_for
+                news_context = fetch_context_for(
+                    sym, kind="peg_deviation",
+                    confidence_word=pred.get("confidence_word"),
+                    point_value=pred.get("point"),
+                )[:3]  # cap to 3 results on the trade row; full list cached
+            except Exception:  # noqa: BLE001 — never block a trade on the layer
+                news_context = []
+
             trade = Trade(
                 id=f"t{int(time.time() * 1000)}-{sym}",
                 symbol=sym,
@@ -563,6 +587,7 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 paired_with=c.paired_with,
                 venue_outlier=c.venue_outlier,
                 priority_score=c.priority_score,
+                entry_news_context=news_context,
             )
             trades.append(trade)
             opened_now.append(trade)
