@@ -278,6 +278,33 @@ def test_timeline_endpoint_returns_candles_and_forecast(client, monkeypatch):
     assert pred["point"] == 4.0
 
 
+def test_commentary_endpoint_returns_card(client, tmp_path, monkeypatch):
+    """Commentary endpoint returns a per-token AI Commentary card
+    with structural_one_liner + cone thresholds. With no LLM
+    configured, the deterministic fallback path produces a card
+    grounded in the cheat sheet alone."""
+    from sca.movement import commentary as _comm
+    monkeypatch.setattr(_comm, "_CACHE_PATH", tmp_path / "ccc.json")
+    from sca.store import get_store
+    _seed_usdc_history(get_store())
+
+    resp = client.get("/api/simulator/commentary/USDC")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["symbol"] == "USDC"
+    assert "Circle" in data["body"] or "money-market" in data["body"]
+    assert data["citations"]
+    assert data["cone_normal_bps"] > 0
+    assert data["cone_alert_bps"] > data["cone_normal_bps"]
+
+
+def test_commentary_endpoint_unknown_symbol_returns_404(client):
+    """Honest n/a — an unregistered token must return 404 not a
+    fake card."""
+    resp = client.get("/api/simulator/commentary/FAKECOIN")
+    assert resp.status_code == 404
+
+
 # NOTE: a TestClient.stream() test for /api/simulator/stream was
 # attempted but TestClient doesn't reliably terminate the async
 # event_generator() (it sleeps 2s in a while-True loop). The SSE

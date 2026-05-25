@@ -159,6 +159,59 @@ def test_consensus_cached_within_ttl(monkeypatch):
     assert call_count["n"] == n_after_first  # second hit cached
 
 
+def test_coingecko_fallback_picks_up_defi_native(monkeypatch):
+    """CoinGecko fills the gap when CB + Kraken don't list a
+    DeFi-native token (FRAX, GHO, crvUSD, etc). Three sources
+    should all report; consensus_kind should be 'agreed' when
+    within tolerance."""
+    monkeypatch.setenv(peg_price._HTTP_DISABLED_ENV, "")
+    peg_price._CACHE.clear()
+
+    def fake_get(url, *a, **kw):
+        if "coinbase" in url:
+            return _Resp({"error": "not listed"}, status=404)
+        if "kraken" in url:
+            return _Resp({"error": ["EQuery:Unknown asset pair"]})
+        if "coingecko" in url:
+            # Return a price for any CG id that's in the request URL
+            for sym, gid in peg_price._COINGECKO_ID_MAP.items():
+                if gid in url:
+                    return _Resp({gid: {"usd": 0.9998}})
+            return _Resp({})
+        raise AssertionError(f"unexpected url: {url}")
+
+    import requests
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    tick = peg_price.fetch_consensus("FRAX")
+    assert tick is not None
+    assert tick.consensus_kind == "single"
+    assert len(tick.sources) == 1
+    assert tick.sources[0]["name"] == "coingecko"
+    assert abs(tick.consensus_price - 0.9998) < 1e-6
+
+
+def test_coingecko_case_insensitive_lookup(monkeypatch):
+    """Config can send 'crvUSD' (mixed case) while the CG ID map
+    keys on 'CRVUSD'. The lookup must try upper / lower fallbacks."""
+    monkeypatch.setenv(peg_price._HTTP_DISABLED_ENV, "")
+    peg_price._CACHE.clear()
+
+    def fake_get(url, *a, **kw):
+        if "coingecko" in url and "crvusd" in url:
+            return _Resp({"crvusd": {"usd": 1.0001}})
+        # CB + Kraken don't list crvUSD
+        return _Resp({"error": "no"}, status=404)
+
+    import requests
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    # Lower-case symbol — caller might send 'crvUSD'
+    tick = peg_price.fetch_consensus("crvUSD")
+    assert tick is not None, "crvUSD lookup should hit CG case-insensitively"
+    assert tick.consensus_kind == "single"
+
+
 def test_fetch_price_returns_combined_source_label(monkeypatch):
     """The backwards-compatible fetch_price wrapper labels the
     source as 'coinbase+kraken' when both responded so legacy

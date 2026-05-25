@@ -43,7 +43,10 @@ AGREEMENT_TOLERANCE_BPS = 5.0
 
 # Per-symbol cache so a UI poll burst doesn't burn upstream rate
 # limits. The ticker writes the persistent row at its own cadence.
-_CACHE_TTL_S = 60.0
+# 20s (was 60s) — keeps live feel without smacking Coinbase/Kraken
+# free-tier limits at our cadence (1 tick per minute per symbol
+# means each upstream gets ≤3 hits/minute even with cache misses).
+_CACHE_TTL_S = 20.0
 _CACHE: dict[str, "ConsensusTick"] = {}
 
 _HTTP_DISABLED_ENV = "SCA_PEG_PRICE_DISABLED"

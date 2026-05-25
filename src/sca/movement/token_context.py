@@ -295,13 +295,16 @@ _REGISTRY: dict[str, TokenContext] = {
 
 
 def get_context(symbol: str) -> TokenContext | None:
-    """Look up the cheat sheet for a symbol. Case-sensitive — most
-    stablecoin tickers ARE case-sensitive (crvUSD, sUSDe). Tries
-    upper-case as a fallback."""
+    """Look up the cheat sheet for a symbol. The registry uses
+    mixed-case keys (crvUSD, sUSDe) because that's how the issuers
+    capitalise their tickers. Callers may send any case; we try
+    exact, then case-insensitive across all keys."""
     if symbol in _REGISTRY:
         return _REGISTRY[symbol]
-    if symbol.upper() in _REGISTRY:
-        return _REGISTRY[symbol.upper()]
+    sym_l = symbol.lower()
+    for k, v in _REGISTRY.items():
+        if k.lower() == sym_l:
+            return v
     return None
 
 
