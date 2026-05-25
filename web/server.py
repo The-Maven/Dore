@@ -2044,11 +2044,29 @@ def simulator_stream(request: Request):
             return
 
         # Track last seen state so each tick is a DIFF, not a snapshot.
-        last_event_ts = ""
+        # `last_event_ts` is a float (unix seconds) because observability
+        # events ship `ts` as a float. Initialising it as "" (the old
+        # bug) caused `float > ""` TypeErrors every SSE cycle — every
+        # client saw the stream silently fail on the first diff cycle.
+        last_event_ts: float = 0.0
         last_current_bps: dict[str, float | None] = {
             t["symbol"]: t.get("current_bps") for t in payload.get("tokens", [])
         }
         idle_ticks = 0
+
+        def _ev_ts(ev) -> float:
+            """Coerce an event ts to a comparable float. Events ship
+            ts as a float, but a future schema change or a manually-
+            injected event could send a string — be tolerant."""
+            t = ev.get("ts")
+            if isinstance(t, (int, float)):
+                return float(t)
+            if isinstance(t, str) and t:
+                try:
+                    return float(t)
+                except ValueError:
+                    return 0.0
+            return 0.0
 
         while True:
             # Client closed connection?
@@ -2078,11 +2096,11 @@ def simulator_stream(request: Request):
 
                 new_events = []
                 for ev in fresh.get("events", []):
-                    if ev.get("ts", "") > last_event_ts:
+                    if _ev_ts(ev) > last_event_ts:
                         new_events.append(ev)
                 if fresh.get("events"):
                     last_event_ts = max(
-                        (e.get("ts", "") for e in fresh["events"]),
+                        (_ev_ts(e) for e in fresh["events"]),
                         default=last_event_ts,
                     )
 

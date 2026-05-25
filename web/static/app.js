@@ -6387,7 +6387,7 @@ const SIM_VIEW = {
   lastFeed: null,
   lastTickAt: null,
   pulseSeq: 0,
-  lastEventTs: '',          // newest event ts seen; for SSE diff dedup
+  lastEventTs: 0,           // newest event ts seen (unix seconds); for SSE diff dedup
   wireRows: [],             // rolling buffer of WIRE rows, FIFO 40
 };
 
@@ -6422,7 +6422,10 @@ async function loadSimulator(mount, symbolArg) {
   // Seed event wire from the initial snapshot.
   SIM_VIEW.wireRows = (feed.events || []).slice(0, 40);
   SIM_VIEW.lastEventTs = SIM_VIEW.wireRows
-    .reduce((mx, e) => (e.ts && e.ts > mx ? e.ts : mx), '');
+    .reduce((mx, e) => {
+      const v = Number(e.ts) || 0;
+      return v > mx ? v : mx;
+    }, 0);
 
   mount.innerHTML = '';
   renderSimulator(mount, feed);
@@ -6494,8 +6497,10 @@ function redrawSimulator(mount, feed) {
   // Refresh the wire from the full event list (FIFO 40).
   const fresh = (feed.events || []).slice(0, 40);
   SIM_VIEW.wireRows = fresh;
-  SIM_VIEW.lastEventTs = fresh.reduce(
-    (mx, e) => (e.ts && e.ts > mx ? e.ts : mx), '');
+  SIM_VIEW.lastEventTs = fresh.reduce((mx, e) => {
+    const v = Number(e.ts) || 0;
+    return v > mx ? v : mx;
+  }, 0);
   mount.innerHTML = '';
   renderSimulator(mount, feed);
 }
@@ -6575,14 +6580,17 @@ function pushWireRows(newEvents) {
   if (!wire) return;
   // Prepend each new event with a brief fade-in. FIFO cap 40.
   for (const ev of newEvents) {
-    if (!ev.ts || ev.ts <= SIM_VIEW.lastEventTs) continue;
+    const ts = Number(ev.ts) || 0;
+    if (!ts || ts <= SIM_VIEW.lastEventTs) continue;
     const row = renderWireRow(ev);
     row.classList.add('sim-wire-fadein');
     wire.prepend(row);
   }
   while (wire.children.length > 40) wire.removeChild(wire.lastChild);
-  SIM_VIEW.lastEventTs = newEvents.reduce(
-    (mx, e) => (e.ts && e.ts > mx ? e.ts : mx), SIM_VIEW.lastEventTs);
+  SIM_VIEW.lastEventTs = newEvents.reduce((mx, e) => {
+    const v = Number(e.ts) || 0;
+    return v > mx ? v : mx;
+  }, SIM_VIEW.lastEventTs);
 }
 
 function updateBraveQuotaInPlace(q) {
@@ -7396,9 +7404,30 @@ function simWire(feed) {
             el('span', { class: 'sim-pulley-label' }, s))))));
 }
 
+// Server emits ev.ts as unix-seconds (Python time.time()). JS Date()
+// expects milliseconds — converting a bare seconds value renders the
+// epoch as 1970. Multiply when the value is in seconds (<10^11) so
+// future migrations to ms-precision still render correctly.
+function _wireTsMs(ts) {
+  if (ts == null) return null;
+  if (typeof ts === 'string') {
+    // Already an ISO string — let Date parse it directly.
+    const parsed = Date.parse(ts);
+    return isNaN(parsed) ? null : parsed;
+  }
+  const n = Number(ts);
+  if (!isFinite(n)) return null;
+  // Heuristic: values below 10^11 are seconds-since-epoch
+  // (anything ≥ 2286-11-20). Multiply to get ms.
+  return n < 1e11 ? n * 1000 : n;
+}
+
 function renderWireRow(ev) {
   const glyph = wireGlyphFor(ev.kind);
-  const time = ev.ts ? new Date(ev.ts).toISOString().slice(11, 19) : '--:--:--';
+  const tsMs = _wireTsMs(ev.ts);
+  const time = tsMs != null
+    ? new Date(tsMs).toISOString().slice(11, 19)
+    : '--:--:--';
   const levelCls = ev.level === 'warn' ? 'sim-wire-warn'
     : ev.level === 'error' ? 'sim-wire-error' : '';
   const isGroup = ev._group_count && ev._group_count > 1;
@@ -7435,8 +7464,10 @@ function groupWireRows(rows) {
       if (ev.symbol && !cur._group_symbols.includes(ev.symbol)) {
         cur._group_symbols.push(ev.symbol);
       }
-      // Keep the newest timestamp at the top
-      if (!cur.ts || (ev.ts && ev.ts > cur.ts)) cur.ts = ev.ts;
+      // Keep the newest timestamp at the top (ts is unix seconds, float)
+      const evTs = Number(ev.ts) || 0;
+      const curTs = Number(cur.ts) || 0;
+      if (!curTs || evTs > curTs) cur.ts = ev.ts;
       continue;
     }
     cur = Object.assign({}, ev, {

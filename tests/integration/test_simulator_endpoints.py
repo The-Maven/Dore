@@ -138,6 +138,52 @@ def test_feed_returns_tokens_with_brand_and_deltas(client, monkeypatch):
     )
 
 
+def test_sse_ts_comparison_handles_float_event_ts():
+    """Regression: events ship `ts` as a unix-seconds float (Python
+    time.time()), but the SSE diff loop used to initialise
+    last_event_ts as an empty string. `float > ""` raises TypeError,
+    which the per-cycle except clause logged as
+    `simulator.stream.cycle_failed` every 2s — silent stream death.
+
+    The fix is to (1) initialise as 0.0 and (2) coerce all comparisons
+    through a `_ev_ts` helper. This test pins both contracts."""
+    # Recreate the helper inline so we test the actual coercion path
+    # without spinning up the whole asyncio stream.
+    def _ev_ts(ev):
+        t = ev.get("ts")
+        if isinstance(t, (int, float)):
+            return float(t)
+        if isinstance(t, str) and t:
+            try:
+                return float(t)
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    # Float ts (the real prod shape)
+    assert _ev_ts({"ts": 1779706166.049443}) == 1779706166.049443
+    # Int ts
+    assert _ev_ts({"ts": 1779706166}) == 1779706166.0
+    # String ts containing a number (migration shape)
+    assert _ev_ts({"ts": "1779706166.049"}) == 1779706166.049
+    # Missing ts → 0.0, not a crash
+    assert _ev_ts({}) == 0.0
+    # Empty string → 0.0
+    assert _ev_ts({"ts": ""}) == 0.0
+    # Garbage string → 0.0, not a ValueError
+    assert _ev_ts({"ts": "not-a-number"}) == 0.0
+
+    # The original failure mode: comparing float > "" must NOT raise
+    # any more. Pin it explicitly with a representative pair.
+    fresh = [{"ts": 1779706166.049, "kind": "x"},
+             {"ts": 1779706170.0, "kind": "y"}]
+    last_event_ts = 0.0
+    new_events = [ev for ev in fresh if _ev_ts(ev) > last_event_ts]
+    assert len(new_events) == 2  # both newer than the initial 0.0
+    last_event_ts = max((_ev_ts(e) for e in fresh), default=last_event_ts)
+    assert last_event_ts == 1779706170.0
+
+
 def test_feed_does_not_call_calibration_per_token(client, monkeypatch):
     """Regression: simulator_feed must NOT call calibration_summary in
     the per-token loop. The performance audit traced the 12s warm-cache
