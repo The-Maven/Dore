@@ -848,6 +848,12 @@ const STATE = {
   sources: {},           // source_id → { title, url, tier, verified, included }
   sourcesLoaded: false,  // becomes true on first successful /api/sources fetch
   sourcesLoading: null,  // in-flight promise (so concurrent callers share a load)
+  // v5: the simulator's most-recent feed, keyed for sidebar consumption.
+  // The outer instruments sidebar reads this when on the simulator surface
+  // so it can render the rich rows (bp, sparkline, 1m delta) without
+  // needing its own data fetch. Updated by renderSimulator on every paint.
+  simFeedBySym: {},      // symbol -> token from the feed (current_bps,
+                          //   deltas, sparkline, brand, meta)
 };
 const FEED_MAX = 320;
 
@@ -1909,29 +1915,116 @@ function refreshInstruments() {
   const box = $('#side-instr');
   if (!box) return;
   box.innerHTML = '';
-  STATE.tokens.forEach((t) => {
-    const s = STATE.supply[t.symbol];
-    const st = tokenStatus(s);
-    // real on-chain read — held static between polls
-    const native = nativeOf(s);
-    box.append(el('div', {
-      class: 'instr-row' + (t.symbol === STATE.activeSymbol ? ' active' : ''),
-      onclick: () => { location.hash = currentSurfaceHash(t.symbol); },
-    },
-      el('div', { class: 'instr-id' },
-        tokenMark(t.symbol, 'tmark-side'),
-        el('div', {},
-          el('div', { class: 'instr-sym' }, t.symbol),
-          el('div', { class: 'instr-sub' }, t.issuer))),
-      el('div', {},
-        el('div', { class: 'instr-val ' + (native == null ? 'v-muted' : '') },
-          native == null ? '— —' : fmtUSD(native)),
-        el('div', { class: 'instr-stat v-' + ({ ok: 'green', watch: 'amber', alert: 'rose', idle: 'muted' }[st.tag]) },
-          st.label)),
-    ));
+  // v5 unified sidebar: when the user is on the SIMULATOR surface,
+  // the outer instruments rail upgrades to the rich live view —
+  // brand-accent bar, sparkline, bp value with directional colour,
+  // 1m delta. This is the same content the inner sim-rail-left used
+  // to render; consolidating it here frees the simulator's middle
+  // column for bigger content cards.
+  const isSim = (location.hash || '').startsWith('#simulator');
+  const focusedSim = isSim
+    ? ((location.hash.split('/')[1] || '').toUpperCase() ||
+        (Object.values(STATE.simFeedBySym)[0] || {}).symbol || '')
+    : '';
+  // Sort: in simulator mode, sort the way the inner rail did — live
+  // tokens first, then by |1m delta| descending. Outside simulator,
+  // keep STATE.tokens registry order (matches the rest of the app).
+  let tokens = STATE.tokens.slice();
+  if (isSim) {
+    tokens.sort((a, b) => {
+      const aT = STATE.simFeedBySym[a.symbol] || {};
+      const bT = STATE.simFeedBySym[b.symbol] || {};
+      const aHas = aT.current_bps != null ? 1 : 0;
+      const bHas = bT.current_bps != null ? 1 : 0;
+      if (aHas !== bHas) return bHas - aHas;
+      const aD = Math.abs((aT.deltas || {}).d1m || 0);
+      const bD = Math.abs((bT.deltas || {}).d1m || 0);
+      return bD - aD;
+    });
+  }
+  tokens.forEach((t) => {
+    box.append(_renderInstrumentRow(t, isSim, focusedSim));
   });
   const c = $('#instr-count');
   if (c) c.textContent = STATE.tokens.length;
+}
+
+
+function _renderInstrumentRow(t, isSim, focusedSim) {
+  // The two render paths share the same shell + click behaviour so
+  // hover / focused effects look uniform across surfaces.
+  const isFocused = isSim
+    ? (t.symbol === focusedSim)
+    : (t.symbol === STATE.activeSymbol);
+  if (isSim) {
+    return _instrumentRowSim(t, isFocused);
+  }
+  return _instrumentRowSupply(t, isFocused);
+}
+
+
+function _instrumentRowSim(t, isFocused) {
+  // Rich row used on the simulator surface — same content the inner
+  // sim-rail-left used to carry, now upgraded into the outer sidebar.
+  const fed = STATE.simFeedBySym[t.symbol] || {};
+  const brand = fed.brand || { accent: '#D4A24A', name: t.issuer || '' };
+  const meta = fed.meta || {};
+  const yld = !!meta.yield_bearing;
+  const v = fed.current_bps;
+  const d1m = (fed.deltas || {}).d1m;
+  const noData = v == null;
+  const dColor = (d1m == null) ? 'sim-delta-flat'
+    : d1m > 0 ? 'sim-delta-up'
+    : d1m < 0 ? 'sim-delta-down' : 'sim-delta-flat';
+  return el('div', {
+    class: 'instr-row instr-row-sim'
+      + (isFocused ? ' instr-row-focused' : '')
+      + (noData ? ' instr-row-empty' : ''),
+    'data-sim-sym': t.symbol,
+    onclick: () => { location.hash = '#simulator/' + t.symbol; },
+  },
+    el('div', { class: 'instr-row-bar',
+      style: 'background:' + brand.accent }),
+    el('div', { class: 'instr-row-body' },
+      el('div', { class: 'instr-row-line1' },
+        el('span', { class: 'instr-row-sym' }, t.symbol,
+          yld ? el('span', { class: 'sim-yld-tag sim-yld-tag-inline' },
+            'YLD') : null),
+        el('span', { class: 'instr-row-val' + (noData ? ' v-muted' : '') },
+          noData ? '—'
+            : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'bp')),
+      el('div', { class: 'instr-row-line2' },
+        sparklineSvg(fed.sparkline || [], brand.accent, 64, 18, t.symbol),
+        el('span', { class: 'instr-row-d1m ' + dColor },
+          d1m == null
+            ? '·'
+            : (d1m >= 0 ? '▲' : '▼') + Math.abs(Number(d1m)).toFixed(2)))));
+}
+
+
+function _instrumentRowSupply(t, isFocused) {
+  // Pre-existing render path for non-simulator surfaces. Native
+  // supply + status tag. Kept intact so analyze / sanctions /
+  // redemption surfaces are unchanged.
+  const s = STATE.supply[t.symbol];
+  const st = tokenStatus(s);
+  const native = nativeOf(s);
+  return el('div', {
+    class: 'instr-row' + (isFocused ? ' active' : ''),
+    onclick: () => { location.hash = currentSurfaceHash(t.symbol); },
+  },
+    el('div', { class: 'instr-id' },
+      tokenMark(t.symbol, 'tmark-side'),
+      el('div', {},
+        el('div', { class: 'instr-sym' }, t.symbol),
+        el('div', { class: 'instr-sub' }, t.issuer))),
+    el('div', {},
+      el('div', { class: 'instr-val ' + (native == null ? 'v-muted' : '') },
+        native == null ? '— —' : fmtUSD(native)),
+      el('div', { class: 'instr-stat v-' +
+        ({ ok: 'green', watch: 'amber', alert: 'rose', idle: 'muted' }[st.tag]) },
+        st.label)),
+  );
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -6720,13 +6813,18 @@ function _simReconcileNotices(mount, feed) {
 }
 
 function _simReconcileTokens(mount, tokens) {
-  // Per-token surface diff: ribbon + rail + hero big value. We reuse
-  // the SSE flashTokenCell function — it handles `data-sim-val` slots
+  // Per-token surface diff: ribbon + hero big value. We reuse the
+  // SSE flashTokenCell function — it handles `data-sim-val` slots
   // anywhere in the DOM, so any cell tagged with the right
   // `data-sim-sym` attribute gets flashed.
   for (const t of tokens) {
     flashTokenCell(t);
   }
+  // v5: the outer instruments sidebar now carries the rich sim
+  // rows. Update the cache and repaint so deviation + delta values
+  // stay in sync with each SSE diff.
+  tokens.forEach(t => { STATE.simFeedBySym[t.symbol] = t; });
+  refreshInstruments();
 }
 
 function _simReconcileStatusStrip(mount, feed) {
@@ -7080,6 +7178,13 @@ function renderSimulator(mount, feed) {
   const focused = tokens.find(t => t.symbol === SIM_VIEW.focused)
     || tokens[0] || null;
   if (focused) SIM_VIEW.focused = focused.symbol;
+  // v5: cache the feed for the OUTER instruments sidebar so it can
+  // render the rich sim-style rows (sparkline + bp + 1m delta) for
+  // every token. Then trigger a sidebar repaint so the upgrade
+  // appears immediately.
+  STATE.simFeedBySym = {};
+  tokens.forEach(t => { STATE.simFeedBySym[t.symbol] = t; });
+  refreshInstruments();
 
   // 0. MARKET NOTICES — flash-animated pills for conditions worth
   //    seeing right now (wide cone, disputed peg, depeg, model miss).
@@ -7749,10 +7854,13 @@ function simStatusBar(feed) {
         String(q.calls || 0) + ' / ' + String(q.cap || '?'))));
 }
 
-// ── three-column workspace ─────────────────────────────────────────
+// ── two-column workspace ───────────────────────────────────────────
+// v5 consolidation: the inner token rail moved out into the OUTER
+// instruments sidebar (rendered by refreshInstruments → instr-row-sim).
+// What remains here is the hero pane + the WIRE side panel. The freed
+// width lets the hero cards breathe at v5's larger sizes.
 function simWorkspace(tokens, focused, feed) {
   return el('section', { class: 'sim-workspace fade-in' },
-    simTokenRail(tokens, focused),
     simHeroPane(focused, feed),
     simWire(feed));
 }
@@ -8705,6 +8813,13 @@ function renderTraderBody(wrap, data, focusedSym) {
   // story before anything else.
   body.appendChild(_traderAccountEquity(tr));
 
+  // ── Today's Thesis (LLM brief) + Yesterday's Reflection ──────────
+  // The "rich language" layer: a desk-runner's morning brief and
+  // last-day post-mortem, both LLM-narrated and cached. These give
+  // the panel a voice even when no positions are open.
+  const voicePanel = _traderVoicePanel(tr);
+  if (voicePanel) body.appendChild(voicePanel);
+
   // ── Day badge: today's allocation usage ──────────────────────────
   const dayBadge = _traderDayBadge(tr);
   if (dayBadge) body.appendChild(dayBadge);
@@ -8767,18 +8882,48 @@ function renderTraderBody(wrap, data, focusedSym) {
     const scrollWrap = el('div', { class: 'sim-trader-open-scroll' });
     open.forEach((trade, i) => {
       // Expand the FIRST card's receipt by default so the format is
-      // discoverable. Users were missing the receipt entirely because
-      // it was hidden behind a toggle.
+      // discoverable.
       const card = _renderTradeCard(trade, true, focusedSym,
         /* expandReceipt */ i === 0);
       scrollWrap.appendChild(card);
     });
     openBlock.appendChild(scrollWrap);
     body.appendChild(openBlock);
+  } else if (resolved.length) {
+    // v5 fix: when no positions are open, the panel used to collapse
+    // and the user complained "I'm not seeing receipts." Show the 3
+    // most-recent resolved trades as full cards (receipt expanded on
+    // the first) so the receipt format is ALWAYS in view.
+    const noneBlock = el('div', { class: 'sim-trader-block' });
+    noneBlock.append(el('div', { class: 'sim-trader-block-head' },
+      el('span', { class: 'sim-trader-block-tag sim-trader-block-tag-quiet' },
+        'NO OPEN POSITIONS'),
+      el('span', { class: 'sim-trader-block-sub' },
+        'engine quiet — showing last ' +
+        Math.min(3, resolved.length) + ' settlements')));
+    const scrollWrap = el('div', { class: 'sim-trader-open-scroll' });
+    resolved.slice(0, 3).forEach((trade, i) => {
+      scrollWrap.appendChild(_renderTradeCard(
+        trade, false, focusedSym, /* expandReceipt */ i === 0));
+    });
+    noneBlock.appendChild(scrollWrap);
+    body.appendChild(noneBlock);
+  } else {
+    // No trades at all yet — the today's-thesis pane above already
+    // provides narrative; this footer just explains why the trade
+    // list is empty.
+    body.appendChild(el('div', { class: 'sim-trader-block sim-trader-empty-block' },
+      el('div', { class: 'sim-trader-empty-headline' },
+        'Engine is calibrating.'),
+      el('div', { class: 'sim-trader-empty-body' },
+        'No setup has cleared the v5 conviction threshold yet — ' +
+        'that means the engine is honest, not idle. Real desks ' +
+        'wait for the right opportunity instead of forcing trades.')));
   }
 
-  // ── Recent settlements ───────────────────────────────────────────
-  if (resolved.length) {
+  // ── Recent settlements (only when we have open positions; the
+  // no-open branch above already shows recent ones as full cards). ─
+  if (open.length && resolved.length) {
     const recentBlock = el('div', { class: 'sim-trader-block' });
     recentBlock.append(el('div', { class: 'sim-trader-block-head' },
       el('span', { class: 'sim-trader-block-tag' }, 'RECENT SETTLEMENTS'),
@@ -8919,6 +9064,70 @@ function _traderAccountEquity(tr) {
     }
   }
   return wrap;
+}
+
+
+function _traderVoicePanel(tr) {
+  // Renders Today's Thesis (LLM brief) + Yesterday's Reflection
+  // side-by-side. Either may be null when not yet generated — we
+  // render whichever is present. Returns null when both are absent
+  // (clean first run; the equity hero alone is enough).
+  const brief = tr.daily_brief;
+  const refl = tr.yesterday_reflection;
+  if (!brief && !refl) return null;
+  const wrap = el('div', { class: 'sim-trader-voice' });
+  if (brief) {
+    const card = el('div', { class: 'sim-trader-voice-card sim-trader-voice-brief' });
+    card.appendChild(el('div', { class: 'sim-trader-voice-tag' },
+      el('span', { class: 'sim-trader-voice-tag-dot' }, '◆'),
+      ' TODAY\'S THESIS',
+      brief.fallback
+        ? el('span', { class: 'sim-trader-voice-fallback',
+                        'data-tip': 'LLM unavailable — deterministic '
+                          + 'fallback. The figures are still real.',
+                        'data-tip-size': 'lg' }, ' · deterministic')
+        : ''));
+    card.appendChild(el('div', { class: 'sim-trader-voice-body' },
+      brief.body || ''));
+    card.appendChild(el('div', { class: 'sim-trader-voice-meta' },
+      brief.day_utc || '', ' · generated ',
+      _shortenIso(brief.generated_at || '')));
+    wrap.appendChild(card);
+  }
+  if (refl) {
+    const stats = refl.stats || {};
+    const pnl = stats.total_pnl_usd;
+    const pnlCls = (pnl || 0) >= 0 ? 'sim-trader-pnl-up' : 'sim-trader-pnl-down';
+    const card = el('div', { class: 'sim-trader-voice-card sim-trader-voice-reflection' });
+    card.appendChild(el('div', { class: 'sim-trader-voice-tag' },
+      el('span', { class: 'sim-trader-voice-tag-dot' }, '◇'),
+      ' YESTERDAY\'S REVIEW',
+      refl.fallback
+        ? el('span', { class: 'sim-trader-voice-fallback' },
+            ' · deterministic')
+        : ''));
+    card.appendChild(el('div', { class: 'sim-trader-voice-body' },
+      refl.body || ''));
+    if (stats.n_trades) {
+      card.appendChild(el('div', { class: 'sim-trader-voice-meta' },
+        String(stats.n_trades), ' trades · ',
+        el('b', {}, String(stats.wins || 0) + 'W'), ' / ',
+        el('b', {}, String(stats.losses || 0) + 'L'),
+        ' · net ',
+        el('b', { class: pnlCls },
+          ((pnl || 0) >= 0 ? '+' : '') + '$' + Math.abs(pnl || 0).toFixed(2))));
+    }
+    wrap.appendChild(card);
+  }
+  return wrap;
+}
+
+
+function _shortenIso(iso) {
+  // "2026-05-25T17:42:00+00:00" → "17:42 UTC"
+  if (!iso) return '';
+  const m = iso.match(/T(\d{2}:\d{2})/);
+  return m ? m[1] + ' UTC' : iso;
 }
 
 
@@ -9197,6 +9406,22 @@ function _renderTradeCard(trade, isOpen, focusedSym, expandReceipt) {
       el('span', { class: 'sim-trade-receipt-summary-num' }, String(newsCount)),
       ' news ', newsCount === 1 ? 'item' : 'items'));
   }
+  // Capital-cost rationale — when position was shrunk because the
+  // token locks capital up (sUSDe 7d cooldown → 70%, USDY 40d → 30%).
+  // Surfaces WHY the notional isn't the full $10k base — silent
+  // shrinks would break the user's standing "receipts must be
+  // legible" rule.
+  const capScale = trade.capital_cost_scale;
+  const payoutLbl = trade.payout_timeline_label || '';
+  if (capScale != null && capScale < 0.999 && payoutLbl) {
+    const pct = Math.round(capScale * 100);
+    summary.appendChild(el('span', { class: 'sim-trade-receipt-summary-pip sim-trade-cs-warn',
+      'data-tip': 'Position downsized because ' + payoutLbl + ' ties up ' +
+        'capital that could earn risk-free yield elsewhere. Same-day ' +
+        'redemption tokens pay no penalty.',
+      'data-tip-size': 'lg' },
+      pct + '% · ', payoutLbl));
+  }
   // Math explainer — show position × bp = $ so the user understands
   // the relationship between notional and dollar P&L.
   const notional = trade.notional_usd || 0;
@@ -9209,10 +9434,36 @@ function _renderTradeCard(trade, isOpen, focusedSym, expandReceipt) {
     '1bp ≈ $' + oneBpUsd.toFixed(2)));
   card.appendChild(summary);
 
-  // Rationale footnote
+  // Narration — the LLM-generated trader voice for this specific
+  // trade. Sits above the deterministic rationale so the reader
+  // sees the desk-runner's read first.
+  if (trade.narration) {
+    card.appendChild(el('div', { class: 'sim-trade-narration' },
+      el('span', { class: 'sim-trade-narration-q' }, '“'),
+      trade.narration,
+      el('span', { class: 'sim-trade-narration-q' }, '”')));
+  }
+  // Rationale footnote — the deterministic signal description that
+  // triggered the trade. Always present; the narration is optional.
   if (trade.rationale) {
     card.appendChild(el('div', { class: 'sim-trade-rationale' },
       trade.rationale));
+  }
+  // Conviction + strategy chip — surfaces the v5 tier so a reader
+  // sees WHY this position is $50k or $15k.
+  if (trade.conviction) {
+    const tierCls = trade.conviction === 'HIGH'
+      ? 'sim-trade-tier-high' : 'sim-trade-tier-med';
+    card.appendChild(el('div', { class: 'sim-trade-tier-row' },
+      el('span', { class: 'sim-trade-tier-pill ' + tierCls,
+        'data-tip': 'Conviction tier: HIGH = ≥5bp edge, ≥4 agreeing '
+          + 'sources, tight cone ($50k notional). MED = ≥3bp edge, '
+          + '≥3 sources ($15k). Anything below MED is skipped, not '
+          + 'sized down — v5 concentrates capital on conviction.',
+        'data-tip-size': 'lg',
+      }, trade.conviction, ' CONVICTION'),
+      el('span', { class: 'sim-trade-strategy-pill' },
+        (trade.strategy || '').replace(/_/g, ' ').toUpperCase())));
   }
   // "View receipt" — opens the trade-receipt detail with full
   // entry/exit source breakdown, consensus state, forecast bands,
@@ -9829,33 +10080,47 @@ function simCalibrationPanel(calibration) {
     return el('section', { class: 'sim-calibration sim-calibration-empty fade-in' },
       el('h2', { class: 'sim-calibration-head' }, 'Calibration archive'),
       el('p', { class: 'sim-calibration-body' },
-        'No predictions have resolved yet. Calibration metrics ',
-        'become trustworthy after roughly 100 resolved predictions ',
-        'per probability band; the archive fills as the ticker runs.'));
+        'No predictions have resolved yet. These scores become ',
+        'trustworthy once roughly 100 predictions in each confidence ',
+        'band have resolved — the ticker fills the archive as it runs, ',
+        'usually a few hundred resolved predictions per day.'));
   }
   return el('section', { class: 'sim-calibration fade-in' },
     el('h2', { class: 'sim-calibration-head tip',
       'data-tip': SIM_TIP.calibration, 'data-tip-size': 'lg' },
       'Calibration archive'),
     el('p', { class: 'sim-calibration-body' },
+      'How well the model has predicted the future, scored against ',
       el('b', {}, String(count)),
-      ' prediction',
+      ' resolved prediction',
       count === 1 ? '' : 's',
-      ' resolved. ',
-      'Brier and miss-distance are strictly proper scoring rules — ',
-      'lower is better. The model only earns credibility when its ',
-      'Brier beats the climatology baseline (0.25).'),
+      '. Each score below is "how far off were we" — ',
+      el('b', {}, 'lower is better'),
+      '. To earn its keep the model has to beat the two naive ',
+      'baselines on its right: ',
+      el('i', {}, '"coin-flip"'),
+      ' (assume each direction is equally likely) and ',
+      el('i', {}, '"no-change"'),
+      ' (assume tomorrow looks like today).'),
     el('div', { class: 'sim-cal-grid' },
-      simCalMetric('BRIER (model)', c.brier_mean,
-        'Lower is better. Range [0,1].', SIM_TIP.brierModel),
-      simCalMetric('BRIER (climatology)', c.baseline_climatology_brier_mean,
-        'Baseline: empirical base rate (falls back to 50/50 ' +
-        'when archive is thin).', SIM_TIP.brierClim),
-      simCalMetric('BRIER (persistence)', c.baseline_persistence_brier_mean,
-        'Baseline: forecast = last observed direction.',
+      simCalMetric('DIRECTION SCORE — MODEL', c.brier_mean,
+        'How often the model gets the direction right, weighted ' +
+        'by its confidence. 0.00 is perfect; 1.00 is always wrong. ' +
+        'Anything under 0.25 beats coin-flipping.',
+        SIM_TIP.brierModel),
+      simCalMetric('· vs COIN-FLIP', c.baseline_climatology_brier_mean,
+        'If we just bet on the historical hit-rate every time ' +
+        '(falls back to 50/50 when the archive is thin), this is ' +
+        'the score we\'d get. Beat this to earn credibility.',
+        SIM_TIP.brierClim),
+      simCalMetric('· vs NO-CHANGE', c.baseline_persistence_brier_mean,
+        'If we just said "tomorrow will be like today" every time, ' +
+        'this is the score. Beat this to add value over the lazy guess.',
         SIM_TIP.brierPersist),
-      simCalMetric('CRPS (model)', c.crps_mean,
-        'Normalised miss-distance (continuous targets).',
+      simCalMetric('MOVE-SIZE SCORE — MODEL', c.crps_mean,
+        'How close the bp predictions are to what actually happened, ' +
+        'in normalised units. Lower means tighter, more accurate ' +
+        'bp forecasts.',
         SIM_TIP.missDist)),
     simReliabilityBins(c.reliability_bins || []),
     simOutcomeHistogram(c.outcome_histogram || {}));
@@ -9882,8 +10147,10 @@ function simReliabilityBins(bins) {
   // reference. Buckets sized by count so small-n bins look thin.
   if (!bins || bins.length === 0) {
     return el('div', { class: 'sim-rel-empty' },
-      'Reliability diagram populates as direction-prediction ',
-      'resolutions accumulate.');
+      'The trust diagram — "when the model says it\'s 70% sure, ',
+      'is it actually right 70% of the time?" — fills in once enough ',
+      'direction predictions have resolved across each confidence ',
+      'bucket.');
   }
   const width = 360;
   const height = 240;
@@ -9946,13 +10213,28 @@ function simOutcomeHistogram(hist) {
     partial:    'Direction predicted correctly but with hedged confidence.',
     miss:       'Direction predicted incorrectly.',
   };
+  const labelFor = {
+    inside_p50: 'inside tight (50%) band',
+    inside_p80: 'inside medium (80%) band',
+    inside_p95: 'inside wide (95%) band',
+    outside:    'outside every band',
+    hit:        'direction correct',
+    partial:    'direction correct (hedged)',
+    miss:       'direction wrong',
+  };
   const total = Object.values(hist).reduce((a, b) => a + b, 0) || 1;
   return el('div', { class: 'sim-hist' },
     el('div', { class: 'sim-hist-kick tip',
-      'data-tip': 'Where resolved predictions landed relative to ' +
-        'the model\'s forecast cone. A well-calibrated p95 band ' +
-        'should contain ~95% of outcomes.',
-      'data-tip-size': 'lg' }, 'OUTCOME HISTOGRAM'),
+      'data-tip': 'For every prediction the model draws three ' +
+        'confidence bands: a tight 50% band (where it\'s pretty ' +
+        'sure the answer lands), a wider 80% band, and the ' +
+        'widest 95% band. This shows how often the actual outcome ' +
+        'fell INSIDE each band. A well-tuned model puts ~50% inside ' +
+        'its 50% band, ~80% inside its 80% band, etc. Too many ' +
+        '"INSIDE 50" means the bands are too wide (model is ' +
+        'underconfident); too many "OUTSIDE" means the bands are ' +
+        'too narrow (overconfident).',
+      'data-tip-size': 'lg' }, 'WHERE THE OUTCOMES LANDED'),
     el('div', { class: 'sim-hist-row' },
       order.filter(k => hist[k] > 0).map(k =>
         el('div', { class: 'sim-hist-bucket sim-hist-' + k,
@@ -9961,7 +10243,7 @@ function simOutcomeHistogram(hist) {
           el('div', { class: 'sim-hist-bar', style: 'width:' +
               Math.max(20, (hist[k] / total) * 200) + 'px' }),
           el('div', { class: 'sim-hist-lbl' },
-            k.replace(/_/g, ' '),
+            labelFor[k] || k.replace(/_/g, ' '),
             ' · ', String(hist[k]))))));
 }
 
@@ -10028,12 +10310,15 @@ function simConfigPanel(config) {
   return el('section', { class: 'sim-config fade-in' },
     el('h2', { class: 'sim-config-head' }, 'Configuration'),
     el('p', { class: 'sim-config-body' },
-      'Tick interval and prediction horizon are intentionally ',
-      'decoupled. The tick is the refresh rate (default 10m matches ',
-      'the operator spec). The horizon is the prediction window — ',
-      'shorter than 30m is below the data-supported floor for most ',
-      'targets; we render the call honestly but the calibration ',
-      'archive will reflect the noise.'),
+      'Two separate dials. ',
+      el('b', {}, 'Tick interval'),
+      ' is how often the system takes a fresh reading — default 10 ',
+      'minutes. ',
+      el('b', {}, 'Horizon'),
+      ' is how far ahead each prediction looks — default 30 minutes. ',
+      'Going shorter than 30 minutes is below what the price data can ',
+      'reliably support; the model will still make the call honestly, ',
+      'but it will show up as noise in the calibration scores above.'),
     el('div', { class: 'sim-config-grid' },
       el('label', { class: 'sim-config-cell',
           'data-tip': SIM_TIP.cfgTick, 'data-tip-pos': 'below',

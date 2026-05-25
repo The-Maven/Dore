@@ -893,19 +893,92 @@ UI:
 
 ---
 
+## Round 10 — Discipline Trader v5 rebuild (conviction + voice)
+
+The headline finding from real data: across 18 trades on $100k of
+notional, the v4.5 trader earned **$0.49 total**. Looking at the trade
+records made it obvious why — every trade had edge between 1-5bp, the
+model's forecast point sat roughly at entry (meaning "stay roughly
+here", not "move somewhere"), and the trader nibbled $7k positions
+hoping for 80¢ payoffs. USDC was shorted five times at -2 to -3bp
+expecting reversion to zero; it never reverted. USDT longed at -9.5bp
+for 20¢ profits. USDD has been stuck at -39bp for hours and the
+trader longed it every cycle expecting return-to-$1 — every one
+came back STALE.
+
+This was the user's "I'm not seeing receipts, I'm seeing values less
+than one dollar, you have $100k in your account and you should be
+trading to maximize returns" moment. A 4-phase rebuild followed.
+
+**Phase A — conviction-tiered sizing + structural-depeg refusal**:
+`discipline_v5` replaces continuous edge/cone scaling with
+HIGH/MED/(skip) tiers. HIGH = ≥5bp edge AND ≥4 sources AND
+cone ≤ normal → $50k notional. MED = ≥3bp edge AND ≥3 sources AND
+cone ≤ 1.5× normal → $15k. Anything weaker is SKIPPED, not
+downsized — real desks pass on bad setups. Structural-depeg detector
+refuses tokens that have sat beyond ±50bp for 5+ consecutive ticks
+(USDD/FRAX-style broken pegs are no longer mistaken for mean
+reversion). The regression test pins the headline claim: given
+1 HIGH + 5 weak setups, the trader opens **1** trade, not 6.
+
+**Phase B — structural strategies (NAV-discount + cross-venue arb
+sharpening)**: new `nav_discount` strategy for yield-bearing tokens.
+Without a live NAV oracle (audit 1.2 still open) it proxies NAV with
+a 60-tick rolling-mean of `deviation_bps`. Long when secondary
+trades 20bp+ below the rolling mean, short when 30bp+ above. This is
+the strategy the v4.5 trader was *blind to* — yield-bearing tokens
+were globally excluded by `_eligible_token`, so the $1.13 USDY and
+$1.23 sUSDe prices were never tradeable signals. Cross-venue arb
+priority bumped 1.1×→1.5× — the most-reliable signal now leads the
+candidate ranking when multiple strategies converge.
+
+**Phase C — LLM trader voice (`src/sca/movement/trader_voice.py`)**:
+three narrative layers, all cached. Daily brief (once per UTC day —
+"what I'm watching today and why"), per-trade narration (once at
+open, lives on the Trade record), end-of-day reflection (once at UTC
+rollover with strategy + conviction attribution). Each layer falls
+back to a deterministic template on LLM failure — voice never blocks
+the trader. Ticker generates brief + reflection inside the cycle.
+
+**Phase D — real trading UI**: a "Today's Thesis" / "Yesterday's
+Review" voice panel renders the LLM brief and yesterday's
+reflection as gold-bordered Bodoni cards. Per-trade narration appears
+as a quoted Bodoni blockquote above the deterministic rationale.
+HIGH/MED conviction pills sit next to the strategy chip. The user's
+"I'm not seeing receipts" complaint was rooted in the panel
+collapsing when no positions were open — fixed by always showing the
+3 most recent settlements as full expanded cards when the open list
+is empty. "Engine is calibrating" empty state when neither open nor
+resolved trades exist.
+
+460 tests pass (32 trader + 22 strategies + 8 voice + everything
+else). The legacy trades in `data/discipline_trader.json` render
+gracefully because `conviction` and `narration` are nullable and the
+UI uses falsy guards.
+
+**Verification gap**: the dev server was running v4.5 when phase D
+shipped and could not be restarted from this session — UI bindings
+are correct by static inspection and JS parses cleanly, but the new
+panels haven't been browser-confirmed yet. First post-restart ticker
+cycle will populate the daily brief.
+
+---
+
 ## Where we stand right now
 
-Updated as of the end of Round 9. Always rewrite this block, never
+Updated as of the end of Round 10. Always rewrite this block, never
 append to it.
 
-(Round 9 was the F9 product-hardening + agentic-trader + chaos arc.
-F9 is now the headline surface with: Bloomberg ribbon, status strip,
-3-column workspace, market notice bar, forecast cone v4, per-token
-track record strip, AI Judge, AI Commentary, The Discipline Trader,
-calibration archive, config — all collapsible-where-appropriate, all
-soft-reconciled, all light-themed. Chaos engineering thread runs
-five invariant tests every 15 minutes and feeds findings into the
-judge prompt.)
+(Round 10 was the v5 trader rebuild — conviction-tiered sizing,
+structural-depeg refusal, NAV-discount strategy for yield-bearing
+tokens, and a three-layer LLM voice (daily brief / per-trade
+narration / end-of-day reflection). The v4.5 trader earned $0.49 on
+$100k of notional across 18 nibbling trades; v5 concentrates capital
+on conviction-eligible setups and skips weak signals entirely.
+F9 surface unchanged from Round 9 — Bloomberg ribbon, status strip,
+3-column workspace, calibration archive — but the trader panel now
+carries a voice and the receipts are always visible even when no
+positions are open.)
 
 **Live, healthy, no open work:**
 - Seven Supabase migrations applied (0001–0006 from prior rounds,

@@ -881,3 +881,54 @@ class SupabaseStore(Store):
             "baseline_persistence_brier_mean": _mean(bp),
             "baseline_climatology_brier_mean": _mean(bc),
         }
+
+    # ── trader: simulated trade ledger ────────────────────────────────
+    # Migration 0009 creates the trader_trades table. Pre-0009 deploys
+    # degrade gracefully — the insert quietly returns "" when the table
+    # doesn't exist, and the local JSON cache keeps working until the
+    # migration is applied.
+    def insert_trade(self, trade: dict) -> str:
+        # Drop keys the database doesn't accept (the Trade dataclass
+        # is wider than the columns it surfaces). Resolution-side
+        # fields default to None at open and are patched later.
+        row = {k: v for k, v in trade.items() if v is not None or k == "id"}
+        try:
+            resp = self._client.table("trader_trades").insert(row).execute()
+            data = getattr(resp, "data", None) or []
+            return data[0].get("id", "") if data else row.get("id", "")
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc).lower()
+            if any(t in msg for t in ("relation", "does not exist",
+                                       "could not find")):
+                from sca.observability import log_event
+                log_event(
+                    "trader.insert_trade.no_table", level="info",
+                    note="migration 0009 not yet applied; trade not "
+                         "persisted to Supabase (local JSON still has it)",
+                )
+                return ""
+            raise
+
+    def update_trade_resolution(self, trade_id: str, fields: dict) -> None:
+        if not trade_id:
+            return None
+        try:
+            patch = {k: v for k, v in fields.items() if v is not None}
+            (self._client.table("trader_trades")
+             .update(patch).eq("id", trade_id).execute())
+        except Exception:  # noqa: BLE001 — never block resolve on a persist failure
+            pass
+        return None
+
+    def list_trades(self, *, limit: int = 500) -> list[dict]:
+        try:
+            resp = (
+                self._client.table("trader_trades")
+                .select("*")
+                .order("opened_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return getattr(resp, "data", None) or []
+        except Exception:  # noqa: BLE001
+            return []

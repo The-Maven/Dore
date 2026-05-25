@@ -74,13 +74,43 @@ PERSONA_TAGLINE = (
 # This unlocks the common case where the cone is narrow but offset
 # from current (the model says "I think peg moves slightly toward 0"),
 # without requiring the cone to fully bridge to peg.
-DAILY_BUDGET_USD = 100_000.0    # USD — resets at 00:00 UTC daily (v4.5: 25k→100k)
-NOTIONAL_PER_TRADE = 10_000.0   # default per-trade size (v4.5: 2.5k→10k)
-MAX_OPEN_NOTIONAL = 160_000.0   # 16 concurrent trades absolute cap (v4.5: 40k→160k)
+DAILY_BUDGET_USD = 100_000.0    # USD — resets at 00:00 UTC daily
+MAX_OPEN_NOTIONAL = 200_000.0   # absolute concurrent-position cap
 ENTRY_THRESHOLD_BPS = 3.0       # only trade meaningful deviations
-MIN_EDGE_BPS = 1.0              # minimum predicted movement to enter
-EDGE_FULL_SIZE_BPS = 5.0        # edge at which we deploy full notional
-TRADER_VERSION = "discipline_v4.5"
+MIN_EDGE_BPS = 1.0              # absolute minimum predicted movement
+EDGE_FULL_SIZE_BPS = 5.0        # edge at which the conviction tier saturates
+TRADER_VERSION = "discipline_v5"
+
+# v5 conviction tiers. The previous version sized every trade at
+# $10k base, shrinking on weak signals. The result was 18 trades on
+# $100k notional earning $0.49 total — noise-fishing. v5 inverts the
+# logic: weak signals get SKIPPED, not downsized. Real desks
+# concentrate capital on conviction.
+#
+# HIGH:  ≥ 5bp edge, ≥ 4 agreeing sources, cone within normal.
+#        → $50k notional. The "this is the trade" call.
+# MED:   ≥ 3bp edge, ≥ 3 agreeing sources, cone ≤ 1.5× normal.
+#        → $15k notional. Normal-quality opportunity.
+# LOW:   anything else passing MIN_EDGE_BPS.
+#        → SKIPPED. A real trader wouldn't take a $7k position to
+#        scrape 80¢. Better to wait for the next setup.
+CONVICTION_NOTIONAL = {
+    "HIGH": 50_000.0,
+    "MED":  15_000.0,
+}
+HIGH_EDGE_BPS = 5.0
+HIGH_MIN_SOURCES = 4
+MED_EDGE_BPS = 3.0
+MED_MIN_SOURCES = 3
+MED_CONE_RATIO_MAX = 1.5
+
+# v5 structural-depeg refusal. When a token sits beyond 50bp deviation
+# for at least this many consecutive cycles, its mean-reversion
+# assumption is broken (USDD has been -39bp for hours, FRAX -78bp
+# for days). The trader REFUSES to trade these — every cycle that
+# longs USDD expecting reversion to $1 wastes a position slot.
+STRUCTURAL_DEPEG_THRESHOLD_BPS = 50.0
+STRUCTURAL_DEPEG_MIN_CYCLES = 5
 
 
 @dataclass
@@ -133,6 +163,20 @@ class Trade:
     # cap), so adding this layer does NOT burn through the Brave
     # token budget.
     entry_news_context: list = field(default_factory=list)
+    # v6 — capital-cost rationale. When position size is shrunk
+    # because the token locks capital up (e.g. sUSDe 7-day cooldown
+    # gets 70% notional), the receipt explains why. Empty/null when
+    # no shrink was applied — keeps fast-redemption trade receipts
+    # clean.
+    payout_timeline_label: Optional[str] = None
+    capital_cost_scale: Optional[float] = None  # 1.0 = no shrink; 0.3 = 30% of base
+    # v5 — conviction tier the trader assigned to this setup at open.
+    # Receipt shows it; track_record can attribute outcomes by tier.
+    conviction: Optional[str] = None  # 'HIGH' | 'MED'
+    # v5 — LLM-narrated rationale (1-2 sentences in the trader's
+    # voice). Generated once at open, cached on the trade row. Falls
+    # back to a deterministic template if the LLM call fails.
+    narration: str = ""
     # Filled when the trade resolves:
     status: str = "open"      # 'open' | 'resolved'
     exit_bps: Optional[float] = None
@@ -297,32 +341,134 @@ def _decide_to_trade(
     return False, "no deviation to trade"
 
 
-def _size_position(
-    cone_half_bps: float,
+# Capital-cost weighting: estimated days-to-cash by payout label.
+# Gemini-audit finding 4.2: a trade that locks up capital for 7 days
+# costs more than one that resolves same-day. Scale down position
+# size on slow-redemption assets so the $100k daily budget doesn't
+# sit idle in sUSDe's 7-day cooldown when same-day USDC opportunities
+# are available.
+_PAYOUT_DAYS_BY_LABEL = {
+    "same-day": 0.25,                       # ~6 hours typical
+    "instant on-chain": 0.05,               # AMM swap + Circle off-ramp
+    "instant on-chain (premium)": 0.05,
+    "T+0 to T+2": 1.0,                      # midpoint
+    "T+0 mint/redeem (capped)": 0.25,
+    "T+1": 1.0,
+    "T+1 to T+2": 1.5,
+    "PSM swap": 0.5,                        # plus CEX off-ramp
+    "AMM exit only": 0.1,                   # liquidity-dependent
+    "7-day cooldown": 7.0,
+    "40-day lockup, then daily": 40.0,
+}
+# Annualised capital cost — what the trader's $100k could earn risk-
+# free per day if not deployed. 4.5% / 365 ≈ 0.0123% per day. A 7-day
+# lockup at 0.0123%/day costs ~86bp of opportunity vs same-day; the
+# weighting formula reflects this honestly.
+_CAPITAL_COST_PER_DAY = 0.045 / 365  # 4.5% APY
+
+
+def _capital_cost_factor(payout_label: Optional[str]) -> float:
+    """Returns a multiplier in (0, 1] that shrinks position size based
+    on time-to-cash. A label we don't know defaults to 1.0 (no shrink)
+    so the addition is conservative — only KNOWN slow-redemption
+    assets get downsized."""
+    if not payout_label:
+        return 1.0
+    # Unknown label → days=0 (no penalty). Only KNOWN slow-redemption
+    # labels are penalised, so adding this layer can't silently shrink
+    # a token whose timeline we haven't characterised.
+    days = _PAYOUT_DAYS_BY_LABEL.get(payout_label, 0.0)
+    if days <= 0.25:  # same-day-or-faster — no penalty
+        return 1.0
+    # Discount factor: notional /= (1 + capital_cost * days_locked).
+    # A 7-day lockup: 1 / (1 + 0.000123 × 7) ≈ 0.999 — small but real.
+    # The penalty compounds for longer locks (40 days → ~0.995).
+    # We rescale to make the impact visible at trader timescales: a
+    # 7-day position gets 70% of full size, 40-day gets 30%.
+    if days >= 30:
+        return 0.30
+    if days >= 7:
+        return 0.70
+    # Anything > 0.25 days that didn't hit the bigger gates above
+    # (e.g. T+1, T+1 to T+2, PSM swap, AMM-exit-only) gets the mild
+    # 0.85× penalty — capital is tied up for at least a trading day.
+    return 0.85
+
+
+def _is_structurally_depegged(symbol: str, current_bps: float) -> bool:
+    """A token whose deviation has sat beyond ±50bp for 5+ consecutive
+    ticks is NOT mean-reverting — it's a broken peg (USDD has been
+    at -39bp for hours; longing it expecting return-to-$1 just burns
+    cycles). Refuse to trade.
+
+    Cheap check — only hits the store when the current snapshot is
+    already in the danger zone."""
+    if abs(current_bps) < STRUCTURAL_DEPEG_THRESHOLD_BPS:
+        return False
+    try:
+        from sca.store import get_store
+        store = get_store()
+        ticks = store.list_peg_ticks(symbol, limit=STRUCTURAL_DEPEG_MIN_CYCLES)
+    except Exception:  # noqa: BLE001
+        return False
+    if len(ticks) < STRUCTURAL_DEPEG_MIN_CYCLES:
+        return False
+    # Every recent tick must be beyond threshold on the same side
+    sign = 1 if current_bps > 0 else -1
+    threshold = STRUCTURAL_DEPEG_THRESHOLD_BPS * sign
+    for t in ticks:
+        bps = t.get("deviation_bps")
+        if bps is None:
+            return False
+        if sign > 0 and bps < threshold:
+            return False
+        if sign < 0 and bps > threshold:
+            return False
+    return True
+
+
+def _classify_conviction(
     edge_bps: float,
+    cone_half_bps: float,
     normal_bps: Optional[float],
+    source_count: int,
+    consensus_kind: str,
+) -> Optional[str]:
+    """Return 'HIGH', 'MED', or None (skip).
+
+    A real desk concentrates on the best handful of setups per day,
+    not 16 mediocre ones. Anything below MED quality is skipped —
+    not downsized — because $7k positions on 1-3bp edges earn cents
+    after slippage and waste position slots that a real opportunity
+    could use later in the day."""
+    if consensus_kind == "disputed":
+        return None
+    norm = normal_bps if (normal_bps and normal_bps > 0) else 8.0
+    cone_ratio = cone_half_bps / norm
+    if (edge_bps >= HIGH_EDGE_BPS
+            and source_count >= HIGH_MIN_SOURCES
+            and cone_ratio <= 1.0):
+        return "HIGH"
+    if (edge_bps >= MED_EDGE_BPS
+            and source_count >= MED_MIN_SOURCES
+            and cone_ratio <= MED_CONE_RATIO_MAX):
+        return "MED"
+    return None
+
+
+def _size_position(
+    conviction: str,
+    payout_label: Optional[str] = None,
 ) -> float:
-    """Compute the position size for this opportunity.
+    """Conviction tier × capital-cost discount.
 
-    Two factors:
-      • Edge magnitude — how much movement the model predicts in our
-        favour. Larger edge = larger position. Linear scaling to
-        EDGE_FULL_SIZE_BPS, capped at 1.0.
-      • Cone width — how UNCERTAIN the model is. A cone twice the
-        token's normal width halves the position. Floored at 0.25
-        of the default notional so we don't open dust positions.
-
-    The final size is base × edge_scale × cone_scale.
-    """
-    edge_scale = min(1.0, max(0.0, edge_bps / EDGE_FULL_SIZE_BPS))
-    if normal_bps is None or normal_bps <= 0:
-        cone_scale = 1.0
-    else:
-        ratio = cone_half_bps / normal_bps
-        cone_scale = max(0.25, min(1.0, 1.0 / max(ratio, 1.0)))
-    # Floor at 0.25 of default so trades aren't sub-meaningful.
-    combined = max(0.25, edge_scale * cone_scale)
-    return NOTIONAL_PER_TRADE * combined
+    No tunable edge/cone shrinks here — the conviction classifier
+    already filtered weak signals out entirely. Once a trade is
+    eligible, its size is the tier's notional times the capital-cost
+    factor (sUSDe 7-day cooldown → 70%, USDY 40-day → 30%, same-day
+    tokens unaffected)."""
+    base = CONVICTION_NOTIONAL.get(conviction, 0.0)
+    return base * _capital_cost_factor(payout_label)
 
 
 def _build_one_token_block(store, raw_sym: str) -> dict | None:
@@ -389,6 +535,7 @@ def _build_one_token_block(store, raw_sym: str) -> dict | None:
         "venue_type": getattr(ctx, "venue_type", "CEX"),
         "cone_normal_bps": cone_normal,
         "cone_alert_bps": cone_alert,
+        "payout_timeline_label": getattr(ctx, "payout_timeline_label", None),
     }
     return {
         "symbol": sym_u,
@@ -490,7 +637,7 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
             key = (sym, pred.get("made_at", ""))
             if key in open_set:
                 continue
-            if current_open_notional + NOTIONAL_PER_TRADE > MAX_OPEN_NOTIONAL:
+            if current_open_notional >= MAX_OPEN_NOTIONAL:
                 log_event(
                     "trader.skipped.notional_cap", level="info",
                     symbol=sym, strategy=c.strategy,
@@ -512,18 +659,58 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 # forecasts (future): skip when we don't have a sized
                 # cone for the position formula.
                 continue
+            # v5: refuse structurally-depegged tokens. USDD has sat at
+            # -39bp for hours; longing it every cycle expecting
+            # reversion is the noise-fishing pattern v5 is built to
+            # stop. Same logic catches FRAX, any future broken peg.
+            #
+            # EXCEPTION: yield-bearing tokens (sUSDe, USDY) are
+            # EXPECTED to live far from $1 — their thesis is NAV-
+            # relative, not peg-relative. Skip the structural-depeg
+            # check; the nav_discount strategy enforces its own
+            # discipline (NAV proxy threshold).
+            if (not meta.get("yield_bearing")
+                    and _is_structurally_depegged(sym, current)):
+                log_event(
+                    "trader.skipped.structural_depeg", level="info",
+                    symbol=sym, strategy=c.strategy,
+                    current_bps=round(current, 2),
+                )
+                continue
+            # v5: conviction tier decides everything. Weak signals
+            # are skipped, not downsized — a real desk waits for the
+            # next setup rather than nibbling on 1-3bp edges.
+            source_count = len(consensus.get("sources") or [])
+            conviction = _classify_conviction(
+                edge_bps=c.edge_bps,
+                cone_half_bps=cone_half_p80,
+                normal_bps=meta.get("cone_normal_bps"),
+                source_count=source_count,
+                consensus_kind=consensus.get("kind", "") or "",
+            )
+            if conviction is None:
+                log_event(
+                    "trader.skipped.low_conviction", level="info",
+                    symbol=sym, strategy=c.strategy,
+                    edge_bps=round(c.edge_bps, 2),
+                    sources=source_count,
+                    consensus_kind=consensus.get("kind", ""),
+                )
+                continue
             notional = _size_position(
-                cone_half_p80, c.edge_bps, meta.get("cone_normal_bps"))
-            # Day-budget gate. Shrinks the size if today's remainder
-            # is between 25% and 100% of the requested notional;
-            # refuses if below 25%.
+                conviction, payout_label=meta.get("payout_timeline_label"))
+            # Day-budget gate. Refuse when remainder can't fund even
+            # a half-tier-MED position ($7.5k floor) — better to skip
+            # the rest of the day than open dust positions just
+            # because budget exists.
+            min_meaningful = CONVICTION_NOTIONAL["MED"] * 0.5
             if notional > day_budget_remaining:
-                if day_budget_remaining < NOTIONAL_PER_TRADE * 0.25:
+                if day_budget_remaining < min_meaningful:
                     log_event(
                         "trader.skipped.daily_budget",
                         level="info", symbol=sym, strategy=c.strategy,
                         remaining=round(day_budget_remaining, 2),
-                        floor=NOTIONAL_PER_TRADE * 0.25,
+                        floor=min_meaningful,
                         day_utc=today_utc,
                     )
                     break
@@ -588,7 +775,24 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 venue_outlier=c.venue_outlier,
                 priority_score=c.priority_score,
                 entry_news_context=news_context,
+                payout_timeline_label=meta.get("payout_timeline_label"),
+                capital_cost_scale=_capital_cost_factor(
+                    meta.get("payout_timeline_label")),
+                conviction=conviction,
             )
+            # v5: generate the narration BEFORE persisting so it
+            # rides on the trade row. Falls back to a deterministic
+            # template when the LLM is unavailable — never blocks
+            # the open path.
+            try:
+                from sca.movement.trader_voice import generate_trade_narration
+                trade.narration = generate_trade_narration(asdict(trade))
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    "trader.narration_failed", level="warn",
+                    symbol=sym, error_class=type(exc).__name__,
+                )
+                trade.narration = ""
             trades.append(trade)
             opened_now.append(trade)
             open_set.add(key)
@@ -603,6 +807,19 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 source_count=len(sources_snapshot),
                 priority_score=round(c.priority_score, 2),
             )
+            # v5: dual-write to the snapshot archive. The local JSON
+            # remains the read-cache; this is the durable copy that
+            # joins peg_ticks / predictions / resolutions in the same
+            # archive (audit finding 3.1). Never blocks the open path —
+            # a Supabase failure is just a log event.
+            try:
+                from sca.store import get_store
+                get_store().insert_trade(asdict(trade))
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    "trader.insert_trade.failed", level="warn",
+                    symbol=sym, error_class=type(exc).__name__,
+                )
 
         # 2. Mark-to-market + resolve open trades. For each open
         # trade, if its resolves_at has passed AND we have a fresh
@@ -731,6 +948,31 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 direction=trade.direction, pnl_usd=pnl_usd,
                 pnl_bps=pnl_bps,
             )
+            # v5: patch the resolution into the snapshot archive.
+            try:
+                from sca.store import get_store
+                get_store().update_trade_resolution(trade.id, {
+                    "status": "resolved",
+                    "exit_bps": trade.exit_bps,
+                    "resolved_at_real": trade.resolved_at_real,
+                    "pnl_usd": trade.pnl_usd,
+                    "pnl_bps": trade.pnl_bps,
+                    "outcome": trade.outcome,
+                    "outcome_note": trade.outcome_note,
+                    "exit_sources": trade.exit_sources,
+                    "exit_consensus_kind": trade.exit_consensus_kind,
+                    "exit_max_disagreement_bps":
+                        trade.exit_max_disagreement_bps,
+                    "exit_consensus_price": trade.exit_consensus_price,
+                    "landed_inside_p50": trade.landed_inside_p50,
+                    "landed_inside_p80": trade.landed_inside_p80,
+                    "landed_inside_p95": trade.landed_inside_p95,
+                })
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    "trader.update_trade.failed", level="warn",
+                    trade_id=trade.id, error_class=type(exc).__name__,
+                )
 
         _save_trades(trades)
         return opened_now
@@ -937,6 +1179,27 @@ def track_record() -> dict:
         (t.pnl_usd or 0) for t in resolved
         if (t.day_utc or "") == today_utc), 2)
 
+    # v5: surface the trader voice — daily brief (today) +
+    # reflection (yesterday's review). Read-only here: track_record
+    # doesn't generate, only reads cached. Generation is triggered
+    # by the ticker cycle and the resolve cycle respectively.
+    brief = None
+    reflection = None
+    try:
+        from sca.movement.trader_voice import get_daily_brief, get_reflection
+        brief_obj = get_daily_brief(today_utc)
+        if brief_obj is not None:
+            brief = asdict(brief_obj)
+        # Yesterday's reflection — the "what happened" companion to
+        # today's brief.
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)
+                      ).strftime("%Y-%m-%d")
+        refl_obj = get_reflection(yesterday)
+        if refl_obj is not None:
+            reflection = asdict(refl_obj)
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         **base,
         "count_resolved": len(resolved),
@@ -961,4 +1224,7 @@ def track_record() -> dict:
         "best_day": best_day,
         "worst_day": worst_day,
         "per_strategy": per_strategy,
+        # v5 trader voice payload
+        "daily_brief": brief,
+        "yesterday_reflection": reflection,
     }

@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sca.movement import config as sim_config
@@ -154,7 +154,7 @@ def _emit_for_symbol(symbol: str, kinds: list[str],
             # field on the joined view". For the FileStore the joined
             # view isn't applied here; we approximate with future
             # resolves_at.
-            from datetime import datetime, timezone
+            from datetime import datetime, timedelta, timezone
             now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
             future_unresolved = sum(
                 1 for p in unresolved
@@ -430,6 +430,57 @@ def _tick_once(cfg: Optional[dict] = None) -> dict:
             error_message=str(exc)[:160],
         )
         summary["trader"] = {"errors": 1}
+
+    # 5. Trader voice — generate today's brief (once per UTC day,
+    # cached) and yesterday's reflection (once after roll-over).
+    # Both are no-ops when already cached. LLM failures fall back
+    # to deterministic templates; never blocks the ticker.
+    try:
+        from sca.movement import trader_voice
+        from sca.movement.trader import all_trades
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        yesterday_utc = (datetime.now(timezone.utc) - timedelta(days=1)
+                          ).strftime("%Y-%m-%d")
+        # Build the brief's input snapshot from the feed we just used.
+        token_states = []
+        for tok in (feed_tokens or [])[:18]:
+            cb = tok.get("current_bps")
+            if cb is None:
+                continue
+            pred = tok.get("latest_prediction") or {}
+            half = None
+            if pred.get("p80_low") is not None and pred.get("p80_high") is not None:
+                half = (pred["p80_high"] - pred["p80_low"]) / 2
+            token_states.append({
+                "symbol": tok.get("symbol"),
+                "current_bps": round(cb, 2),
+                "cone_half_bps": round(half, 2) if half else None,
+            })
+        # Pull yesterday's net P&L for the brief's context anchor.
+        all_t = all_trades()
+        y_resolved = [t for t in all_t
+                       if t.get("day_utc") == yesterday_utc
+                       and t.get("status") == "resolved"
+                       and t.get("outcome") != "STALE"]
+        y_pnl = sum(t.get("pnl_usd") or 0 for t in y_resolved)
+        # Generate (cached after first call)
+        trader_voice.generate_daily_brief(
+            day_utc=today_utc,
+            token_states=token_states,
+            recent_news=[],  # brave snapshot is per-token; brief is portfolio-wide
+            yesterday_pnl_usd=round(y_pnl, 2) if y_resolved else None,
+        )
+        # Yesterday's reflection — only generate if not yet cached
+        # AND we have resolved trades for yesterday.
+        if y_resolved and trader_voice.get_reflection(yesterday_utc) is None:
+            trader_voice.generate_reflection(
+                day_utc=yesterday_utc, trades_today=y_resolved,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "movement.ticker.voice_failed", level="warn",
+            error_class=type(exc).__name__,
+        )
 
     summary["completed_at"] = datetime.now(timezone.utc).isoformat(
         timespec="seconds")

@@ -294,3 +294,27 @@ class Store(ABC):
             "baseline_persistence_brier_mean": None,
             "baseline_climatology_brier_mean": None,
         }
+
+    # ── trader: simulated trade ledger ────────────────────────────────
+    # The Discipline Trader persists its trade history here so it joins
+    # the same snapshot archive as peg_ticks, predictions, and
+    # resolutions. The local JSON file (data/discipline_trader.json)
+    # stays as a fast in-process cache, but every write also hits the
+    # store so the ledger survives restarts AND can be queried
+    # alongside the other simulation history.
+    def insert_trade(self, trade: dict) -> str:
+        """Insert one trade row at open. `trade` keys mirror the
+        Trade dataclass. Returns the row id (or empty string when
+        the backend doesn't support trades yet)."""
+        return ""
+
+    def update_trade_resolution(self, trade_id: str, fields: dict) -> None:
+        """Update a trade row when it resolves — patches the
+        resolution-side fields (exit_bps, outcome, pnl_usd, etc).
+        No-op on backends without trade support."""
+        return None
+
+    def list_trades(self, *, limit: int = 500) -> list[dict]:
+        """All trades (open + resolved), newest first. Empty list
+        when the backend doesn't support trades yet."""
+        return []

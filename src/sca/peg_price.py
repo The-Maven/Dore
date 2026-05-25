@@ -324,16 +324,41 @@ def _coingecko_spot(symbol: str, quote: str) -> Optional[float]:
 #
 # Feed IDs are well-known per asset (the on-chain registry). The map
 # below is hand-curated for the stablecoin universe we track.
+# All IDs below verified by querying Pyth Hermes
+# (/v2/price_feeds?asset_type=crypto) on 2026-05-25 and confirming
+# each /v2/updates/price/latest call returns a fresh price (age <30s)
+# in the $0.98–$1.02 range. Wrong-token feeds, stale feeds, and
+# yield-bearing NAVs are deliberately EXCLUDED — listing them would
+# inject false depeg signals into the consensus.
+#
+# Deliberately NOT included:
+#   FRAX  — Pyth's FRAX/USD feed tracks the FXS-like governance
+#           token at ~$0.42, not the stablecoin. After the FRAX→
+#           frxUSD rebrand the stablecoin lives at Crypto.FRXUSD/USD,
+#           but our registry still uses the symbol "FRAX", so we'd
+#           need a symbol-aliasing layer before wiring it in.
+#   LUSD  — Pyth's LUSD/USD feed was last published 142 days ago.
+#           Until they relight it, the freshness gate would reject
+#           every read anyway, so we skip the network round-trip.
+#   USDY, sUSDe, USDM — yield-bearing NAV prices ($1.05–$1.23). The
+#           current pipeline compares feed price to a static $1.00
+#           peg, so these would register as catastrophic depegs.
+#           Unblock after audit finding 1.2 (NAV oracle integration).
 _PYTH_FEED_IDS = {
-    "USDC": "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a",
-    "USDT": "0x2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b",
-    "DAI":  "0xb0948a5e5313200c632b51bb5ca32f6de0d36e9950a942d19751e833f70dabfd",
+    "USDC":  "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a",
+    "USDT":  "0x2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b",
+    "DAI":   "0xb0948a5e5313200c632b51bb5ca32f6de0d36e9950a942d19751e833f70dabfd",
     "PYUSD": "0xc1da1b73d7f01e7ddd54b3766cf7fcd644395ad14f70aa706ec5384c59e76692",
-    "USDP": "0xa5fda5c1ad9eaee2b69f0e8d51c80c1c0e9b5d5a47b48b51c44e6f59a7d5b97b",
-    "TUSD": "0x817116d1a8e8d62fb5da9f3a92e9bb3c52b1cd6bf7b80ce6c8b1d40c2a4b3bc8",
-    "FDUSD": "0xccdc1a08923e2e4f4b1e6ea89d6a7c2103e6f9c64a4f4f3e3a1e5e5c1b7e1d8b",
-    "FRAX": "0xc3d5d8d6d7e3a1e5e5c1b7e1d8bccdc1a08923e2e4f4b1e6ea89d6a7c2103e6f",
-    "GUSD": "0xa5fda5c1ad9eaee2b69f0e8d51c80c1c0e9b5d5a47b48b51c44e6f59a7d5b97c",
+    "USDP":  "0xa6c8eca9aea31d6bb81fd6576638f30692d4afaa73237c097c193477aa5003b3",
+    "TUSD":  "0x433faaa801ecdb6618e3897177a118b273a8e18cc3ff545aadfc207d58d028f7",
+    "FDUSD": "0xccdc1a08923e2e4f4b1e6ea89de6acbc5fe1948e9706f5604b8cb50bc1ed3979",
+    "GUSD":  "0xe186e116f2c7642d0d8aa89c32345d83ebeb350242b2274c46a19ea82e04fb8d",
+    # DeFi-native additions (audit finding 2.1 — eliminate
+    # CoinGecko-only single-source consensus for these):
+    "GHO":   "0x2a0e948f637a8c251d9f06055e72eb4b3880dd57848bbdb02993c8165d7df4ee",
+    "USDE":  "0x6ec879b1e9963de5ee97e9c8710b742d6228252a5e2ca12d4ae81d7fe5ee8c5d",
+    "USDD":  "0x6d20210495d6518787b72e4ad06bc4df21e68d89a802cf6bced2fca6c29652a6",
+    "USDS":  "0x77f0971af11cc8bac224917275c1bf55f2319ed5c654a1ca955c82fa2d297ea1",
 }
 
 

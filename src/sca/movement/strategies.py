@@ -347,7 +347,11 @@ def cross_venue_arb(feed_tokens: list[dict]) -> list[TradeCandidate]:
             strategy="cross_venue_arb",
             symbol=tok["symbol"], direction=direction,
             edge_bps=round(edge, 3),
-            priority_score=round(edge * 1.1, 3),  # slight premium vs mean-rev
+            # v5: cross-venue convergence is the most-reliable
+            # signal type — sources don't disagree for long. Bump
+            # priority over mean-reversion so it leads the ranking
+            # when both fire on the same token.
+            priority_score=round(edge * 1.5, 3),
             rationale=rationale,
             current_bps=current,
             prediction=pred, meta=meta,
@@ -421,12 +425,132 @@ def volatility_regime(feed_tokens: list[dict]) -> list[TradeCandidate]:
     return out
 
 
+# ── strategy 5: NAV-discount arb on yield-bearing tokens ──────────
+# Audit finding 4.1 — the high-ROI opportunity the previous trader
+# was BLIND to. Yield-bearing tokens (sUSDe, USDY, USDM) trade at
+# premium/discount to their NAV depending on secondary-market
+# liquidity and redemption-queue pressure. Impatient holders dump
+# at a discount; risk-on buyers pay a premium.
+#
+# Without a live NAV oracle (audit finding 1.2 — TODO), we proxy
+# NAV with a rolling-mean of recent secondary-market prices. This
+# is conservative — the NAV-vs-price gap appears as deviation from
+# the rolling mean, and we trade ONLY when the gap exceeds a
+# disciplined threshold.
+#
+# Long when secondary < proxy-NAV - 20bp (discount): expect mean
+# reversion to fair value. Short when secondary > proxy-NAV + 30bp
+# (premium): historically slower to fade, so we demand more edge.
+NAV_DISCOUNT_THRESHOLD_BPS = 20.0
+NAV_PREMIUM_THRESHOLD_BPS = 30.0
+NAV_HISTORY_TICKS = 60     # ~ 1 hour at 60s cadence
+NAV_MIN_HISTORY = 12       # need enough samples to trust the mean
+
+
+def _proxy_nav_bps(symbol: str) -> Optional[float]:
+    """Rolling-mean deviation_bps over recent ticks — proxy for NAV
+    until a real oracle is wired. Returns None when insufficient
+    history."""
+    try:
+        from sca.store import get_store
+        store = get_store()
+        ticks = store.list_peg_ticks(symbol, limit=NAV_HISTORY_TICKS)
+    except Exception:  # noqa: BLE001
+        return None
+    devs = [t.get("deviation_bps") for t in ticks
+            if t.get("deviation_bps") is not None]
+    if len(devs) < NAV_MIN_HISTORY:
+        return None
+    return sum(devs) / len(devs)
+
+
+def nav_discount(feed_tokens: list[dict]) -> list[TradeCandidate]:
+    """Long-the-discount / short-the-premium on yield-bearing tokens.
+    Bypasses the standard yield-bearing exclusion in _eligible_token
+    because this strategy uses NAV-relative pricing — the thesis
+    explicitly accounts for the structural drift.
+
+    Skips when peg-history is too short (cold start) or when
+    consensus is disputed."""
+    import time as _t
+    out: list[TradeCandidate] = []
+    for tok in feed_tokens or []:
+        meta = tok.get("meta") or {}
+        if not meta.get("yield_bearing"):
+            continue
+        if tok.get("current_bps") is None:
+            continue
+        cons = tok.get("consensus") or {}
+        if cons.get("kind") == "disputed":
+            continue
+        # Freshness gate — same logic as _eligible_token.
+        sources = cons.get("sources") or []
+        if sources:
+            try:
+                freshest = max(
+                    (float(s.get("fetched_at") or 0) for s in sources),
+                    default=0.0,
+                )
+                if freshest > 1_000_000_000:
+                    if _t.time() - freshest > _MAX_SOURCE_AGE_S:
+                        continue
+            except (TypeError, ValueError):
+                pass
+        symbol = tok["symbol"]
+        nav_bps = _proxy_nav_bps(symbol)
+        if nav_bps is None:
+            continue
+        current = tok["current_bps"]
+        gap = current - nav_bps
+        if gap <= -NAV_DISCOUNT_THRESHOLD_BPS:
+            # Trading meaningfully below NAV → long the discount.
+            direction = "long"
+            edge = abs(gap) / 2  # expect halfway convergence
+            rationale = (
+                f"{symbol} secondary trades {abs(gap):.1f}bp below "
+                f"its {NAV_HISTORY_TICKS}-tick rolling-mean "
+                f"({nav_bps:+.1f}bp); proxy NAV-discount setup. "
+                f"Long the discount; expected halfway convergence "
+                f"≈ {edge:.1f}bp."
+            )
+        elif gap >= NAV_PREMIUM_THRESHOLD_BPS:
+            direction = "short"
+            edge = gap / 2
+            rationale = (
+                f"{symbol} secondary trades {gap:.1f}bp above its "
+                f"{NAV_HISTORY_TICKS}-tick rolling-mean "
+                f"({nav_bps:+.1f}bp); premium-fade setup. Short the "
+                f"premium; expected halfway convergence "
+                f"≈ {edge:.1f}bp."
+            )
+        else:
+            continue
+        # NAV strategies tend to be HIGHEST conviction when they fire
+        # because gap thresholds are wider than mean-reversion's.
+        priority = round(edge * 1.4, 3)
+        out.append(TradeCandidate(
+            strategy="nav_discount",
+            symbol=symbol, direction=direction,
+            edge_bps=round(edge, 3),
+            priority_score=priority,
+            rationale=rationale,
+            current_bps=current,
+            prediction=tok.get("latest_prediction") or {},
+            meta=meta,
+            consensus=cons,
+            extras={"nav_proxy_bps": round(nav_bps, 2),
+                     "gap_bps": round(gap, 2)},
+        ))
+    return out
+
+
 # ── orchestrator ────────────────────────────────────────────────────
 STRATEGIES = [
     mean_reversion,
     pairs_divergence,
     cross_venue_arb,
     volatility_regime,
+    nav_discount,
 ]
 
 

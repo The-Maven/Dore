@@ -315,6 +315,16 @@ def grade_one(prediction: dict) -> Optional[dict]:
     crps = None
     base_p_brier = None
     base_c_brier = None
+    # v4.6 — continuous baselines for peg_deviation. Audit caught
+    # that persistence_baseline_peg + climatology_baseline_peg were
+    # imported but never invoked, leaving us unable to PROVE the
+    # EWMA model adds skill over naive baselines. Now we compute
+    # both baselines' miss-distance against the same actual and
+    # persist them alongside the model's crps_score so the
+    # calibration UI can show "model 0.42 vs persistence 0.68 vs
+    # climatology 0.91" — the legible skill signal.
+    base_p_crps = None
+    base_c_crps = None
     if kind == "peg_deviation":
         point = _f(prediction.get("point")) or 0.0
         p80_half = _maybe_half(p80_low, p80_high)
@@ -324,6 +334,19 @@ def grade_one(prediction: dict) -> Optional[dict]:
             p80_half or 1.0,
             _maybe_half(p95_low, p95_high) or 0.0,
         )
+        # Pull recent peg-deviation history for this symbol to build
+        # the baseline forecasts. We score the baselines on the same
+        # actual that the model was scored against — strictly proper
+        # apples-to-apples comparison.
+        try:
+            base_p_crps, base_c_crps = _continuous_baselines_for_peg(
+                symbol=symbol,
+                prediction=prediction,
+                actual=actual,
+            )
+        except Exception:  # noqa: BLE001 — never fail the resolution row
+            base_p_crps = None
+            base_c_crps = None
     elif kind in ("net_flow_direction",):
         prob = prediction.get("prob_positive")
         if prob is not None:
@@ -357,7 +380,69 @@ def grade_one(prediction: dict) -> Optional[dict]:
         "narrative": narrative,
         "baseline_persistence_brier": base_p_brier,
         "baseline_climatology_brier": base_c_brier,
+        # Continuous baselines (peg_deviation forecasts only).
+        # Honest skill signal: the model "earns its keep" only when
+        # crps_score < BOTH base_p_crps AND base_c_crps over the
+        # archive. The UI compares these three numbers.
+        "baseline_persistence_crps": base_p_crps,
+        "baseline_climatology_crps": base_c_crps,
     }
+
+
+def _continuous_baselines_for_peg(
+    symbol: str, prediction: dict, actual: float,
+) -> tuple[Optional[float], Optional[float]]:
+    """Score persistence + climatology baselines against the same
+    `actual` using the same miss-distance metric (`crps_from_band`)
+    we use for the model. Returns (persistence_crps, climatology_crps),
+    either of which may be None if history is insufficient or the
+    store is unavailable.
+
+    Baselines are deliberately STRICTLY PROPER comparisons: same
+    horizon, same scoring rule, same realised outcome.
+    """
+    from sca.store import get_store
+    from sca.movement.predict import (
+        persistence_baseline_peg,
+        climatology_baseline_peg,
+    )
+    horizon = int(prediction.get("horizon_minutes") or 5)
+    # Pull recent peg history for the symbol — use the prediction's
+    # made_at as the as-of cutoff so we don't peek at post-prediction
+    # data when computing the baseline forecasts.
+    made_at = prediction.get("made_at") or ""
+    try:
+        store = get_store()
+        ticks = store.list_peg_ticks(symbol, limit=400) or []
+    except Exception:  # noqa: BLE001
+        ticks = []
+    # Pre-made_at history only, oldest-first, deviation_bps values.
+    history = []
+    for t in ticks:
+        read_at = t.get("read_at") or ""
+        if made_at and read_at >= made_at:
+            continue
+        bp = t.get("deviation_bps")
+        if isinstance(bp, (int, float)):
+            history.append(float(bp))
+    history.reverse()  # store returns newest-first
+    if len(history) < 3:
+        return None, None
+    pb = persistence_baseline_peg(history, horizon)
+    cb = climatology_baseline_peg(history, horizon)
+    p_crps = crps_from_band(
+        actual, pb.point,
+        _maybe_half(pb.p50_low, pb.p50_high) or 0.0,
+        _maybe_half(pb.p80_low, pb.p80_high) or 1.0,
+        _maybe_half(pb.p95_low, pb.p95_high) or 0.0,
+    )
+    c_crps = crps_from_band(
+        actual, cb.point,
+        _maybe_half(cb.p50_low, cb.p50_high) or 0.0,
+        _maybe_half(cb.p80_low, cb.p80_high) or 1.0,
+        _maybe_half(cb.p95_low, cb.p95_high) or 0.0,
+    )
+    return round(p_crps, 4), round(c_crps, 4)
 
 
 def _f(v) -> Optional[float]:

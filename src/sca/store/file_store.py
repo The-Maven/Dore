@@ -61,6 +61,10 @@ class FileStore(Store):
         self._peg_ticks: list[dict] = []
         self._predictions: list[dict] = []
         self._resolutions: list[dict] = []
+        # v5: trader trade ledger — same archive shape as the other
+        # simulation history. Each entry is the Trade dataclass as
+        # a dict; resolution patches mutate in place.
+        self._trades: list[dict] = []
         # Audit #8: protect concurrent append + iterate on the
         # in-memory archives. RLock so unresolved_predictions can
         # read _resolutions inside a held lock without deadlock.
@@ -701,3 +705,33 @@ class FileStore(Store):
             "baseline_persistence_brier_mean": _mean(baselines_p),
             "baseline_climatology_brier_mean": _mean(baselines_c),
         }
+
+    # ── trader: simulated trade ledger ────────────────────────────────
+    def insert_trade(self, trade: dict) -> str:
+        """v5: trades persist into the same archive as peg_ticks /
+        predictions / resolutions. The trader keeps its local JSON
+        cache for fast reads; this is the durable copy."""
+        row = dict(trade)
+        if not row.get("id"):
+            row["id"] = str(uuid.uuid4())
+        with self._sim_lock:
+            self._trades.append(row)
+        return row["id"]
+
+    def update_trade_resolution(self, trade_id: str, fields: dict) -> None:
+        if not trade_id:
+            return None
+        with self._sim_lock:
+            for r in self._trades:
+                if r.get("id") == trade_id:
+                    r.update(fields)
+                    return None
+        return None
+
+    def list_trades(self, *, limit: int = 500) -> list[dict]:
+        with self._sim_lock:
+            snapshot = list(self._trades)
+        # Newest-first by opened_at when present, falling back to insert order.
+        snapshot.sort(
+            key=lambda r: r.get("opened_at") or "", reverse=True)
+        return [dict(r) for r in snapshot[:limit]]

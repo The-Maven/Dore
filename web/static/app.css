@@ -398,11 +398,81 @@ b { font-weight: 600; }
   padding: 4px 11px; cursor: pointer;
   border-left: 2px solid transparent;
   border-bottom: 1px solid var(--line-2);
+  transition: background-color 120ms;
 }
 .instr-row:hover { background: var(--ink-3); }
 .instr-row.active { background: var(--ink-3); border-left-color: var(--gold); }
 .instr-sym { font-weight: 600; color: var(--paper); letter-spacing: .04em; }
 .instr-row.active .instr-sym { color: var(--gold); }
+
+/* ── v5 unified sidebar: rich sim-style row inside the outer rail ── */
+/* Used when on the simulator surface. The brand-accent bar, sparkline,
+   bp value, and 1m delta carry over from the old inner sim-rail-left.  */
+.instr-row-sim {
+  display: grid;
+  grid-template-columns: 3px 1fr;
+  align-items: stretch;
+  gap: 8px;
+  padding: 7px 11px 6px;
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--line-2);
+  cursor: pointer;
+  transition: background-color 120ms;
+}
+.instr-row-sim:hover { background: rgba(212, 162, 74, 0.05); }
+.instr-row-focused {
+  background: rgba(212, 162, 74, 0.10);
+  border-left-color: var(--gold, #D4A24A);
+}
+.instr-row-empty { opacity: 0.55; }
+.instr-row-bar {
+  width: 3px;
+  border-radius: 1px;
+  align-self: stretch;
+}
+.instr-row-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.instr-row-line1 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.instr-row-sym {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--paper, #EFEAE0);
+  letter-spacing: 0.06em;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.instr-row-focused .instr-row-sym { color: var(--gold, #D4A24A); }
+.instr-row-val {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--paper, #EFEAE0);
+  font-weight: 500;
+}
+.instr-row-val.v-muted { color: var(--muted-2, #9A9590); font-style: italic; }
+.instr-row-line2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.instr-row-line2 svg { flex: none; }
+.instr-row-d1m {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  font-weight: 500;
+}
 
 /* ── instrument brand marks ───────────────────────────────────────── */
 .tmark { display: block; flex: none; color: var(--muted); }
@@ -5124,14 +5194,17 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 
 /* ── THREE-COLUMN WORKSPACE ───────────────────────────────────── */
 .sim-workspace {
+  /* v5: 2-column layout — inner token rail moved into the outer
+     instruments sidebar. Hero pane now has ~280px more breathing
+     room, which v5's enlarged cards consume gracefully. */
   display: grid;
-  grid-template-columns: 280px 1fr 340px;
+  grid-template-columns: 1fr 380px;
   min-height: 600px;
   background: var(--sim-bg-1);
   border-bottom: 1px solid var(--sim-rule);
 }
 @media (max-width: 1280px) {
-  .sim-workspace { grid-template-columns: 240px 1fr 300px; }
+  .sim-workspace { grid-template-columns: 1fr 320px; }
 }
 
 /* LEFT RAIL ─ token list */
@@ -5265,21 +5338,23 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   color: var(--muted-1);
 }
 .sim-hero-head {
+  /* v5: enlarged padding to use the extra width freed by the rail
+     consolidation. Headline numbers feel more grand-format here. */
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 22px;
+  padding: 20px 28px;
   border-bottom: 1px solid var(--sim-rule);
-  border-left: 4px solid var(--sim-amber);
+  border-left: 5px solid var(--sim-amber);
 }
 .sim-hero-headline {
   display: flex;
   align-items: baseline;
-  gap: 14px;
+  gap: 18px;
 }
 .sim-hero-sym {
   font-family: 'Bodoni Moda', serif;
-  font-size: 36px;
+  font-size: 44px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -5358,13 +5433,16 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .sim-delta-cell.sim-delta-down  { background: rgba(255, 67, 61, 0.04); }
 .sim-delta-up   .sim-delta-val,
 .sim-rail-delta.sim-delta-up,
-.sim-ribbon-delta.sim-delta-up   { color: var(--sim-up); }
+.sim-ribbon-delta.sim-delta-up,
+.instr-row-d1m.sim-delta-up   { color: var(--sim-up); }
 .sim-delta-down .sim-delta-val,
 .sim-rail-delta.sim-delta-down,
-.sim-ribbon-delta.sim-delta-down { color: var(--sim-down); }
+.sim-ribbon-delta.sim-delta-down,
+.instr-row-d1m.sim-delta-down { color: var(--sim-down); }
 .sim-delta-flat .sim-delta-val,
 .sim-rail-delta.sim-delta-flat,
-.sim-ribbon-delta.sim-delta-flat { color: var(--sim-flat); }
+.sim-ribbon-delta.sim-delta-flat,
+.instr-row-d1m.sim-delta-flat { color: var(--sim-flat); }
 
 /* Hero chart */
 .sim-hero-chart {
@@ -5939,9 +6017,11 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 
 .sim-trader-body {
+  /* v5: cards a touch larger now that the workspace has more room. */
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
+  padding: 4px 2px;
 }
 .sim-trader-loading {
   color: var(--muted-2);
@@ -6165,6 +6245,151 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   font-size: 11px;
   line-height: 1.45;
   font-style: italic;
+}
+
+/* ── Per-trade narration (LLM voice, sits above rationale) ─────── */
+.sim-trade-narration {
+  margin-top: 4px;
+  color: var(--paper, #EFEAE0);
+  font-family: 'Bodoni Moda', 'Bodoni 72', Georgia, serif;
+  font-size: 13px;
+  line-height: 1.5;
+  font-style: italic;
+  padding: 6px 10px;
+  border-left: 2px solid var(--sim-gold, #D4A24A);
+  background: rgba(212, 162, 74, 0.04);
+}
+.sim-trade-narration-q {
+  color: var(--sim-gold, #D4A24A);
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 2px;
+  opacity: 0.8;
+}
+
+/* ── Conviction tier + strategy pills under the rationale ──────── */
+.sim-trade-tier-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.sim-trade-tier-pill {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+.sim-trade-tier-high {
+  background: var(--sim-gold, #D4A24A);
+  color: var(--ink, #0A0B0E);
+  box-shadow: 0 0 8px rgba(212, 162, 74, 0.35);
+}
+.sim-trade-tier-med {
+  background: rgba(212, 162, 74, 0.18);
+  color: var(--sim-gold, #D4A24A);
+  border: 1px solid rgba(212, 162, 74, 0.4);
+}
+.sim-trade-strategy-pill {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--muted-2, #9A9590);
+  padding: 2px 7px;
+  border: 1px solid var(--rule, rgba(255,255,255,0.12));
+  border-radius: 2px;
+}
+
+/* ── Voice panel: Today's Thesis + Yesterday's Reflection ──────── */
+.sim-trader-voice {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin: 8px 0 6px;
+}
+@media (min-width: 720px) {
+  .sim-trader-voice { grid-template-columns: 1fr 1fr; }
+}
+.sim-trader-voice-card {
+  padding: 12px 14px;
+  border: 1px solid var(--rule, rgba(255,255,255,0.12));
+  border-radius: 4px;
+  background: rgba(255,255,255,0.015);
+}
+.sim-trader-voice-brief {
+  border-color: rgba(212, 162, 74, 0.32);
+  background: linear-gradient(180deg,
+    rgba(212, 162, 74, 0.06) 0%,
+    rgba(212, 162, 74, 0.01) 100%);
+}
+.sim-trader-voice-reflection {
+  border-color: rgba(255,255,255,0.18);
+}
+.sim-trader-voice-tag {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  color: var(--sim-gold, #D4A24A);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+.sim-trader-voice-tag-dot {
+  font-size: 11px;
+  line-height: 1;
+}
+.sim-trader-voice-fallback {
+  color: var(--muted-2, #9A9590);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  font-style: italic;
+}
+.sim-trader-voice-body {
+  font-family: 'Bodoni Moda', 'Bodoni 72', Georgia, serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--paper, #EFEAE0);
+}
+.sim-trader-voice-meta {
+  margin-top: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--muted-2, #9A9590);
+}
+.sim-trader-voice-meta b {
+  color: var(--paper, #EFEAE0);
+  font-weight: 600;
+}
+
+/* ── Quiet-engine block tag + "calibrating" empty state ────────── */
+.sim-trader-block-tag-quiet {
+  color: var(--muted-2, #9A9590) !important;
+}
+.sim-trader-empty-block {
+  padding: 18px 16px;
+  background: rgba(255,255,255,0.015);
+  border: 1px dashed var(--rule, rgba(255,255,255,0.12));
+  border-radius: 4px;
+  margin: 8px 0;
+}
+.sim-trader-empty-headline {
+  font-family: 'Bodoni Moda', 'Bodoni 72', Georgia, serif;
+  font-size: 18px;
+  color: var(--paper, #EFEAE0);
+  margin-bottom: 6px;
+}
+.sim-trader-empty-body {
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted-2, #9A9590);
 }
 
 /* ── ACCOUNT EQUITY block (headline P&L view) ──────────────────── */

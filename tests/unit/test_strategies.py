@@ -253,6 +253,78 @@ def test_eligibility_passes_fresh_source_data():
     assert len(cands) == 1
 
 
+# ── nav_discount (yield-bearing arbitrage) ─────────────────────────
+def test_nav_discount_fires_on_meaningful_discount_to_proxy_nav(monkeypatch):
+    """Audit 4.1: a yield-bearing token trading 25bp below its
+    rolling-mean is a NAV-discount setup. Long the discount."""
+    class _Store:
+        def list_peg_ticks(self, sym, limit):
+            # Long history clustered around +50bp (the NAV proxy)
+            return [{"deviation_bps": 50.0}] * 30
+    monkeypatch.setattr("sca.store.get_store", lambda: _Store())
+    feed = [_tok("SUSDE", current_bps=25.0,
+                  p80_low=20, p80_high=30, yield_bearing=True)]
+    cands = strategies.nav_discount(feed)
+    assert len(cands) == 1
+    c = cands[0]
+    assert c.direction == "long"
+    assert c.strategy == "nav_discount"
+    assert c.extras.get("nav_proxy_bps") == 50.0
+    assert c.extras.get("gap_bps") == -25.0  # current - proxy
+    assert c.edge_bps == 12.5  # half-convergence
+    assert "discount" in c.rationale.lower()
+
+
+def test_nav_discount_fires_on_premium(monkeypatch):
+    """Mirror: 30bp+ ABOVE the rolling mean → short the premium."""
+    class _Store:
+        def list_peg_ticks(self, sym, limit):
+            return [{"deviation_bps": 80.0}] * 30
+    monkeypatch.setattr("sca.store.get_store", lambda: _Store())
+    feed = [_tok("USDY", current_bps=120.0,
+                  p80_low=115, p80_high=125, yield_bearing=True)]
+    cands = strategies.nav_discount(feed)
+    assert len(cands) == 1
+    assert cands[0].direction == "short"
+    assert "premium" in cands[0].rationale.lower()
+
+
+def test_nav_discount_skips_when_history_too_short(monkeypatch):
+    """Cold-start guard — refuse to trade NAV-relative without enough
+    history to trust the rolling mean."""
+    class _Store:
+        def list_peg_ticks(self, sym, limit):
+            return [{"deviation_bps": 50.0}] * 3  # below NAV_MIN_HISTORY
+    monkeypatch.setattr("sca.store.get_store", lambda: _Store())
+    feed = [_tok("SUSDE", current_bps=25.0,
+                  p80_low=20, p80_high=30, yield_bearing=True)]
+    assert strategies.nav_discount(feed) == []
+
+
+def test_nav_discount_only_fires_on_yield_bearing(monkeypatch):
+    """Don't accidentally trigger on fiat-backed tokens — they have
+    their own (mean-reversion) thesis."""
+    class _Store:
+        def list_peg_ticks(self, sym, limit):
+            return [{"deviation_bps": 50.0}] * 30
+    monkeypatch.setattr("sca.store.get_store", lambda: _Store())
+    feed = [_tok("USDC", current_bps=25.0,
+                  p80_low=20, p80_high=30, yield_bearing=False)]
+    assert strategies.nav_discount(feed) == []
+
+
+def test_nav_discount_skips_within_threshold(monkeypatch):
+    """A 10bp deviation from NAV proxy is below the 20bp discount
+    threshold — don't fire on noise."""
+    class _Store:
+        def list_peg_ticks(self, sym, limit):
+            return [{"deviation_bps": 50.0}] * 30
+    monkeypatch.setattr("sca.store.get_store", lambda: _Store())
+    feed = [_tok("SUSDE", current_bps=40.0,
+                  p80_low=35, p80_high=45, yield_bearing=True)]
+    assert strategies.nav_discount(feed) == []
+
+
 def test_all_candidates_sorts_by_priority_descending():
     """The orchestrator returns highest priority first so the trader
     deploys the strongest signals against the budget first."""
