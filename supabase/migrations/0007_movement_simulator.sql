@@ -115,9 +115,14 @@ create index if not exists predictions_kind_resolves_at
   on public.predictions (kind, resolves_at);
 -- The resolver job hits this index every minute to find predictions
 -- whose resolves_at has passed but which don't yet have a resolution.
+-- Plain b-tree index on resolves_at — PostgreSQL refuses to use
+-- now() in a partial index predicate because it is not IMMUTABLE
+-- (the predicate would silently shift meaning over time, which
+-- can't be safely maintained). The resolver query filters with
+-- `lte resolves_at, now()` at runtime; the index here is enough
+-- to make that filter fast.
 create index if not exists predictions_unresolved
-  on public.predictions (resolves_at)
-  where resolves_at <= now();
+  on public.predictions (resolves_at);
 
 -- ── resolutions ───────────────────────────────────────────────────────
 -- The scored outcome of one prediction. The 1:1 with predictions is
