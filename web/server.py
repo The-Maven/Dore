@@ -1197,6 +1197,30 @@ def _market_facts_block(p: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+@app.get("/api/trust/{symbol}")
+def trust_score_endpoint(symbol: str) -> dict[str, Any]:
+    """Trust Score — Doré's institutional differentiator.
+
+    Composite 0-100 score across ten dimensions (Reserve Quality, Peg
+    Stability, Attestation Freshness, Redemption Capacity, Sanctions
+    Exposure, Auditor Credibility, Multi-source Consensus, Regulatory
+    Standing, Custodian Concentration, Implementation Risk). Each
+    dimension cites its source and trust-tier; the verdict is plain
+    English ("Eligible for Tier-1 corporate treasury IPS", etc.).
+
+    Designed for the CFO / risk officer / regulator buyer — not a
+    rating-agency letter, a treasury-policy verdict.
+    """
+    from sca.trust_score import compute_trust_score, tier_color
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        raise HTTPException(400, "symbol required")
+    score = compute_trust_score(sym)
+    out = score.as_dict()
+    out["headline_color"] = tier_color(score.score)
+    return out
+
+
 @app.get("/api/market")
 def market_overview(refresh: bool = False) -> dict[str, Any]:
     """Cross-token market overview + AI Market Brief. Cached for 30min."""

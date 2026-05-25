@@ -290,6 +290,120 @@ function dataLineageBanner(supply, metrics) {
 
 // ── Doré Brief hero panel ─────────────────────────────────────────────
 // Editorial top-of-view synthesis. Distinct visual identity (gold border,
+// ── TRUST CARD — Doré's institutional differentiator ────────────────
+// Composite 0-100 score across ten dimensions, each with cited trust-
+// tier, plus a CFO-language verdict. Lives at the top of F2 ANALYZE
+// and (as a mini chip) inline on the MARKET overview.
+function trustCardSkeleton(symbol) {
+  const wrap = el('section', {
+    class: 'trust-card trust-card-loading fade-in',
+    'data-trust-sym': symbol,
+  },
+    el('div', { class: 'trust-card-tag' },
+      el('span', { class: 'trust-card-tag-dot' }, '◆'),
+      ' INSTITUTIONAL TRUST SCORE'),
+    el('div', { class: 'trust-card-loading-body' },
+      el('span', { class: 'sim-commentary-shimmer' },
+        'triangulating reserve, attestation, sanctions, and peg…')));
+  return wrap;
+}
+
+
+async function loadTrustCard(symbol) {
+  try {
+    const resp = await fetch('/api/trust/' + encodeURIComponent(symbol));
+    if (!resp.ok) {
+      const wrap = document.querySelector(
+        '.trust-card[data-trust-sym="' + symbol + '"]');
+      if (wrap) {
+        wrap.classList.remove('trust-card-loading');
+        wrap.classList.add('trust-card-error');
+        wrap.querySelector('.trust-card-loading-body').textContent =
+          'Trust score unavailable for ' + symbol + '.';
+      }
+      return;
+    }
+    const data = await resp.json();
+    const wrap = document.querySelector(
+      '.trust-card[data-trust-sym="' + symbol + '"]');
+    if (!wrap) return;
+    wrap.classList.remove('trust-card-loading');
+    wrap.innerHTML = '';
+    wrap.append(renderTrustCard(data));
+  } catch (e) {
+    const wrap = document.querySelector(
+      '.trust-card[data-trust-sym="' + symbol + '"]');
+    if (wrap) {
+      wrap.classList.remove('trust-card-loading');
+      wrap.classList.add('trust-card-error');
+      wrap.textContent = 'Trust score load failed: ' + (e && e.message || e);
+    }
+  }
+}
+
+
+function renderTrustCard(data) {
+  const score = Number(data.score) || 0;
+  const color = data.headline_color || '#D4A24A';
+  const wrap = el('div', { class: 'trust-card-body' });
+  // Header bar: tag chip + symbol + generated-at
+  wrap.append(el('div', { class: 'trust-card-head' },
+    el('div', { class: 'trust-card-tag' },
+      el('span', { class: 'trust-card-tag-dot',
+        style: 'color:' + color }, '◆'),
+      ' INSTITUTIONAL TRUST SCORE'),
+    el('div', { class: 'trust-card-genat' },
+      _shortenIso(data.generated_at || ''))));
+  // Headline row: huge composite + verdict
+  wrap.append(el('div', { class: 'trust-card-headline' },
+    el('div', { class: 'trust-card-score-num',
+      style: 'color:' + color },
+      Number(score).toFixed(0)),
+    el('div', { class: 'trust-card-score-suf' }, '/100'),
+    el('div', { class: 'trust-card-verdict' }, data.verdict || '')));
+  // Dimension grid — each row shows label, mini-bar, score, tier
+  const grid = el('div', { class: 'trust-card-dims' });
+  for (const d of (data.dimensions || [])) {
+    const pct = Math.max(0, Math.min(100, Number(d.score) || 0));
+    const tierCls = 'trust-tier-' + (d.tier || 'unverified');
+    const dimColor = _trustBarColor(pct);
+    const row = el('div', {
+      class: 'trust-card-dim ' + tierCls,
+      'data-tip': d.reasoning || '',
+      'data-tip-pos': 'right',
+      'data-tip-size': 'lg',
+    },
+      el('div', { class: 'trust-card-dim-lbl' }, d.label || d.name),
+      el('div', { class: 'trust-card-dim-bar' },
+        el('div', { class: 'trust-card-dim-bar-fill',
+          style: 'width:' + pct.toFixed(0) + '%; background:' + dimColor })),
+      el('div', { class: 'trust-card-dim-val' },
+        pct.toFixed(0)),
+      el('div', { class: 'trust-card-dim-tier' },
+        (d.tier || 'unverified').toUpperCase()),
+      el('div', { class: 'trust-card-dim-w' },
+        (Number(d.weight) || 0).toFixed(0) + '%'));
+    grid.append(row);
+  }
+  wrap.append(grid);
+  // Footer disclaimer + methodology hint
+  wrap.append(el('div', { class: 'trust-card-foot' },
+    'Triangulated across reserve attestation, on-chain supply, sanctions ' +
+    'screening, peg history, and registry metadata. Each dimension cites ' +
+    'its source above. Hover any row for the underlying reasoning.'));
+  return wrap;
+}
+
+
+function _trustBarColor(pct) {
+  if (pct >= 85) return '#4AF6C3';
+  if (pct >= 70) return '#A3E635';
+  if (pct >= 55) return '#D4A24A';
+  if (pct >= 40) return '#F59E0B';
+  return '#FF433D';
+}
+
+
 // large headline, kicker badge) so a reader recognises it as an AI brief
 // in the first glance — never confused with a verified figure.
 function aiBriefHero(brief) {
@@ -3066,6 +3180,14 @@ function renderAnalysis(a, elapsed, mount, computedAt, onRefresh) {
   if (computedAt !== undefined && onRefresh) {
     mount.append(freshnessStrip(computedAt, onRefresh));
   }
+
+  // ── TRUST SCORE — the headline institutional verdict ───────────────
+  // Composite 0-100 with CFO-language verdict ("Eligible for Tier-1
+  // corporate treasury IPS" / "Speculative" / etc.). Renders FIRST so
+  // a treasury reader sees the answer before the supporting data. The
+  // card lazy-loads its own dimensions table below the headline.
+  mount.append(trustCardSkeleton(a.symbol));
+  loadTrustCard(a.symbol);
 
   // ── DORÉ BRIEF — editorial top-of-view synthesis (when available) ──
   // Sits above everything else: headline, key points, relevant news.

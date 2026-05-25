@@ -8414,3 +8414,174 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 :root[data-theme="light"] .sim-wire-row-group .sim-wire-msg {
   color: var(--ink, #1A1B1F);
 }
+
+/* ──────────────────────────────────────────────────────────────────
+   TRUST CARD — Doré's institutional differentiator
+   ────────────────────────────────────────────────────────────────── */
+.trust-card {
+  margin: 14px 0 16px;
+  padding: 18px 22px 20px;
+  background: linear-gradient(180deg,
+    rgba(212, 162, 74, 0.04) 0%,
+    rgba(212, 162, 74, 0.01) 100%);
+  border: 1px solid rgba(212, 162, 74, 0.32);
+  border-radius: 4px;
+  position: relative;
+}
+.trust-card-loading,
+.trust-card-error {
+  padding: 14px 18px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--muted-2, #9A9590);
+}
+.trust-card-tag {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  color: var(--gold, #D4A24A);
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.trust-card-tag-dot {
+  font-size: 12px;
+  line-height: 1;
+}
+.trust-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+.trust-card-genat {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--muted-2, #9A9590);
+}
+.trust-card-headline {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: baseline;
+  gap: 4px 14px;
+  padding-bottom: 16px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(212, 162, 74, 0.18);
+}
+.trust-card-score-num {
+  font-family: 'Bodoni Moda', 'Bodoni 72', Georgia, serif;
+  font-size: 64px;
+  line-height: 1;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.trust-card-score-suf {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  color: var(--muted-2, #9A9590);
+  letter-spacing: 0.06em;
+}
+.trust-card-verdict {
+  font-family: 'Bodoni Moda', 'Bodoni 72', Georgia, serif;
+  font-size: 18px;
+  font-style: italic;
+  color: var(--paper, #EFEAE0);
+  line-height: 1.35;
+  align-self: center;
+}
+
+/* Dimension grid */
+.trust-card-dims {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr);
+  gap: 0;
+}
+.trust-card-dim {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.3fr) 1.6fr 36px 86px 36px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--rule, rgba(255,255,255,0.06));
+  cursor: help;
+  transition: background-color 120ms;
+}
+.trust-card-dim:hover { background: rgba(212, 162, 74, 0.04); }
+.trust-card-dim-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--paper, #EFEAE0);
+  letter-spacing: 0.04em;
+}
+.trust-card-dim-bar {
+  height: 6px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.trust-card-dim-bar-fill {
+  height: 100%;
+  transition: width 320ms cubic-bezier(0.2, 0.9, 0.1, 1);
+}
+.trust-card-dim-val {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper, #EFEAE0);
+  text-align: right;
+}
+.trust-card-dim-tier {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.12em;
+  padding: 2px 6px;
+  border-radius: 1px;
+  text-align: center;
+}
+.trust-tier-verified .trust-card-dim-tier {
+  color: var(--green, #4AF6C3);
+  background: rgba(74, 246, 195, 0.08);
+  border: 1px solid rgba(74, 246, 195, 0.22);
+}
+.trust-tier-attested .trust-card-dim-tier {
+  color: var(--gold, #D4A24A);
+  background: rgba(212, 162, 74, 0.08);
+  border: 1px solid rgba(212, 162, 74, 0.28);
+}
+.trust-tier-estimated .trust-card-dim-tier {
+  color: var(--muted, #6E6B66);
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--rule, rgba(255,255,255,0.08));
+}
+.trust-tier-unverified .trust-card-dim-tier {
+  color: var(--rose, #FF433D);
+  background: rgba(255, 67, 61, 0.06);
+  border: 1px solid rgba(255, 67, 61, 0.22);
+}
+.trust-card-dim-w {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  color: var(--muted-2, #9A9590);
+  text-align: right;
+  letter-spacing: 0.04em;
+}
+.trust-card-foot {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule, rgba(255,255,255,0.06));
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted-2, #9A9590);
+}
+@media (max-width: 720px) {
+  .trust-card-dim {
+    grid-template-columns: minmax(120px, 1fr) 1.4fr 30px 70px 28px;
+    gap: 8px;
+  }
+  .trust-card-score-num { font-size: 48px; }
+}
