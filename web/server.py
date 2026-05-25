@@ -1906,16 +1906,19 @@ def simulator_config_set(
 
 @app.post("/api/simulator/tick")
 def simulator_tick_now(
-    user: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] | None = Depends(current_user),
 ) -> dict[str, Any]:
-    """Curator endpoint: kick a ticker cycle synchronously, bypassing
-    the schedule. Useful for ops + smoke tests; the response is the
-    cycle summary so callers see exactly what landed."""
+    """Kick a ticker cycle synchronously, bypassing the schedule.
+    Auth-optional by operator preference: heavy testing iterates on
+    this endpoint and signing in for every kick is friction. The
+    cycle costs real LLM + Brave budget though, so the audit log
+    captures who triggered it when sign-in is available."""
     from sca.movement.ticker import _tick_once
     summary = _tick_once()
+    by = (user or {}).get("user", {}).get("id") if user else "anonymous"
     log_event(
         "movement.tick.manual", level="info",
-        by=user["user"]["id"],
+        by=by,
         symbols=len(summary.get("per_symbol", [])),
     )
     return summary
