@@ -2085,12 +2085,17 @@ def simulator_stream(request: Request):
                     old_v = last_current_bps.get(sym)
                     new_last_current[sym] = new_v
                     if new_v != old_v:
+                        # Include the sparkline so the client can
+                        # refresh the line in place — without it the
+                        # ticker numbers flash but the chart stays
+                        # stale until the next 20s reconciliation.
                         changed_tokens.append({
                             "symbol": sym,
                             "current_bps": new_v,
                             "deltas": t.get("deltas"),
                             "consensus": t.get("consensus"),
                             "brand": t.get("brand"),
+                            "sparkline": t.get("sparkline"),
                         })
                 last_current_bps = new_last_current
 

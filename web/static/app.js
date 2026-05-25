@@ -6966,6 +6966,14 @@ function flashTokenCell(t) {
   // reconciliation.
   const cells = document.querySelectorAll(
     '[data-sim-sym="' + t.symbol + '"]');
+  // Refresh the sparkline(s) for this symbol. SSE used to flash the
+  // numeric values but leave the sparkline stale until the next full
+  // rebuild — the line never moved with the live value. Now the
+  // sparkline updates in place every tick.
+  if (t.sparkline && t.sparkline.length) {
+    const brand = t.brand || {};
+    refreshSparklinesFor(t.symbol, t.sparkline, brand.accent);
+  }
   if (!cells.length) return;
   const newV = t.current_bps;
   const newStr = newV == null ? '—'
@@ -7568,7 +7576,7 @@ function simRibbonCell(t) {
        : (d1m >= 0 ? '▲ ' : '▼ ') +
          Math.abs(Number(d1m)).toFixed(2)),
     // Inline sparkline as a sub-element at low opacity behind the value.
-    sparklineSvg(t.sparkline || [], brand.accent, 64, 18));
+    sparklineSvg(t.sparkline || [], brand.accent, 64, 18, t.symbol));
   return cell;
 }
 
@@ -7738,7 +7746,7 @@ function simRailRow(t, isFocused) {
           'YLD') : null),
       el('div', { class: 'sim-rail-name' }, brand.name || 'unbranded')),
     el('div', { class: 'sim-rail-spark' },
-      sparklineSvg(t.sparkline || [], brand.accent, 70, 22)),
+      sparklineSvg(t.sparkline || [], brand.accent, 70, 22, t.symbol)),
     el('div', { class: 'sim-rail-values' },
       el('div', { class: 'sim-rail-val', 'data-sim-val': '',
           'data-prev': v == null ? '' : String(v) },
@@ -7984,9 +7992,42 @@ function simHeroChart(t) {
   const meta = t.meta || {};
   const yld = !!meta.yield_bearing;
   if (sp.length < 2) {
+    // Honest empty-state. BURST adds cycles but if the peg source is
+    // silent (CoinGecko 429, Kraken EQuery, no source registered)
+    // those cycles never write a tick. Name the actual state instead
+    // of telling the user to BURST when they may have already burst.
+    const tickCount = t.tick_count || 0;
+    const meta = t.meta || {};
+    const venue = meta.venue_type || 'CEX';
+    const current = t.current_bps;
+    let msg, hint;
+    if (tickCount === 0 && current == null) {
+      msg = `No ticks recorded yet for ${t.symbol}.`;
+      hint = `BURST ×6 to fire six cycles immediately, or wait for ` +
+        `the next scheduled tick. Source coverage: ${venue}.`;
+    } else if (sp.length === 1 || tickCount === 1) {
+      msg = `Only one tick on record for ${t.symbol}.`;
+      hint = 'A sparkline needs at least two points to draw a line. ' +
+        'Either the peg source has been silent on recent cycles (' +
+        'check the WIRE for ' + t.symbol + ' fetch failures) or this ' +
+        'token was just added. BURST ×6 normally helps, but won\'t ' +
+        'if the upstream is rate-limited.';
+    } else if (current == null && tickCount > 0) {
+      msg = `${t.symbol} has ${tickCount} archived tick` +
+        (tickCount === 1 ? '' : 's') + ' but is silent this cycle.';
+      hint = 'No peg source returned a price on the latest tick. ' +
+        'Common cause: CoinGecko rate-limit (HTTP 429) or CEX listing ' +
+        'change. The sparkline will resume once any source responds.';
+    } else {
+      // Generic fallback (rare).
+      msg = `Sparkline needs ${Math.max(2 - sp.length, 0)} more tick` +
+        (Math.max(2 - sp.length, 0) === 1 ? '' : 's') + ' for ' +
+        t.symbol + '.';
+      hint = 'BURST ×6 to fire six cycles immediately.';
+    }
     return el('div', { class: 'sim-hero-chart-empty' },
-      'Sparkline charges after the next ' + Math.max(2 - sp.length, 0) +
-      ' tick(s) land. BURST ×6 to warm immediately.');
+      el('div', { class: 'sim-hero-chart-empty-head' }, msg),
+      el('div', { class: 'sim-hero-chart-empty-hint' }, hint));
   }
   const wrap = document.createElement('div');
   wrap.className = 'sim-hero-chart';
@@ -8703,13 +8744,28 @@ function wireGlyphFor(kind) {
   return { label: 'EVNT', cls: '', tip: 'Generic pipeline event.' };
 }
 
-// Inline sparkline SVG. Returns a DOM element. Brand-colored,
-// drawn at low opacity behind sibling values where needed.
-function sparklineSvg(spark, color, w, h) {
+// Inline sparkline SVG. Returns a DOM element tagged with the symbol
+// + a content signature so live updates can find + skip-or-swap it.
+// Brand-colored, drawn at low opacity behind sibling values where
+// needed.
+function sparklineSvg(spark, color, w, h, symbol) {
   if (!spark || spark.length < 2) {
     return el('span', { class: 'sim-spark-empty',
+      'data-sim-spark': symbol || '',
       style: 'width:' + w + 'px; height:' + h + 'px' });
   }
+  const wrap = document.createElement('span');
+  wrap.className = 'sim-spark';
+  wrap.setAttribute('data-sim-spark', symbol || '');
+  wrap.setAttribute('data-spark-w', String(w));
+  wrap.setAttribute('data-spark-h', String(h));
+  wrap.setAttribute('data-spark-color', color);
+  wrap.innerHTML = _sparklineInnerSvg(spark, color, w, h);
+  wrap.setAttribute('data-spark-sig', _sparklineSig(spark));
+  return wrap;
+}
+
+function _sparklineInnerSvg(spark, color, w, h) {
   const vs = spark.map(p => p.v);
   let lo = Math.min(...vs);
   let hi = Math.max(...vs);
@@ -8718,18 +8774,54 @@ function sparklineSvg(spark, color, w, h) {
   lo -= pad; hi += pad;
   const xs = (i) => (i / (spark.length - 1)) * w;
   const ys = (v) => h - ((v - lo) / (hi - lo)) * h;
-  const pts = spark.map((p, i) => xs(i) + ',' + ys(p.v).toFixed(2)).join(' ');
-  const wrap = document.createElement('span');
-  wrap.className = 'sim-spark';
-  wrap.innerHTML =
+  const pts = spark.map(
+    (p, i) => xs(i) + ',' + ys(p.v).toFixed(2)).join(' ');
+  return (
     '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h +
     '" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">' +
     '<polyline points="' + pts + '" fill="none" stroke="' + color +
     '" stroke-width="1.4" opacity="0.85"/>' +
     '<circle cx="' + xs(spark.length - 1) + '" cy="' +
     ys(spark[spark.length - 1].v).toFixed(2) +
-    '" r="2" fill="' + color + '"/></svg>';
-  return wrap;
+    '" r="2" fill="' + color + '"/></svg>'
+  );
+}
+
+function _sparklineSig(spark) {
+  // Cheap signature: length + last value. Two ticks of identical
+  // last-value but different middle history would skip the redraw —
+  // acceptable because that's a no-op for the eye.
+  if (!spark || !spark.length) return '0';
+  const last = spark[spark.length - 1] || {};
+  return spark.length + ':' + (last.v != null ? last.v.toFixed(4) : '');
+}
+
+// Refresh every sparkline tagged with this symbol's data-sim-spark
+// attribute. Skip when the content signature is unchanged.
+// Used by flashTokenCell on SSE ticks so the ribbon + rail sparklines
+// stay in sync with the live values without redrawing the cell.
+function refreshSparklinesFor(symbol, spark, color) {
+  const nodes = document.querySelectorAll(
+    'span[data-sim-spark="' + symbol + '"]');
+  if (!nodes.length || !spark) return;
+  const sig = _sparklineSig(spark);
+  for (const node of nodes) {
+    if (node.getAttribute('data-spark-sig') === sig) continue;
+    const w = Number(node.getAttribute('data-spark-w'));
+    const h = Number(node.getAttribute('data-spark-h'));
+    const c = color || node.getAttribute('data-spark-color') || '#D4A24A';
+    if (!w || !h) continue;
+    // Sparkline went from empty → has-data: convert empty span to a
+    // real sparkline span so the SVG can render.
+    if (spark.length < 2) {
+      node.className = 'sim-spark-empty';
+      node.innerHTML = '';
+    } else {
+      if (node.className !== 'sim-spark') node.className = 'sim-spark';
+      node.innerHTML = _sparklineInnerSvg(spark, c, w, h);
+    }
+    node.setAttribute('data-spark-sig', sig);
+  }
 }
 
 // ── calibration panel ────────────────────────────────────────────────
