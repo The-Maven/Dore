@@ -342,35 +342,89 @@ def _find_any_cached(cache: dict, symbol: str) -> dict | None:
 
 _REFRESH_INFLIGHT: set[str] = set()
 _REFRESH_LOCK = None
+# Exponential back-off on background refresh per symbol. When the LLM
+# is unavailable or returns empty repeatedly (e.g. no API key, rate-
+# limit, model server hiccup), we'd otherwise re-fire `parse_failed`
+# every chip-click — wasted compute + log noise. After a failure we
+# refuse to schedule another refresh for this symbol until a cool-down
+# elapses; the deterministic fallback continues to serve the UI in
+# the meantime.
+_REFRESH_NEXT_OK_AT: dict[str, float] = {}
+_REFRESH_BACKOFF_FAILURES: dict[str, int] = {}
+_REFRESH_BASE_BACKOFF_S = 30.0     # first failure: 30s of quiet
+_REFRESH_MAX_BACKOFF_S = 600.0     # cap at 10 minutes
 
 
 def _schedule_background_refresh(symbol: str, live: dict) -> None:
     """Kick off a background thread to populate the proper-regime
     cache entry. Idempotent — if a refresh is already in flight for
-    this symbol, do nothing. The thread is daemon so it does not
-    prevent process exit during tests / shutdown."""
+    this symbol, do nothing. Also honours an exponential back-off
+    when the previous refresh failed, so a misconfigured LLM never
+    spams the observability surface with retry noise.
+
+    The thread is daemon so it does not prevent process exit during
+    tests / shutdown."""
     import threading
+    import time as _t
     global _REFRESH_LOCK
     if _REFRESH_LOCK is None:
         _REFRESH_LOCK = threading.Lock()
+    now = _t.time()
     with _REFRESH_LOCK:
         if symbol in _REFRESH_INFLIGHT:
+            return
+        next_ok = _REFRESH_NEXT_OK_AT.get(symbol, 0.0)
+        if now < next_ok:
+            # Still in back-off. Don't schedule and don't log — the
+            # caller is the foreground UX-fast path which has already
+            # served a usable result.
             return
         _REFRESH_INFLIGHT.add(symbol)
 
     def _worker():
+        ok = False
         try:
-            # Call the synchronous LLM path; populates the cache.
+            # Call the synchronous LLM path; populates the cache on success.
+            ctx = get_context(symbol)
+            if ctx is None:
+                return
+            cone_w = live.get("cone_p80_bps") or 0
+            regime = ("tight" if cone_w < ctx.cone_thresholds_bps[0]
+                      else "alert" if cone_w > ctx.cone_thresholds_bps[1]
+                      else "normal")
+            cache_key = f"{symbol}::{regime}"
+            cache_before = _load_cache()
+            entry_before = cache_before.get(cache_key)
+            ts_before = (entry_before or {}).get("ts", 0)
             get_commentary(symbol, live, force=True, wait_for_llm=True)
+            cache_after = _load_cache()
+            entry_after = cache_after.get(cache_key)
+            ts_after = (entry_after or {}).get("ts", 0)
+            # If a new cache entry landed in the right regime bucket,
+            # the LLM call succeeded. Otherwise the request returned a
+            # deterministic fallback (no cache write).
+            ok = ts_after > ts_before
         except Exception as exc:  # noqa: BLE001
             log_event(
                 "movement.commentary.background_refresh_failed",
                 level="warn", symbol=symbol,
                 error_class=type(exc).__name__,
             )
+            ok = False
         finally:
             with _REFRESH_LOCK:
                 _REFRESH_INFLIGHT.discard(symbol)
+                if ok:
+                    _REFRESH_BACKOFF_FAILURES.pop(symbol, None)
+                    _REFRESH_NEXT_OK_AT.pop(symbol, None)
+                else:
+                    n = _REFRESH_BACKOFF_FAILURES.get(symbol, 0) + 1
+                    _REFRESH_BACKOFF_FAILURES[symbol] = n
+                    delay = min(
+                        _REFRESH_BASE_BACKOFF_S * (2 ** (n - 1)),
+                        _REFRESH_MAX_BACKOFF_S,
+                    )
+                    _REFRESH_NEXT_OK_AT[symbol] = _t.time() + delay
 
     t = threading.Thread(
         target=_worker, name=f"commentary-refresh-{symbol}",
