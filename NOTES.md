@@ -964,21 +964,120 @@ cycle will populate the daily brief.
 
 ---
 
+## Round 11 — Trust pivot + UI stability rebuild
+
+The user's framing in the goal: "stablecoins are not profitable to
+trade at $100k notional — pivot into something more meaningful to the
+trust thesis. Also fix UI glitches — scrolling resets, focus breaks,
+the Wire feels jarring." Two threads, both shipped.
+
+**The honest re-evaluation.** Spent ~10 sessions building the F9
+simulator and the Discipline Trader through v5. Then realised the
+math: at $100k unleveraged across 25 stables with the rare hard-depeg
+event modelled correctly, the trader earns 0.5-3% APY base case — at
+the BOTTOM of every other way to deploy capital in the stablecoin
+stack (issuer reserves 4-5%, lending 4-8%, sUSDe wrapper 8-15%,
+payment rails 50-150bp per transaction, custody fees). Trading
+stablecoins is the wrong vehicle for Katie-Haun-thesis returns. The
+verification + intelligence layer Doré already has is the right one.
+
+**Trust Score (`src/sca/trust_score.py`):** new module computes a per-
+token 0-100 composite across ten dimensions, each scored from existing
+pipeline state (registry, peg history, consensus, sanctions, payout
+timelines, attestation URLs). Each dimension carries a trust-tier
+('verified' / 'attested' / 'estimated' / 'unverified') and cited
+reasoning. Missing data scores CONSERVATIVELY and tags 'unverified' —
+never silently scores high. Verdict maps the band to CFO-language
+treasury policy ("Eligible for Tier-1 corporate treasury IPS" not
+"B+"). Two endpoints: `/api/trust/{symbol}` for per-token; `/api/trust`
+for the bulk leaderboard. 10 tests pin the math + tier logic.
+
+Research synthesis grounded the design — Bluechip's SMIDGE, S&P's
+Stablecoin Stability Assessment methodology, Moody's Digital Asset
+Monitor + Dec 2025 ratings proposal, the GENIUS Act + MiCA disclosure
+baselines, EY's June 2025 corporate-treasury survey. Doré's
+differentiation against all of them: real-time vs quarterly PDFs;
+triangulated (issuer + on-chain + search) vs single-source; CFO-
+language verdicts vs rating-agency letter grades.
+
+**Trust Card UI on F2 ANALYZE:** the Trust Score renders FIRST on the
+analyze view — before the AI brief, before the strip. Composite score
+in giant Bodoni (color-tiered teal/lime/gold/amber/rose), verdict in
+italic serif, ten dimension rows with mini-bars, scores, tier badges,
+and weights. Hover any row for the underlying reasoning. Live spread:
+USDS 86 (Tier-1), USDC 84, DAI 81, USDT 74, USDe 67 (Speculative).
+
+**Trust Leaderboard on MARKET:** companion cross-token table that
+ranks every tracked stable by composite score. Sits just under the
+editorial brief — the executive summary a CFO opens MARKET for. Each
+row links to that token's F2 Trust Card. Per-tier coverage chips
+(V/A/E/U with counts) at the right.
+
+**UI stability — first-principles fix.** Four glitching sources
+diagnosed and rebuilt:
+
+1. THE WIRE prepended new rows under the user's scroll position →
+   anything they were reading shifted down. Rebuilt around the
+   Bloomberg/Twitter/Slack "↑ N NEW" pill convention: when user is
+   scrolled away from the top, new events buffer behind a gold pill;
+   click flushes and smooth-scrolls to top.
+
+2. `refreshTicker()` wiped innerHTML on every refresh → CSS marquee
+   animation restarted at frame 0 each time (visible jolt). Now diffs
+   in place: same DOM elements (animation never restarts), only text
+   + className on each cell update. `data-ticker-sig` flips only when
+   the token set itself changes.
+
+3. `refreshInstruments()` rebuilt all 25 sidebar rows on every SSE
+   tick → destroyed hover state, reset rail scrollTop, forced
+   re-layout. Now signature-checks (order + mode + focus) and either
+   preserves scrollTop on full rebuild OR runs `_diffSidebarRow`
+   surgical updates per row. DOM identity preserved → hover survives,
+   focus survives.
+
+4. `renderTraderBody()` preserved no scroll/focus on rebuild. Now
+   captures `viewBody.scrollTop` and `document.activeElement.id`
+   before the wipe and restores both in `requestAnimationFrame`. The
+   "feels like a browser reload" fade was removed.
+
+**Narrative repositioning.** F9 SIMULATOR kicker now reads: "the
+calibration archive — every prediction scored, every claim cited.
+live trader receipts are the proof, not the product." The trader is
+the audit-trail loop that proves the verification engine has skill;
+it's not the business. README + page <title> + sidebar tooltips all
+match the institutional-buyer framing.
+
+**What's still open.** The trader's underlying STRATEGY library is
+correctly first-principles now (hard_depeg, nav_discount, mean-rev on
+trust-eligible tokens), but the deeper rebuild — make the trader a
+TRUST ALLOCATOR that rebalances a simulated $100M treasury based on
+trust-signal changes, not micro-arb edges — is queued as a future
+arc. Attestation-page-date scraper (drops the attestation-freshness
+dimension from 25 unverified → a real number) is the highest-ROI
+next backlog item.
+
+478 tests pass (was 468 — added 10 trust_score tests).
+
+---
+
 ## Where we stand right now
 
-Updated as of the end of Round 10. Always rewrite this block, never
+Updated as of the end of Round 11. Always rewrite this block, never
 append to it.
 
-(Round 10 was the v5 trader rebuild — conviction-tiered sizing,
-structural-depeg refusal, NAV-discount strategy for yield-bearing
-tokens, and a three-layer LLM voice (daily brief / per-trade
-narration / end-of-day reflection). The v4.5 trader earned $0.49 on
-$100k of notional across 18 nibbling trades; v5 concentrates capital
-on conviction-eligible setups and skips weak signals entirely.
-F9 surface unchanged from Round 9 — Bloomberg ribbon, status strip,
-3-column workspace, calibration archive — but the trader panel now
-carries a voice and the receipts are always visible even when no
-positions are open.)
+(Round 11 was the **trust pivot** — Doré recognised that trading
+stablecoins for micro-arb at $100k notional is the wrong vehicle for
+the institutional-stablecoin opportunity. The product is now framed
+around the Institutional Trust Score: composite 0-100 score across
+10 dimensions per token, with CFO-language verdicts ("Eligible for
+Tier-1 corporate treasury IPS"), rendered as a Trust Card on F2
+ANALYZE and as a Trust Leaderboard on MARKET. The trader / simulator
+becomes the calibration loop that proves the verification engine has
+skill — it's the audit trail, not the business. Round 11 also fixed
+the persistent UI glitches: Wire pill-buffering when user scrolls,
+ticker diff-in-place to keep the marquee animation continuous,
+sidebar surgical updates to preserve hover state, trader scroll +
+focus restoration.)
 
 **Live, healthy, no open work:**
 - Seven Supabase migrations applied (0001–0006 from prior rounds,
