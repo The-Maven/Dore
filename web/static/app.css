@@ -5624,3 +5624,12 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   font-style: italic;
   letter-spacing: 0.06em;
 }
+
+/* .view-body is display:flex; flex-direction:column. By default
+   flex items can shrink below their natural size; the ribbon was
+   collapsing to 1px because nothing else gave it a min-height.
+   Pin flex-shrink: 0 on every v3 section so they always render
+   at their content height. */
+.sim-ribbon, .sim-status, .sim-workspace, .sim-calibration, .sim-config {
+  flex-shrink: 0;
+}
