@@ -6628,6 +6628,15 @@ function _simNeedsRebuild(mount, feed) {
   if (focusedSym && heroSym && heroSym.textContent.trim() !== focusedSym) {
     return true;
   }
+  // Focused symbol removed from the feed entirely → hero is bound to
+  // a token that no longer exists in the rendered workspace. Without
+  // this check the hero stales with the prior-focus data even when
+  // the rail row count happens to match the new feed.
+  if (focusedSym && Array.isArray(feed.tokens)) {
+    const present = feed.tokens.some(
+      t => (t.symbol || '').toUpperCase() === focusedSym.toUpperCase());
+    if (!present) return true;
+  }
   // Symbol-set change (added/removed tokens) → rail row count drifts.
   const rendered = mount.querySelectorAll('.sim-rail-row').length;
   const expected = (feed.tokens || []).length;

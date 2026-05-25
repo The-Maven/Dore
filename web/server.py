@@ -1624,6 +1624,19 @@ def _start_movement_ticker() -> None:
         pass
 
 
+@app.on_event("startup")
+def _start_chaos_thread() -> None:
+    """Boot the chaos-engineering daemon. Periodic fault-injection
+    against isolated code paths verifies the defensive invariants
+    keep holding over time. Gated by SCA_CHAOS_DISABLED=1 (tests
+    always set this; production opts in)."""
+    try:
+        from sca.movement.chaos import start_chaos_thread
+        start_chaos_thread()
+    except Exception:  # noqa: BLE001 - never block startup on observability
+        pass
+
+
 # ── F7 · ANALYST — the Doré agent bridge ──────────────────────────────
 # F7 is the console for Doré's conversational analyst, an agent that runs
 # on the Hermes runtime. The runtime deploys separately (see the repo
@@ -2355,13 +2368,19 @@ def simulator_feed() -> dict[str, Any]:
     # Process-level cache — first-line latency floor. Skip the cache
     # path in test/CI runs (SCA_SIMULATOR_FEED_CACHE_DISABLED=1) so
     # successive calls in the same suite get fresh fixture data.
+    #
+    # Lock the read so a concurrent writer can't update payload + ts
+    # between our two dict accesses and return a mismatched pair.
+    # Cheap: ~microsecond critical section.
     import os as _os
     cache_disabled = _os.environ.get(
         "SCA_SIMULATOR_FEED_CACHE_DISABLED", "").strip() == "1"
     now_ts = _time.time()
     if not cache_disabled:
-        cached = _FEED_CACHE.get("payload")
-        if cached and (now_ts - _FEED_CACHE.get("ts", 0)) < _FEED_CACHE_TTL_S:
+        with _FEED_CACHE_LOCK:
+            cached = _FEED_CACHE.get("payload")
+            cached_ts = _FEED_CACHE.get("ts", 0)
+        if cached and (now_ts - cached_ts) < _FEED_CACHE_TTL_S:
             return cached
 
     cfg = sim_cfg.load()

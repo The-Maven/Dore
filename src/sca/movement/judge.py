@@ -268,6 +268,18 @@ def _build_prompt(forecast_summary: dict, attribution_sentence: str,
                      "track record is empty so the call carries less "
                      "weight)")
     lines.append("")
+    # Chaos-engineering fragility block — the judge sees which
+    # defensive invariants are currently passing so its narrative
+    # stays grounded in tested resilience state rather than implied
+    # stability. Empty (omitted) on a fresh deploy with no findings.
+    try:
+        from sca.movement.chaos import fragility_prompt_block
+        chaos_block = fragility_prompt_block(limit=5)
+        if chaos_block:
+            lines.append(chaos_block)
+            lines.append("")
+    except Exception:  # noqa: BLE001 — never break the judge for this
+        pass
     lines.append("Return the JSON object now.")
     return "\n".join(lines)
 

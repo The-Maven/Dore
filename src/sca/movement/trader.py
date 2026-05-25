@@ -218,51 +218,90 @@ def _size_position(cone_half_bps: float, normal_bps: Optional[float]) -> float:
     return NOTIONAL_PER_TRADE * scale
 
 
+def _build_one_token_block(store, raw_sym: str) -> dict | None:
+    """Build one token's block. Used by build_token_blocks_for_trader's
+    ThreadPoolExecutor — kept as a top-level function so the executor
+    can pickle / dispatch it cleanly."""
+    sym_u = (raw_sym or "").upper()
+    if not sym_u:
+        return None
+    try:
+        ticks = store.list_peg_ticks(sym_u, limit=1) or []
+    except Exception:  # noqa: BLE001
+        ticks = []
+    current = None
+    if ticks:
+        try:
+            current = float(ticks[0].get("deviation_bps") or 0.0)
+        except (TypeError, ValueError):
+            current = None
+    try:
+        preds = store.list_predictions(
+            symbol=sym_u, kind="peg_deviation", limit=1) or []
+    except Exception:  # noqa: BLE001
+        preds = []
+    latest_pred = preds[0] if preds else None
+    ctx = get_context(sym_u) or get_context(raw_sym)
+    # Defensive: cone_thresholds_bps must be a 2-element sequence.
+    # A malformed registry entry would raise IndexError if we just
+    # indexed it; treat as unset.
+    cone_normal = None
+    cone_alert = None
+    if ctx is not None:
+        try:
+            cone_thr = getattr(ctx, "cone_thresholds_bps", None)
+            if cone_thr and len(cone_thr) >= 2:
+                cone_normal = float(cone_thr[0])
+                cone_alert = float(cone_thr[1])
+        except (TypeError, ValueError, IndexError):
+            cone_normal = None
+            cone_alert = None
+    meta = {
+        "yield_bearing": bool(getattr(ctx, "yield_bearing", False)),
+        "venue_type": getattr(ctx, "venue_type", "CEX"),
+        "cone_normal_bps": cone_normal,
+        "cone_alert_bps": cone_alert,
+    }
+    return {
+        "symbol": sym_u,
+        "current_bps": current,
+        "meta": meta,
+        "latest_prediction": latest_pred,
+    }
+
+
 def build_token_blocks_for_trader(symbols: list[str]) -> list[dict]:
     """Build the minimal per-token payload the trader reads: latest
     peg deviation + latest prediction + structural meta. Mirrors the
     `/api/simulator/feed` token shape but trims to what evaluate_cycle
     actually uses. Kept here so the trader doesn't import from the
     web layer.
+
+    Performance: each token requires two store reads (peg_ticks +
+    predictions). Serialised, 18 symbols × ~150ms = ~2.7s blocking the
+    ticker. Parallel via ThreadPoolExecutor brings this to ~300ms wall
+    clock — the same discipline as web/server.py's /feed builder.
     """
     from sca.store import get_store
+    from concurrent.futures import ThreadPoolExecutor
     store = get_store()
-    out = []
-    for raw_sym in symbols or []:
-        sym_u = (raw_sym or "").upper()
-        if not sym_u:
-            continue
-        try:
-            ticks = store.list_peg_ticks(sym_u, limit=1) or []
-        except Exception:  # noqa: BLE001
-            ticks = []
-        current = None
-        if ticks:
+    syms = [s for s in (symbols or []) if s]
+    if not syms:
+        return []
+    out: list[dict] = []
+    with ThreadPoolExecutor(max_workers=min(8, len(syms))) as pool:
+        futures = [pool.submit(_build_one_token_block, store, s)
+                   for s in syms]
+        for fut in futures:
             try:
-                current = float(ticks[0].get("deviation_bps") or 0.0)
-            except (TypeError, ValueError):
-                current = None
-        try:
-            preds = store.list_predictions(
-                symbol=sym_u, kind="peg_deviation", limit=1) or []
-        except Exception:  # noqa: BLE001
-            preds = []
-        latest_pred = preds[0] if preds else None
-        ctx = get_context(sym_u) or get_context(raw_sym)
-        meta = {
-            "yield_bearing": bool(getattr(ctx, "yield_bearing", False)),
-            "venue_type": getattr(ctx, "venue_type", "CEX"),
-            "cone_normal_bps": (
-                ctx.cone_thresholds_bps[0] if ctx else None),
-            "cone_alert_bps": (
-                ctx.cone_thresholds_bps[1] if ctx else None),
-        }
-        out.append({
-            "symbol": sym_u,
-            "current_bps": current,
-            "meta": meta,
-            "latest_prediction": latest_pred,
-        })
+                block = fut.result(timeout=10)
+            except Exception:  # noqa: BLE001
+                block = None
+            if block is not None:
+                out.append(block)
+    # Preserve input order — futures may complete out of order.
+    order = {s.upper(): i for i, s in enumerate(syms)}
+    out.sort(key=lambda b: order.get(b["symbol"], 999))
     return out
 
 
@@ -312,6 +351,20 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                     cap=MAX_OPEN_NOTIONAL,
                 )
                 break
+            # Direction is keyed off the sign of current_bps. The
+            # _decide_to_trade gate above already verifies current is
+            # a finite number AND |current| >= ENTRY_THRESHOLD_BPS,
+            # so by here we know it's a non-zero number. Belt-and-
+            # braces: if a future _decide_to_trade refactor lets None
+            # through, fail closed (skip the trade) rather than open
+            # an "unsigned" short by accident.
+            if not isinstance(current, (int, float)):
+                log_event(
+                    "trader.skipped.non_numeric_current",
+                    level="warn", symbol=sym,
+                    current_type=type(current).__name__,
+                )
+                continue
             direction = "long" if current < 0 else "short"
             cone_half = (pred["p80_high"] - pred["p80_low"]) / 2
             notional = _size_position(cone_half, meta.get("cone_normal_bps"))

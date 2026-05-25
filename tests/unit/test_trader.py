@@ -315,6 +315,100 @@ def test_track_record_aggregates_wins_losses_correctly():
     assert tr["mean_trade_usd"] is not None
 
 
+def test_skips_when_current_bps_is_none(tmp_path, monkeypatch):
+    """Audit-fix regression: trader must not open a trade when
+    current_bps is None / non-numeric. The old code went directly
+    from gate to `direction = 'long' if current < 0 else 'short'`
+    which evaluated as 'short' for None and would have opened an
+    incorrectly-signed position."""
+    monkeypatch.setattr(trader, "TRADER_PATH", tmp_path / "trader.json")
+    feed = [{
+        "symbol": "USDC",
+        "current_bps": None,  # the bug input
+        "meta": {"cone_normal_bps": 5, "cone_alert_bps": 15},
+        "latest_prediction": {
+            "made_at": "t1", "resolves_at": "2030-01-01T00:00:00+00:00",
+            "point": -2.0, "p80_low": -7.0, "p80_high": 3.0,
+            "confidence_word": "likely",
+        },
+    }]
+    opened = trader.evaluate_cycle(feed, now_iso="2026-05-25T11:00:00+00:00")
+    assert opened == [], (
+        "trader must skip when current_bps is None — opening a trade "
+        "with no signed deviation would book on the wrong side")
+
+
+def test_build_token_blocks_runs_in_parallel(tmp_path, monkeypatch):
+    """Audit-fix regression: build_token_blocks_for_trader must
+    parallelise store reads. The trader runs inside the ticker cycle;
+    if 18 symbols × 2 reads × ~150ms were serial that's ~5s blocking
+    every cycle. We verify by patching the store with a slow stub
+    and confirming wall-clock < 2s for 4 symbols (would be ~4s serial)."""
+    import time as _t
+    from sca.movement import trader as trader_mod
+    from sca.store import file_store
+
+    real_list_ticks = file_store.FileStore.list_peg_ticks
+    real_list_preds = file_store.FileStore.list_predictions
+
+    def slow_ticks(self, *a, **kw):
+        _t.sleep(0.2)
+        return real_list_ticks(self, *a, **kw)
+
+    def slow_preds(self, *a, **kw):
+        _t.sleep(0.2)
+        return real_list_preds(self, *a, **kw)
+
+    monkeypatch.setattr(file_store.FileStore, "list_peg_ticks", slow_ticks)
+    monkeypatch.setattr(file_store.FileStore, "list_predictions", slow_preds)
+    monkeypatch.setattr(trader_mod, "TRADER_PATH", tmp_path / "t.json")
+
+    syms = ["USDC", "USDT", "DAI", "PYUSD"]
+    t0 = _t.perf_counter()
+    blocks = trader_mod.build_token_blocks_for_trader(syms)
+    t1 = _t.perf_counter()
+    assert len(blocks) == 4
+    # Serial would be 4 syms × 2 reads × 0.2s = 1.6s. Parallel
+    # ≈ 0.4s. Pin a generous-but-meaningful upper bound.
+    assert t1 - t0 < 1.0, (
+        f"parallel store reads expected; got {t1 - t0:.2f}s")
+
+
+class _DummyStore:
+    def list_peg_ticks(self, *a, **kw): return []
+    def list_predictions(self, *a, **kw): return []
+
+
+def test_build_token_blocks_handles_malformed_context(tmp_path, monkeypatch):
+    """Audit-fix regression: a token_context with cone_thresholds_bps
+    set to None or a single-element tuple must NOT raise IndexError —
+    we just emit cone_normal_bps=None / cone_alert_bps=None and let
+    downstream gates treat it conservatively."""
+    monkeypatch.setattr(trader, "TRADER_PATH", tmp_path / "t.json")
+    from sca.movement import trader as trader_mod
+
+    # Stub the imported get_context with a fake that returns malformed
+    # thresholds for one symbol — frozen dataclass can't be mutated.
+    class FakeBroken:
+        symbol = "USDC"
+        issuer = "Circle"
+        backing_model = "fiat_reserves"
+        venue_type = "MIXED"
+        yield_bearing = False
+        cone_thresholds_bps = None  # the broken state
+
+    monkeypatch.setattr(
+        trader_mod, "get_context",
+        lambda sym: FakeBroken() if sym.upper() == "USDC" else None,
+    )
+    block = trader_mod._build_one_token_block(_DummyStore(), "USDC")
+    assert block is not None
+    assert block["symbol"] == "USDC"
+    # Malformed thresholds must NOT raise — they translate to None.
+    assert block["meta"]["cone_normal_bps"] is None
+    assert block["meta"]["cone_alert_bps"] is None
+
+
 def test_persona_constants_exposed():
     """Track-record response carries the persona / tagline / version
     so the UI can render the editorial framing without hardcoding."""

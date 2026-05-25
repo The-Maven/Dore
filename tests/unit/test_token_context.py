@@ -257,6 +257,50 @@ def test_wait_for_llm_false_falls_back_to_deterministic_on_cold_cache(
     assert ctx.structural_one_liner[:30] in out.body
 
 
+def test_commentary_malformed_context_returns_none_not_crash(monkeypatch):
+    """Audit-fix regression: a registry entry with cone_thresholds_bps
+    set to None / single-element / non-iterable used to crash inside a
+    bare except clause and silently log a cache miss. Now it logs
+    `movement.commentary.malformed_context` and returns None — caller
+    falls through to deterministic without burning an LLM call."""
+    # Build a fake context with broken thresholds. commentary.py
+    # imports get_context with `from X import Y` — patch the bound
+    # reference inside commentary's namespace, not token_context's.
+    from dataclasses import replace
+    real_usdc = token_context.get_context("USDC")
+    broken = replace(real_usdc, cone_thresholds_bps=())  # empty tuple
+    monkeypatch.setattr(
+        commentary, "get_context",
+        lambda sym: broken if sym.upper() == "USDC" else None,
+    )
+    out = commentary.get_commentary(
+        "USDC", {"current_bps": -1.0, "cone_p80_bps": 2.0},
+        llm_client=_FakeLLM('{"headline": "x", "body": "y [1]."}'),
+    )
+    assert out is None  # fail-closed, not crash
+
+
+def test_commentary_backoff_state_evicts_stale_entries():
+    """Audit-fix regression: _REFRESH_NEXT_OK_AT / _REFRESH_BACKOFF_FAILURES
+    are module-level dicts. Without eviction they would grow unbounded
+    over weeks of operation as symbols come and go. The eviction
+    helper drops entries older than 2× max-backoff."""
+    import time
+    # Inject ancient entries
+    commentary._REFRESH_NEXT_OK_AT["ANCIENT-1"] = time.time() - 100_000
+    commentary._REFRESH_NEXT_OK_AT["ANCIENT-2"] = time.time() - 100_000
+    commentary._REFRESH_BACKOFF_FAILURES["ANCIENT-1"] = 5
+    commentary._REFRESH_BACKOFF_FAILURES["ANCIENT-2"] = 5
+    commentary._REFRESH_NEXT_OK_AT["FRESH"] = time.time() + 60  # still active
+
+    commentary._evict_stale_backoff_entries(time.time())
+
+    assert "ANCIENT-1" not in commentary._REFRESH_NEXT_OK_AT
+    assert "ANCIENT-2" not in commentary._REFRESH_NEXT_OK_AT
+    assert "ANCIENT-1" not in commentary._REFRESH_BACKOFF_FAILURES
+    assert "FRESH" in commentary._REFRESH_NEXT_OK_AT  # not stale
+
+
 def test_cache_returns_quickly_on_second_call(tmp_path, monkeypatch):
     """Second invocation in the same regime bucket must hit cache —
     no second LLM call."""

@@ -196,10 +196,25 @@ def get_commentary(symbol: str, live: dict, *,
     if ctx is None:
         return None
 
+    # Defensive: a malformed registry entry could leave
+    # cone_thresholds_bps as None or a single-element tuple. The old
+    # code indexed [0] and [1] unguarded and crashed inside a bare
+    # except clause, treating the failure as a cache miss. Fail
+    # closed: log + return None so the caller can fall through to
+    # the deterministic message rather than burn an LLM call.
+    cone_thr = getattr(ctx, "cone_thresholds_bps", None)
+    if not cone_thr or len(cone_thr) < 2:
+        log_event(
+            "movement.commentary.malformed_context", level="warn",
+            symbol=symbol,
+            thresholds=str(cone_thr)[:80] if cone_thr else "None",
+        )
+        return None
+
     # Coarse cache key: symbol + regime bucket.
     cone_w = live.get("cone_p80_bps") or 0
-    regime = ("tight" if cone_w < ctx.cone_thresholds_bps[0]
-              else "alert" if cone_w > ctx.cone_thresholds_bps[1]
+    regime = ("tight" if cone_w < cone_thr[0]
+              else "alert" if cone_w > cone_thr[1]
               else "normal")
     cache_key = f"{symbol}::{regime}"
     cache = _load_cache()
@@ -349,10 +364,39 @@ _REFRESH_LOCK = None
 # refuse to schedule another refresh for this symbol until a cool-down
 # elapses; the deterministic fallback continues to serve the UI in
 # the meantime.
+#
+# Bounded growth discipline: these dicts are keyed by symbol. A
+# config refactor or transient typo could leak entries that never
+# clear. We evict any entry whose next_ok_at is more than 2× the
+# max backoff window in the past — at that point the entry is stale
+# observability noise, no longer governing any decision.
 _REFRESH_NEXT_OK_AT: dict[str, float] = {}
 _REFRESH_BACKOFF_FAILURES: dict[str, int] = {}
 _REFRESH_BASE_BACKOFF_S = 30.0     # first failure: 30s of quiet
 _REFRESH_MAX_BACKOFF_S = 600.0     # cap at 10 minutes
+_REFRESH_STATE_MAX_SYMBOLS = 200   # hard cap as a second-line bound
+
+
+def _evict_stale_backoff_entries(now: float) -> None:
+    """Remove backoff entries whose cooldown elapsed long enough ago
+    that they no longer govern decisions. Caller holds _REFRESH_LOCK.
+    Also enforces a hard symbol cap so a misconfiguration can't bloat
+    these dicts in production."""
+    stale_after = now - (2 * _REFRESH_MAX_BACKOFF_S)
+    stale = [
+        sym for sym, t in _REFRESH_NEXT_OK_AT.items()
+        if t < stale_after
+    ]
+    for sym in stale:
+        _REFRESH_NEXT_OK_AT.pop(sym, None)
+        _REFRESH_BACKOFF_FAILURES.pop(sym, None)
+    # Hard cap. Drop the oldest entries if we somehow grew past the
+    # bound (e.g. a flood of one-off failures from many symbols).
+    if len(_REFRESH_NEXT_OK_AT) > _REFRESH_STATE_MAX_SYMBOLS:
+        ordered = sorted(_REFRESH_NEXT_OK_AT.items(), key=lambda kv: kv[1])
+        for sym, _ in ordered[:-_REFRESH_STATE_MAX_SYMBOLS]:
+            _REFRESH_NEXT_OK_AT.pop(sym, None)
+            _REFRESH_BACKOFF_FAILURES.pop(sym, None)
 
 
 def _schedule_background_refresh(symbol: str, live: dict) -> None:
@@ -371,6 +415,10 @@ def _schedule_background_refresh(symbol: str, live: dict) -> None:
         _REFRESH_LOCK = threading.Lock()
     now = _t.time()
     with _REFRESH_LOCK:
+        # Opportunistic eviction — cheap dict scan, only runs when a
+        # refresh is requested. Keeps the backoff state bounded
+        # without a separate cleanup thread.
+        _evict_stale_backoff_entries(now)
         if symbol in _REFRESH_INFLIGHT:
             return
         next_ok = _REFRESH_NEXT_OK_AT.get(symbol, 0.0)

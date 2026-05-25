@@ -59,6 +59,9 @@ def _isolate_state(monkeypatch, tmp_path):
     # see fresh payloads on every call (the 3s prod cache would leak
     # fixture data across tests).
     monkeypatch.setenv("SCA_SIMULATOR_FEED_CACHE_DISABLED", "1")
+    # Chaos-engineering daemon never spawns in tests; scenarios can be
+    # invoked directly via test_chaos.py using run_one_cycle().
+    monkeypatch.setenv("SCA_CHAOS_DISABLED", "1")
     # Isolate the movement simulator config file so test edits don't
     # leak into the real data/movement_config.json.
     try:
