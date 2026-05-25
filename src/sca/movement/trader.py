@@ -74,13 +74,13 @@ PERSONA_TAGLINE = (
 # This unlocks the common case where the cone is narrow but offset
 # from current (the model says "I think peg moves slightly toward 0"),
 # without requiring the cone to fully bridge to peg.
-DAILY_BUDGET_USD = 10_000.0     # USD — resets at 00:00 UTC daily
-NOTIONAL_PER_TRADE = 2_000.0    # default per-trade size
-MAX_OPEN_NOTIONAL = 20_000.0    # 10 concurrent trades absolute cap
+DAILY_BUDGET_USD = 25_000.0     # USD — resets at 00:00 UTC daily (v4: bumped 10k→25k)
+NOTIONAL_PER_TRADE = 2_500.0    # default per-trade size (v4: bumped 2k→2.5k)
+MAX_OPEN_NOTIONAL = 40_000.0    # 16 concurrent trades absolute cap (v4: 20k→40k)
 ENTRY_THRESHOLD_BPS = 3.0       # only trade meaningful deviations
 MIN_EDGE_BPS = 1.0              # minimum predicted movement to enter
 EDGE_FULL_SIZE_BPS = 5.0        # edge at which we deploy full notional
-TRADER_VERSION = "discipline_v3"
+TRADER_VERSION = "discipline_v4"
 
 
 @dataclass
@@ -120,6 +120,12 @@ class Trade:
     forecast_p95_low: Optional[float] = None
     forecast_p95_high: Optional[float] = None
     horizon_minutes: Optional[int] = None
+    # v4 fields — strategy attribution. Receipts + UI surface which
+    # strategy fired (or which strategies agreed) on this trade.
+    strategy: str = "mean_reversion"
+    paired_with: Optional[str] = None    # pairs_divergence: other leg's symbol
+    venue_outlier: Optional[str] = None  # cross_venue_arb: outlier source name
+    priority_score: float = 0.0          # the score the candidate had at decision time
     # Filled when the trade resolves:
     status: str = "open"      # 'open' | 'resolved'
     exit_bps: Optional[float] = None
@@ -170,6 +176,18 @@ def _save_trades(trades: list[Trade]) -> None:
         atomic_write_json(TRADER_PATH, rows)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _cone_half_p80(prediction: dict) -> Optional[float]:
+    """Half-width of the 80% band — used for position sizing."""
+    p80lo = prediction.get("p80_low") if prediction else None
+    p80hi = prediction.get("p80_high") if prediction else None
+    if p80lo is None or p80hi is None:
+        return None
+    try:
+        return (float(p80hi) - float(p80lo)) / 2
+    except (TypeError, ValueError):
+        return None
 
 
 def _safe_float(v) -> Optional[float]:
@@ -445,63 +463,58 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
             t.notional_usd for t in trades if t.day_utc == today_utc
         )
         day_budget_remaining = DAILY_BUDGET_USD - deployed_today
-        for tok in feed_tokens or []:
-            sym = (tok.get("symbol") or "").upper()
-            if not sym:
-                continue
-            pred = tok.get("latest_prediction") or {}
-            meta = tok.get("meta") or {}
-            current = tok.get("current_bps")
-            consensus = tok.get("consensus") or {}
-            # Production-discipline: refuse to enter on DISPUTED
-            # consensus. When the peg sources disagree by >5bp, the
-            # entry price is contested — a real trader wouldn't size
-            # in until ground truth resolves.
-            if consensus.get("kind") == "disputed":
-                log_event(
-                    "trader.skipped.disputed_consensus", level="info",
-                    symbol=sym,
-                    max_disagreement_bps=consensus.get(
-                        "max_disagreement_bps"),
-                )
-                continue
-            should, reason = _decide_to_trade(sym, current, pred, meta)
-            if not should:
-                continue
+
+        # v4: gather candidates from EVERY strategy. The strategies
+        # module handles per-strategy eligibility (yield-bearing skip,
+        # disputed-consensus skip, threshold floor, alert-cone refuse).
+        # Returns candidates sorted by priority_score descending.
+        from sca.movement.strategies import all_candidates
+        candidates = all_candidates(feed_tokens or [])
+
+        for c in candidates:
+            sym = c.symbol
+            pred = c.prediction or {}
+            meta = c.meta or {}
+            consensus = c.consensus or {}
+            current = c.current_bps
+            # Idempotence: skip when a trade with this prediction is
+            # already open. Avoids opening duplicates on re-runs of
+            # the same cycle.
             key = (sym, pred.get("made_at", ""))
             if key in open_set:
                 continue
             if current_open_notional + NOTIONAL_PER_TRADE > MAX_OPEN_NOTIONAL:
                 log_event(
                     "trader.skipped.notional_cap", level="info",
-                    symbol=sym,
+                    symbol=sym, strategy=c.strategy,
                     open_notional=current_open_notional,
                     cap=MAX_OPEN_NOTIONAL,
                 )
                 break
-            # Direction null-safety (audit-fix retained from v2).
+            # Direction null-safety (audit-fix retained).
             if not isinstance(current, (int, float)):
                 log_event(
                     "trader.skipped.non_numeric_current",
-                    level="warn", symbol=sym,
+                    level="warn", symbol=sym, strategy=c.strategy,
                     current_type=type(current).__name__,
                 )
                 continue
-            direction = "long" if current < 0 else "short"
-            cone_half = (pred["p80_high"] - pred["p80_low"]) / 2
-            # Compute the edge for sizing (in-favour predicted move).
-            if direction == "long":
-                edge_bps = pred["p80_high"] - current
-            else:
-                edge_bps = current - pred["p80_low"]
+            cone_half_p80 = _cone_half_p80(pred)
+            if cone_half_p80 is None:
+                # Strategies may emit candidates from non-peg-deviation
+                # forecasts (future): skip when we don't have a sized
+                # cone for the position formula.
+                continue
             notional = _size_position(
-                cone_half, edge_bps, meta.get("cone_normal_bps"))
-            # Day-budget gate.
+                cone_half_p80, c.edge_bps, meta.get("cone_normal_bps"))
+            # Day-budget gate. Shrinks the size if today's remainder
+            # is between 25% and 100% of the requested notional;
+            # refuses if below 25%.
             if notional > day_budget_remaining:
                 if day_budget_remaining < NOTIONAL_PER_TRADE * 0.25:
                     log_event(
                         "trader.skipped.daily_budget",
-                        level="info", symbol=sym,
+                        level="info", symbol=sym, strategy=c.strategy,
                         remaining=round(day_budget_remaining, 2),
                         floor=NOTIONAL_PER_TRADE * 0.25,
                         day_utc=today_utc,
@@ -516,28 +529,26 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 p = s.get("price")
                 if isinstance(p, (int, float)) and entry_consensus_price is None:
                     entry_consensus_price = float(p)
-            # Prefer the consensus_price field if present; else mean
-            # of source readings; else infer from current_bps.
             if entry_consensus_price is None and isinstance(current, (int, float)):
                 entry_consensus_price = 1.0 + (current / 10_000.0)
 
             trade = Trade(
                 id=f"t{int(time.time() * 1000)}-{sym}",
                 symbol=sym,
-                direction=direction,
+                direction=c.direction,
                 opened_at=now_iso,
                 resolves_at=pred.get("resolves_at", ""),
                 prediction_made_at=pred.get("made_at", ""),
                 entry_bps=float(current),
-                forecast_point_bps=float(pred["point"]),
-                p80_low=float(pred["p80_low"]),
-                p80_high=float(pred["p80_high"]),
+                forecast_point_bps=float(pred.get("point") or 0.0),
+                p80_low=float(pred.get("p80_low") or 0.0),
+                p80_high=float(pred.get("p80_high") or 0.0),
                 notional_usd=round(notional, 2),
-                cone_width_bps=round(2 * cone_half, 2),
-                confidence_word=pred.get("confidence_word", ""),
-                rationale=reason,
+                cone_width_bps=round(2 * cone_half_p80, 2),
+                confidence_word=pred.get("confidence_word", "") or "",
+                rationale=c.rationale,
                 day_utc=today_utc,
-                edge_bps=round(edge_bps, 4),
+                edge_bps=round(c.edge_bps, 4),
                 entry_sources=sources_snapshot,
                 entry_consensus_kind=consensus.get("kind", "") or "",
                 entry_max_disagreement_bps=float(
@@ -548,18 +559,24 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 forecast_p95_low=_safe_float(pred.get("p95_low")),
                 forecast_p95_high=_safe_float(pred.get("p95_high")),
                 horizon_minutes=_safe_int(pred.get("horizon_minutes")),
+                strategy=c.strategy,
+                paired_with=c.paired_with,
+                venue_outlier=c.venue_outlier,
+                priority_score=c.priority_score,
             )
             trades.append(trade)
             opened_now.append(trade)
+            open_set.add(key)
             current_open_notional += notional
             day_budget_remaining -= notional
             log_event(
                 "trader.trade.opened", level="info",
-                symbol=sym, direction=direction,
-                entry_bps=current, target_bps=pred["point"],
-                notional_usd=notional, edge_bps=round(edge_bps, 2),
+                symbol=sym, direction=c.direction, strategy=c.strategy,
+                entry_bps=current, edge_bps=round(c.edge_bps, 2),
+                notional_usd=notional,
                 consensus_kind=consensus.get("kind", ""),
                 source_count=len(sources_snapshot),
+                priority_score=round(c.priority_score, 2),
             )
 
         # 2. Mark-to-market + resolve open trades. For each open
@@ -774,6 +791,39 @@ def track_record() -> dict:
     best_day = by_pnl[0] if by_pnl else None
     worst_day = by_pnl[-1] if by_pnl else None
 
+    # Per-strategy breakdown — which strategy is winning? Each trade
+    # is keyed by its `strategy` field (may be a composite like
+    # "mean_reversion+cross_venue_arb" when multiple strategies
+    # agreed; we count it under the LEAD strategy for headline
+    # numbers but keep the full composite name on the receipt).
+    strategy_map: dict[str, dict] = {}
+    for t in resolved:
+        strat = t.strategy or "mean_reversion"
+        lead = strat.split("+")[0]
+        agg = strategy_map.setdefault(lead, {
+            "strategy": lead, "trades": 0, "wins": 0, "losses": 0,
+            "pnl_usd": 0.0,
+        })
+        agg["trades"] += 1
+        if (t.pnl_usd or 0) > 0:
+            agg["wins"] += 1
+        elif (t.pnl_usd or 0) < 0:
+            agg["losses"] += 1
+        agg["pnl_usd"] = round(agg["pnl_usd"] + (t.pnl_usd or 0), 2)
+    # Also count OPEN trades so the panel shows live deployment per
+    # strategy (useful for the user's "obvious what it's doing" ask).
+    for t in open_trades:
+        strat = t.strategy or "mean_reversion"
+        lead = strat.split("+")[0]
+        agg = strategy_map.setdefault(lead, {
+            "strategy": lead, "trades": 0, "wins": 0, "losses": 0,
+            "pnl_usd": 0.0,
+        })
+        agg["open"] = agg.get("open", 0) + 1
+    per_strategy = sorted(
+        strategy_map.values(),
+        key=lambda s: s["pnl_usd"], reverse=True)
+
     return {
         **base,
         "count_resolved": len(resolved),
@@ -790,4 +840,5 @@ def track_record() -> dict:
         "daily": daily,
         "best_day": best_day,
         "worst_day": worst_day,
+        "per_strategy": per_strategy,
     }

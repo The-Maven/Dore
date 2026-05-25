@@ -180,10 +180,11 @@ def test_caps_total_open_notional(monkeypatch):
 
 
 def test_caps_daily_budget(monkeypatch):
-    """v3 contract: even with concurrent slots free, the trader
-    refuses to open if today's $10,000 daily budget is exhausted.
+    """v3+ contract: even with concurrent slots free, the trader
+    refuses to open if today's daily budget is exhausted.
 
-    Set per-trade to $10k so a single trade exhausts the budget."""
+    Set DAILY_BUDGET = NOTIONAL = $10k so one trade exhausts it."""
+    monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 10_000.0)
     monkeypatch.setattr(trader, "NOTIONAL_PER_TRADE", 10_000.0)
     monkeypatch.setattr(trader, "MAX_OPEN_NOTIONAL", 50_000.0)
     feeds = []
@@ -714,10 +715,11 @@ def test_persona_constants_exposed():
     tr = trader.track_record()
     assert tr["persona"] == "The Discipline Trader"
     assert tr["tagline"]
-    assert tr["version"] == "discipline_v3"
+    assert tr["version"] == "discipline_v4"
     # v2 contract: daily budget tracking present even with no trades
     assert "daily_budget_usd" in tr
-    assert tr["daily_budget_usd"] == 10_000.0
+    # v4 bumped daily budget to $25k for higher trading volume
+    assert tr["daily_budget_usd"] == 25_000.0
     assert "budget_remaining_today_usd" in tr
     assert "current_streak" in tr
 
@@ -725,7 +727,8 @@ def test_persona_constants_exposed():
 def test_daily_budget_resets_at_new_utc_day(monkeypatch, tmp_path):
     """New v2 contract: opening a position on day N consumes day N's
     budget. The next UTC day, the budget is fresh."""
-    # Set per-trade = $10k so one trade exhausts the daily budget.
+    # Set DAILY_BUDGET = NOTIONAL = $10k so one trade exhausts it.
+    monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 10_000.0)
     monkeypatch.setattr(trader, "NOTIONAL_PER_TRADE", 10_000.0)
     # Day 1 — full budget exhausted by one $10k trade
     feed = [{

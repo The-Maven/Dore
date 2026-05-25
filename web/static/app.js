@@ -8717,6 +8717,51 @@ function renderTraderBody(wrap, data, focusedSym) {
   if (tr.best_day || tr.worst_day) {
     body.appendChild(_traderBestWorstRow(tr));
   }
+
+  // ── Per-strategy breakdown — which strategy is winning? ─────────
+  if ((tr.per_strategy || []).length) {
+    body.appendChild(_traderStrategyBreakdown(tr));
+  }
+}
+
+
+function _traderStrategyBreakdown(tr) {
+  // Each strategy gets a row showing trades, wins/losses, and P&L.
+  // Strategy chip uses the same color family as the trade-card chip.
+  const wrap = el('div', { class: 'sim-trader-block sim-trader-strats' });
+  wrap.appendChild(el('div', { class: 'sim-trader-block-head' },
+    el('span', { class: 'sim-trader-block-tag tip',
+      'data-tip': 'Per-strategy attribution. Each strategy in the ' +
+        'trader\'s library proposes candidates; the framework picks ' +
+        'the best within budget. This breakdown shows which ' +
+        'strategies are pulling their weight.',
+      'data-tip-size': 'lg' }, 'STRATEGIES'),
+    el('span', { class: 'sim-trader-block-sub' },
+      tr.per_strategy.length + ' active')));
+  for (const s of tr.per_strategy) {
+    const pnl = s.pnl_usd || 0;
+    const cls = pnl > 0 ? 'sim-trader-pnl-up'
+      : pnl < 0 ? 'sim-trader-pnl-down' : '';
+    const stratCls = 'sim-trade-strategy-' + (s.strategy || '')
+      .toLowerCase().replace(/_/g, '-');
+    wrap.appendChild(el('div', { class: 'sim-trader-strat-row' },
+      el('span', { class: 'sim-trade-strategy ' + stratCls },
+        (s.strategy || '').toUpperCase().replace(/_/g, ' ')),
+      el('span', { class: 'sim-trader-strat-trades' },
+        s.trades + ' trade' + (s.trades === 1 ? '' : 's')),
+      el('span', { class: 'sim-trader-strat-wl' },
+        s.wins > 0 ? el('span', { class: 'sim-trader-wl-win' },
+          s.wins + 'W') : null,
+        s.wins > 0 && s.losses > 0 ? ' / ' : '',
+        s.losses > 0 ? el('span', { class: 'sim-trader-wl-loss' },
+          s.losses + 'L') : null,
+        s.open > 0 ? el('span', { class: 'sim-trader-strat-open' },
+          ' · ' + s.open + ' open') : null),
+      el('span', { class: 'sim-trader-strat-pnl ' + cls },
+        s.trades === 0 ? '—'
+          : (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2))));
+  }
+  return wrap;
 }
 
 
@@ -8902,10 +8947,26 @@ function _renderTradeCard(trade, isOpen, focusedSym) {
     'data-tip': trade.rationale || '',
     'data-tip-size': 'lg',
   });
-  // Header row: SYMBOL + direction + notional
+  // Header row: SYMBOL + direction + strategy chip + notional
+  const strategyName = (trade.strategy || 'mean_reversion').toUpperCase();
+  // Take the first strategy if multiple aggregated ("mean_reversion+cross_venue_arb")
+  const primaryStrategy = strategyName.split('+')[0];
+  const strategyClass = 'sim-trade-strategy-' + primaryStrategy
+    .toLowerCase().replace(/_/g, '-');
   card.appendChild(el('div', { class: 'sim-trade-card-head' },
     el('span', { class: 'sim-trade-sym' }, trade.symbol),
     el('span', { class: 'sim-trade-dir' }, dirSym),
+    el('span', {
+      class: 'sim-trade-strategy ' + strategyClass,
+      'data-tip': 'Strategy that fired this trade: ' +
+        strategyName.replace(/_/g, ' ').toLowerCase() +
+        (strategyName.includes('+')
+          ? ' (multiple strategies agreed — stronger signal)'
+          : '') +
+        (trade.paired_with ? '\n\nPaired with: ' + trade.paired_with : '') +
+        (trade.venue_outlier ? '\n\nOutlier source: ' + trade.venue_outlier : ''),
+      'data-tip-size': 'lg',
+    }, strategyName.replace(/_/g, ' ').replace(/\+/g, ' + ')),
     el('span', { class: 'sim-trade-notional' },
       '$' + Math.round(trade.notional_usd || 0).toLocaleString())));
   // Forecast → target row

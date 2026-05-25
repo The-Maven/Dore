@@ -6046,6 +6046,81 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+
+/* Strategy chip — distinct per strategy family. Sits between
+   direction pill and notional in the trade card head. */
+.sim-trade-strategy {
+  padding: 1px 7px;
+  border-radius: 2px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  cursor: help;
+  border: 1px solid;
+  text-transform: uppercase;
+}
+/* MEAN REVERSION — gold (default) */
+.sim-trade-strategy-mean-reversion {
+  background: rgba(212, 162, 74, 0.10);
+  color: var(--sim-amber, #D4A24A);
+  border-color: rgba(212, 162, 74, 0.32);
+}
+/* PAIRS DIVERGENCE — blue (paired/structural) */
+.sim-trade-strategy-pairs-divergence {
+  background: rgba(79, 157, 255, 0.10);
+  color: #4F9DFF;
+  border-color: rgba(79, 157, 255, 0.36);
+}
+/* CROSS VENUE ARB — teal (data discipline) */
+.sim-trade-strategy-cross-venue-arb {
+  background: rgba(74, 246, 195, 0.08);
+  color: var(--sim-up, #4AF6C3);
+  border-color: rgba(74, 246, 195, 0.36);
+}
+/* VOLATILITY REGIME — purple (contrarian) */
+.sim-trade-strategy-volatility-regime {
+  background: rgba(198, 168, 212, 0.10);
+  color: #C6A8D4;
+  border-color: rgba(198, 168, 212, 0.36);
+}
+:root[data-theme="light"] .sim-trade-strategy-mean-reversion  { color: #8B6720; }
+:root[data-theme="light"] .sim-trade-strategy-pairs-divergence { color: #1F5DA8; }
+:root[data-theme="light"] .sim-trade-strategy-cross-venue-arb { color: #287052; }
+:root[data-theme="light"] .sim-trade-strategy-volatility-regime { color: #6B4E91; }
+
+/* Per-strategy breakdown rows in the trader panel */
+.sim-trader-strats .sim-trader-block-head { margin-bottom: 4px; }
+.sim-trader-strat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 80px minmax(0, 1fr) 80px;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 10px;
+  border-bottom: 1px solid rgba(212, 162, 74, 0.06);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.sim-trader-strat-row:last-child { border-bottom: 0; }
+.sim-trader-strat-row:hover { background: rgba(212, 162, 74, 0.04); }
+.sim-trader-strat-trades {
+  color: var(--muted-2, #9A9590);
+  font-size: 10px;
+}
+.sim-trader-strat-wl {
+  color: var(--muted-2, #9A9590);
+  font-size: 10px;
+}
+.sim-trader-strat-open {
+  color: var(--sim-amber, #D4A24A);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+.sim-trader-strat-pnl {
+  text-align: right;
+  font-weight: 700;
+}
 .sim-trade-card-row {
   display: flex;
   align-items: baseline;
