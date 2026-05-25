@@ -316,6 +316,48 @@ test('renderSimulator (v3) renders ribbon + status + workspace + wire + calibrat
 });
 
 
+test('redrawSimulator preserves DOM nodes across reconciliation (no innerHTML wipe)', () => {
+  // Soft reconciliation contract: a 20s reconciliation must NOT
+  // replace the whole workspace. Specifically, the .sim-workspace
+  // element rendered on first paint must still be the SAME DOM node
+  // after redrawSimulator runs with an unchanged structure — value
+  // updates only. This pins the fix for "page refresh feels jarring,
+  // we lose scroll context."
+  const { window } = loadApp();
+  const mount = window.document.createElement('div');
+  window.document.body.appendChild(mount);
+  if (window.SIM_VIEW) {
+    window.SIM_VIEW.focused = 'USDC';
+    window.SIM_VIEW.wireRows = [];
+  }
+  // First paint
+  window.renderSimulator(mount, simulatorFeedFixture());
+  const workspaceBefore = mount.querySelector('.sim-workspace');
+  const railBefore = mount.querySelector('.sim-rail-list');
+  const heroBefore = mount.querySelector('.sim-hero');
+  assert.ok(workspaceBefore && railBefore && heroBefore);
+
+  // Reconcile with an updated feed — same structure, fresh values.
+  const next = simulatorFeedFixture();
+  next.tokens[0].current_bps = 2.5;  // changed value
+  window.redrawSimulator(mount, next);
+
+  // The DOM nodes for stable surfaces should be the SAME nodes.
+  assert.strictEqual(
+    mount.querySelector('.sim-workspace'), workspaceBefore,
+    'workspace node must NOT be replaced — innerHTML wipe causes jarring redraw',
+  );
+  assert.strictEqual(
+    mount.querySelector('.sim-rail-list'), railBefore,
+    'rail list node must survive reconciliation',
+  );
+  assert.strictEqual(
+    mount.querySelector('.sim-hero'), heroBefore,
+    'hero pane node must survive reconciliation',
+  );
+});
+
+
 test('renderSimulator (v3) shows empty track record state when no resolutions', () => {
   const { window } = loadApp();
   const mount = window.document.createElement('div');

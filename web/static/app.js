@@ -6497,21 +6497,278 @@ async function fetchSimulatorFeed() {
   }
 }
 
+// 20s reconciliation. Used to do a full innerHTML wipe which lost
+// scroll position, dismissed tooltips, restarted CSS animations, and
+// generally felt like a hard refresh. The new path is a soft diff:
+//
+//   1. If the structure changed (focused symbol, symbol list, or
+//      first-paint state), fall through to a full rebuild — but
+//      preserve scroll position so the user doesn't lose their place.
+//   2. Otherwise update values surgically in place via reconcile*
+//      helpers. Cells flash on diff, no DOM is replaced, scroll +
+//      tooltips + hover state survive the reconciliation.
+//
+// The SSE-driven tick path stays unchanged (it was always surgical).
+// Reconciliation is the safety net for missed SSE diffs, not the
+// primary live channel.
 function redrawSimulator(mount, feed) {
   const lastTickAt = (feed.ticker || {}).last_tick_at;
   if (lastTickAt && lastTickAt !== SIM_VIEW.lastTickAt) {
     SIM_VIEW.pulseSeq++;
     SIM_VIEW.lastTickAt = lastTickAt;
   }
-  // Refresh the wire from the full event list (FIFO 40).
+  // Refresh the wire buffer regardless — it's used by pushWireRows
+  // for dedup math and by the soft path to detect newly arrived events.
   const fresh = (feed.events || []).slice(0, 40);
+  const priorBuffer = SIM_VIEW.wireRows || [];
+
+  // Decide: structural rebuild or soft diff?
+  const needsRebuild = _simNeedsRebuild(mount, feed);
+  if (needsRebuild) {
+    // Full rebuild — but preserve scroll position. Snapshot any
+    // scrolling container, wipe, render, restore.
+    const scrollSnapshot = _simSnapshotScroll(mount);
+    SIM_VIEW.wireRows = fresh;
+    SIM_VIEW.lastEventTs = fresh.reduce((mx, e) => {
+      const v = Number(e.ts) || 0;
+      return v > mx ? v : mx;
+    }, 0);
+    mount.innerHTML = '';
+    renderSimulator(mount, feed);
+    _simRestoreScroll(mount, scrollSnapshot);
+    return;
+  }
+
+  // Soft diff path — no innerHTML wipe. Update each surface
+  // surgically. Cells flash on change, scroll + tooltips + hover
+  // state survive the reconciliation.
+  _simReconcileTokens(mount, feed.tokens || []);
+  _simReconcileStatusStrip(mount, feed);
+  _simReconcileHero(mount, feed);
+  _simReconcileTrackRecord(mount, feed);
+  _simReconcileCalibration(mount, feed.calibration);
+  _simReconcileWire(mount, fresh, priorBuffer);
+  // Update the cached buffer last so the wire reconciliation sees
+  // the prior state for dedup math.
   SIM_VIEW.wireRows = fresh;
   SIM_VIEW.lastEventTs = fresh.reduce((mx, e) => {
     const v = Number(e.ts) || 0;
     return v > mx ? v : mx;
   }, 0);
-  mount.innerHTML = '';
-  renderSimulator(mount, feed);
+}
+
+
+// ── reconciliation helpers ───────────────────────────────────────
+function _simNeedsRebuild(mount, feed) {
+  // First paint (no rendered workspace yet) → must rebuild.
+  if (!mount.querySelector('.sim-workspace')) return true;
+  // Focus change → hero surfaces are tied to the focused token, must
+  // rebuild to swap them.
+  const heroSym = mount.querySelector('.sim-hero-sym');
+  const focusedSym = SIM_VIEW.focused;
+  if (focusedSym && heroSym && heroSym.textContent.trim() !== focusedSym) {
+    return true;
+  }
+  // Symbol-set change (added/removed tokens) → rail row count drifts.
+  const rendered = mount.querySelectorAll('.sim-rail-row').length;
+  const expected = (feed.tokens || []).length;
+  if (rendered !== expected) return true;
+  return false;
+}
+
+function _simSnapshotScroll(mount) {
+  // Capture every scrolling region we know about so a rare rebuild
+  // doesn't drop the user back to the top.
+  const snap = { windowY: window.scrollY };
+  const rail = mount.querySelector('.sim-rail-list');
+  if (rail) snap.rail = rail.scrollTop;
+  const wire = mount.querySelector('.sim-wire-rows');
+  if (wire) snap.wire = wire.scrollTop;
+  return snap;
+}
+
+function _simRestoreScroll(mount, snap) {
+  if (!snap) return;
+  // Page-level scroll. requestAnimationFrame so the rendered
+  // workspace has laid out before we set scrollTop.
+  requestAnimationFrame(() => {
+    if (snap.windowY != null) window.scrollTo(0, snap.windowY);
+    const rail = mount.querySelector('.sim-rail-list');
+    if (rail && snap.rail != null) rail.scrollTop = snap.rail;
+    const wire = mount.querySelector('.sim-wire-rows');
+    if (wire && snap.wire != null) wire.scrollTop = snap.wire;
+  });
+}
+
+function _simReconcileTokens(mount, tokens) {
+  // Per-token surface diff: ribbon + rail + hero big value. We reuse
+  // the SSE flashTokenCell function — it handles `data-sim-val` slots
+  // anywhere in the DOM, so any cell tagged with the right
+  // `data-sim-sym` attribute gets flashed.
+  for (const t of tokens) {
+    flashTokenCell(t);
+  }
+}
+
+function _simReconcileStatusStrip(mount, feed) {
+  // Update LAST TICK / CADENCE / PEG SOURCES / BRAVE QUOTA cells in
+  // place. The full status strip is small; we read the source DOM
+  // and update only the text spans whose values changed.
+  const ticker = feed.ticker || {};
+  const cfg = feed.config || {};
+  const q = feed.brave_quota || {};
+  const sources = feed.sources || [];
+
+  // LIVE cell — streaming vs idle
+  const liveVal = mount.querySelectorAll('.sim-status-cell .sim-status-val')[0];
+  if (liveVal) {
+    const want = ticker.running ? 'STREAMING' : 'IDLE';
+    if (liveVal.textContent !== want) liveVal.textContent = want;
+  }
+  // LAST TICK ago
+  const lastTickVal = mount.querySelectorAll('.sim-status-cell .sim-status-val')[1];
+  if (lastTickVal) {
+    const want = ticker.last_tick_at ? agoLabel(ticker.last_tick_at) : '—';
+    if (lastTickVal.textContent !== want) lastTickVal.textContent = want;
+  }
+  // CADENCE
+  const cadenceVal = mount.querySelectorAll('.sim-status-cell .sim-status-val')[2];
+  if (cadenceVal) {
+    const want = (cfg.tick_interval_minutes || 10) + 'm · ' +
+      (cfg.horizon_minutes || 60) + 'm horizon';
+    if (cadenceVal.textContent !== want) cadenceVal.textContent = want;
+  }
+  // BRAVE QUOTA — reuse the SSE updater
+  if (q) updateBraveQuotaInPlace(q);
+  // PEG SOURCES — recompute the consensus tally
+  let agreedCount = 0, disputedCount = 0, singleCount = 0;
+  for (const t of (feed.tokens || [])) {
+    const ck = (t.consensus || {}).kind;
+    if (ck === 'agreed') agreedCount++;
+    else if (ck === 'disputed') disputedCount++;
+    else if (ck === 'single') singleCount++;
+  }
+  const sourcesCell = mount.querySelectorAll('.sim-status-cell .sim-status-val')[3];
+  if (sourcesCell) {
+    const names = sources.map(s => s.name).join('+') || 'none';
+    // Find the muted suffix span and update; otherwise rebuild the cell text.
+    const suffix = sourcesCell.querySelector('span[style]');
+    sourcesCell.firstChild && (sourcesCell.firstChild.nodeValue = names);
+    if (suffix) {
+      suffix.textContent = '· ' + agreedCount + '✓ ' +
+        singleCount + '○ ' + disputedCount + '✕';
+    }
+  }
+}
+
+function _simReconcileHero(mount, feed) {
+  // Update the focused-token hero pane: delta grid, judge text,
+  // commentary card, chart cone. Most of these are stable in place;
+  // the chart SVG is the only one that benefits from a full swap.
+  const focused = (feed.tokens || []).find(
+    t => t.symbol === SIM_VIEW.focused);
+  if (!focused) return;
+
+  // Delta grid — replace the values cell-by-cell.
+  const cells = mount.querySelectorAll('.sim-delta-cell');
+  const order = ['d1m', 'd5m', 'd1h', 'd24h', 'd7d'];
+  cells.forEach((cell, i) => {
+    const k = order[i];
+    if (!k) return;
+    const v = (focused.deltas || {})[k];
+    const valSlot = cell.querySelector('.sim-delta-val');
+    if (!valSlot) return;
+    const cls = (v == null) ? 'sim-delta-flat'
+      : v > 0 ? 'sim-delta-up'
+      : v < 0 ? 'sim-delta-down' : 'sim-delta-flat';
+    const glyph = (v == null) ? '◇'
+      : v > 0 ? '▲' : v < 0 ? '▼' : '◇';
+    cell.classList.remove('sim-delta-up', 'sim-delta-down', 'sim-delta-flat');
+    cell.classList.add(cls);
+    valSlot.innerHTML = '';
+    if (v == null) {
+      const empty = document.createElement('span');
+      empty.className = 'sim-delta-empty';
+      empty.textContent = 'no data';
+      valSlot.appendChild(empty);
+    } else {
+      const g = document.createElement('span');
+      g.className = 'sim-delta-glyph';
+      g.textContent = glyph;
+      valSlot.appendChild(g);
+      valSlot.appendChild(document.createTextNode(' '));
+      valSlot.appendChild(document.createTextNode(
+        (v >= 0 ? '+' : '') + Number(v).toFixed(2)));
+      const unit = document.createElement('span');
+      unit.className = 'sim-delta-unit';
+      unit.textContent = 'bp';
+      valSlot.appendChild(unit);
+    }
+  });
+
+  // Chart SVG + callout — these are wrapped in .sim-hero-chart and
+  // are large enough that an inner-swap is cheaper than diffing every
+  // band. Replace the whole chart in place; the surrounding hero
+  // pane (sym, name, value cell, delta grid) stays intact so scroll
+  // + hover are preserved.
+  const chartWrap = mount.querySelector('.sim-hero-chart');
+  if (chartWrap) {
+    const next = simHeroChart(focused);
+    if (next && next !== chartWrap) {
+      chartWrap.replaceWith(next);
+    }
+  }
+
+  // AI Judge — update text fields in place when the synthesis changes.
+  const pred = focused.latest_prediction;
+  const judgeBlock = mount.querySelector('.sim-hero-judge');
+  if (judgeBlock && pred) {
+    const syn = judgeBlock.querySelector('.sim-hero-judge-syn');
+    if (syn && pred.judge_synthesis &&
+        syn.textContent !== pred.judge_synthesis) {
+      syn.textContent = pred.judge_synthesis;
+    }
+  }
+}
+
+function _simReconcileTrackRecord(mount, feed) {
+  const focused = (feed.tokens || []).find(
+    t => t.symbol === SIM_VIEW.focused);
+  if (!focused) return;
+  const oldStrip = mount.querySelector('.sim-track, .sim-track-empty');
+  if (!oldStrip) return;
+  const next = simHeroTrackRecord(focused);
+  if (next && next !== oldStrip) oldStrip.replaceWith(next);
+}
+
+function _simReconcileCalibration(mount, calibration) {
+  if (!calibration) return;
+  const c = calibration;
+  // The calibration panel is built by simCalibrationPanel — easier
+  // to swap the whole section than to diff each metric, and a panel
+  // swap doesn't move the page (no items above it shift).
+  const panel = mount.querySelector('.sim-calibration');
+  if (!panel) return;
+  const next = simCalibrationPanel(c);
+  if (next && next !== panel) panel.replaceWith(next);
+}
+
+function _simReconcileWire(mount, fresh, priorBuffer) {
+  // Wire diff: identify newly arrived events (not in priorBuffer)
+  // and prepend via the existing fade-in pusher. Removes the
+  // need to clear + re-render the whole wire on every poll.
+  const priorSet = new Set();
+  for (const e of (priorBuffer || [])) {
+    if (e && e.ts != null) priorSet.add(String(e.ts) + '|' + (e.kind || ''));
+  }
+  const newOnly = [];
+  for (const e of fresh) {
+    if (e && e.ts != null) {
+      const key = String(e.ts) + '|' + (e.kind || '');
+      if (!priorSet.has(key)) newOnly.push(e);
+    }
+  }
+  if (newOnly.length) pushWireRows(newOnly);
 }
 
 // Surgical update on each SSE tick. Avoids a full re-render so the
