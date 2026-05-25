@@ -166,6 +166,34 @@ function simulatorFeedFixture(overrides = {}) {
       },
       calibration: { count: 12, brier_mean: 0.18, crps_mean: 0.45,
         baseline_climatology_brier_mean: 0.25 },
+      recent_resolutions: [
+        // Oldest → newest. Spread of outcomes so the strip renders
+        // every marker variant in tests.
+        { resolved_at: new Date(now - 10*60_000).toISOString(),
+          outcome_kind: 'inside_p50', actual_value: 1.2, point: 1.0,
+          p50_low: 0.4, p50_high: 1.6, p80_low: -0.1, p80_high: 2.1,
+          p95_low: -0.7, p95_high: 2.7, brier_score: 0.12 },
+        { resolved_at: new Date(now - 9*60_000).toISOString(),
+          outcome_kind: 'inside_p80', actual_value: 1.8, point: 1.1,
+          p50_low: 0.5, p50_high: 1.7, p80_low: 0.0, p80_high: 2.2,
+          p95_low: -0.6, p95_high: 2.8, brier_score: 0.18 },
+        { resolved_at: new Date(now - 8*60_000).toISOString(),
+          outcome_kind: 'inside_p95', actual_value: 2.5, point: 1.0,
+          p50_low: 0.4, p50_high: 1.6, p80_low: -0.1, p80_high: 2.1,
+          p95_low: -0.7, p95_high: 2.7, brier_score: 0.30 },
+        { resolved_at: new Date(now - 7*60_000).toISOString(),
+          outcome_kind: 'outside', actual_value: 3.5, point: 1.0,
+          p50_low: 0.4, p50_high: 1.6, p80_low: -0.1, p80_high: 2.1,
+          p95_low: -0.7, p95_high: 2.7, brier_score: 0.5 },
+        { resolved_at: new Date(now - 6*60_000).toISOString(),
+          outcome_kind: 'inside_p50', actual_value: 1.4, point: 1.3,
+          p50_low: 0.7, p50_high: 1.9, p80_low: 0.2, p80_high: 2.4,
+          p95_low: -0.4, p95_high: 3.0, brier_score: 0.10 },
+        { resolved_at: new Date(now - 5*60_000).toISOString(),
+          outcome_kind: 'inside_p50', actual_value: 1.5, point: 1.4,
+          p50_low: 0.8, p50_high: 2.0, p80_low: 0.3, p80_high: 2.5,
+          p95_low: -0.3, p95_high: 3.1, brier_score: 0.09 },
+      ],
     }],
     events: [
       { kind: 'movement.ticker.cycle', ts: new Date(now).toISOString(),
@@ -263,6 +291,46 @@ test('renderSimulator (v3) renders ribbon + status + workspace + wire + calibrat
   // Anchor label ($1.00 peg)
   assert.match(svgText, /\$1\.00/,
     'anchor line should be labelled with the $1.00 peg');
+  // ── PER-TOKEN TRACK RECORD STRIP ────────────────────────────────
+  // Lives between the cone and the AI Judge so the reader sees the
+  // model's recent hit pattern alongside the current forecast.
+  const track = mount.querySelector('.sim-track');
+  assert.ok(track, 'per-token track record strip should render');
+  assert.match(track.textContent, /TRACK RECORD/,
+    'track record carries its tag');
+  // Markers — one per resolution. Fixture has 6 rows.
+  const markers = mount.querySelectorAll('.sim-track-mk');
+  assert.equal(markers.length, 6,
+    'one marker per resolution in fixture');
+  // Outcome variety — fixture covers p50, p80, p95, out. The strip
+  // must render at least the p50 + outside variants.
+  assert.ok(mount.querySelector('.sim-track-mk-p50'),
+    'inside_p50 outcomes render as bright-green markers');
+  assert.ok(mount.querySelector('.sim-track-mk-out'),
+    'outside outcomes render as red markers');
+  // Hit-rate summary line
+  assert.match(track.textContent, /resolved/,
+    'summary line names the count');
+  assert.match(track.textContent, /%/,
+    'summary line carries percentages');
+});
+
+
+test('renderSimulator (v3) shows empty track record state when no resolutions', () => {
+  const { window } = loadApp();
+  const mount = window.document.createElement('div');
+  window.document.body.appendChild(mount);
+  if (window.SIM_VIEW) {
+    window.SIM_VIEW.focused = 'USDC';
+    window.SIM_VIEW.wireRows = [];
+  }
+  const feed = simulatorFeedFixture();
+  feed.tokens[0].recent_resolutions = [];
+  window.renderSimulator(mount, feed);
+  const empty = mount.querySelector('.sim-track-empty');
+  assert.ok(empty, 'empty-state track-record block should render');
+  assert.match(empty.textContent, /no resolutions yet/,
+    'empty state names the reason');
 });
 
 test('renderSimulator (v3) handles empty archive gracefully', () => {

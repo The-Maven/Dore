@@ -2224,6 +2224,33 @@ def _fetch_token_block(store, sym: str, brand_for, now):
         preds = []
     latest_pred = preds[0] if preds else None
 
+    # Per-token recent track record — the last 10 resolved predictions
+    # for this symbol. The UI uses this for the "RECENT TRACK RECORD"
+    # strip under the cone so an investor sees how well the model has
+    # been forecasting THIS token, not just the aggregate archive.
+    try:
+        recent_res = store.list_resolutions(
+            symbol=sym_u, kind="peg_deviation", limit=10) or []
+    except Exception:  # noqa: BLE001
+        recent_res = []
+    # Trim to the fields the UI needs — keeps the feed payload lean.
+    recent_resolutions = [
+        {
+            "resolved_at": r.get("resolved_at"),
+            "outcome_kind": r.get("outcome_kind"),
+            "actual_value": _safe_float(r.get("actual_value")),
+            "point": _safe_float(r.get("point")),
+            "p50_low": _safe_float(r.get("p50_low")),
+            "p50_high": _safe_float(r.get("p50_high")),
+            "p80_low": _safe_float(r.get("p80_low")),
+            "p80_high": _safe_float(r.get("p80_high")),
+            "p95_low": _safe_float(r.get("p95_low")),
+            "p95_high": _safe_float(r.get("p95_high")),
+            "brier_score": _safe_float(r.get("brier_score")),
+        }
+        for r in recent_res
+    ]
+
     from sca.movement.token_context import get_context as _get_ctx
     _ctx_for_payload = _get_ctx(sym_u) or _get_ctx(sym)
     meta = {
@@ -2275,6 +2302,9 @@ def _fetch_token_block(store, sym: str, brand_for, now):
             "judge_insight": latest_pred.get("judge_insight"),
             "judge_pitch": latest_pred.get("judge_pitch"),
         }) or None,
+        # Per-token track record — last 10 resolved predictions for the
+        # focused symbol. UI renders a marker strip + hit-rate trend.
+        "recent_resolutions": recent_resolutions,
         # Per-token calibration was a dead field — the UI only reads
         # the top-level feed.calibration. Removed in the May 2026
         # perf pass; saved 6.5s of HTTP/2 latency per /feed.

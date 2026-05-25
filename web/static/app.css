@@ -5533,6 +5533,155 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   cursor: help;
 }
 
+/* ════════════════════════════════════════════════════════════════════
+   PER-TOKEN TRACK RECORD STRIP (under the cone)
+   ════════════════════════════════════════════════════════════════════ */
+
+.sim-track {
+  margin: 14px 6px 8px;
+  padding: 10px 14px 12px;
+  background: rgba(212, 162, 74, 0.03);
+  border: 1px solid rgba(212, 162, 74, 0.14);
+  border-radius: 4px;
+}
+.sim-track-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.sim-track-tag {
+  color: var(--sim-amber);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  cursor: help;
+}
+.sim-track-trend {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: help;
+}
+.sim-track-trend-up    { color: var(--sim-up,   #4AF6C3); }
+.sim-track-trend-stable{ color: var(--muted-2, #9A9590); }
+.sim-track-trend-down  { color: var(--sim-down, #FF433D); }
+
+.sim-track-strip {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  margin-bottom: 6px;
+  min-height: 22px;
+  flex-wrap: wrap;
+}
+.sim-track-mk {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  cursor: help;
+  transition: transform 120ms ease-out;
+}
+.sim-track-mk:hover {
+  transform: translateY(-2px);
+}
+.sim-track-mk-p50  {
+  background: rgba(74, 246, 195, 0.85);
+  border-color: rgba(74, 246, 195, 0.6);
+}
+.sim-track-mk-p80  {
+  background: rgba(74, 246, 195, 0.45);
+  border-color: rgba(74, 246, 195, 0.3);
+}
+.sim-track-mk-p95  {
+  background: rgba(212, 162, 74, 0.55);
+  border-color: rgba(212, 162, 74, 0.4);
+}
+.sim-track-mk-out  {
+  background: rgba(255, 67, 61, 0.7);
+  border-color: rgba(255, 67, 61, 0.5);
+}
+.sim-track-mk-flat {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
+.sim-track-summary {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted-2, #9A9590);
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.sim-track-legend {
+  color: var(--muted, #6E6B66);
+  font-style: italic;
+  text-decoration: underline dotted rgba(212, 162, 74, 0.32);
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+/* Empty state — pre-first-resolution */
+.sim-track-empty {
+  margin: 14px 6px 8px;
+  padding: 10px 14px;
+  background: rgba(212, 162, 74, 0.02);
+  border: 1px dashed rgba(212, 162, 74, 0.18);
+  border-radius: 4px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  cursor: help;
+}
+.sim-track-empty-tag {
+  color: var(--sim-amber);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+.sim-track-empty-msg {
+  color: var(--muted-2, #9A9590);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Light theme variants */
+:root[data-theme="light"] .sim-track {
+  background: rgba(212, 162, 74, 0.05);
+  border-color: rgba(212, 162, 74, 0.28);
+}
+:root[data-theme="light"] .sim-track-tag,
+:root[data-theme="light"] .sim-track-empty-tag {
+  color: #8B6720;
+}
+:root[data-theme="light"] .sim-track-mk-p50 {
+  background: rgba(40, 112, 82, 0.85);
+  border-color: rgba(40, 112, 82, 0.55);
+}
+:root[data-theme="light"] .sim-track-mk-p80 {
+  background: rgba(40, 112, 82, 0.4);
+  border-color: rgba(40, 112, 82, 0.28);
+}
+:root[data-theme="light"] .sim-track-mk-p95 {
+  background: rgba(139, 103, 32, 0.45);
+  border-color: rgba(139, 103, 32, 0.32);
+}
+:root[data-theme="light"] .sim-track-mk-out {
+  background: rgba(180, 62, 62, 0.7);
+  border-color: rgba(180, 62, 62, 0.45);
+}
+:root[data-theme="light"] .sim-track-trend-up { color: #287052; }
+:root[data-theme="light"] .sim-track-trend-down { color: #B43E3E; }
+
 /* Outside-the-cone caveat strip — the NHC lesson */
 .sim-cone-caveat {
   margin: 0 6px 12px;

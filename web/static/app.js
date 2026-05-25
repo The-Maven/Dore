@@ -7164,6 +7164,12 @@ function simHeroPane(focused, feed) {
             : 'vs $1.00 peg · last tick'))),
     simDeltaGrid(focused),
     simHeroChart(focused),
+    // Per-token track record — last 10 resolved predictions. Sits
+    // directly under the cone so the reader sees the model's recent
+    // hit rate next to its current forecast. This is the trust signal:
+    // a hedged forecast from a model with a strong recent track record
+    // reads differently from the same forecast from a noisy one.
+    simHeroTrackRecord(focused),
     simHeroJudge(focused),
     // AI Commentary — per-token structural read, fetched on focus
     // change. Verb-named disclosure + inline-cited per Bloomberg /
@@ -7592,6 +7598,169 @@ function _simHeroChartCallout(t) {
       regime ? el('span', { class: 'sim-cone-callout-regime' }, regime) : null));
   return wrap;
 }
+
+// ────────────────────────────────────────────────────────────────────
+// PER-TOKEN TRACK RECORD STRIP
+//
+// What it answers: "how well has the model been forecasting THIS token
+// lately?" The aggregate calibration archive (count, Brier, baselines)
+// is on the bottom panel; THIS strip sits directly under the cone so
+// the reader sees the recent hit-pattern next to the current forecast.
+//
+// Each marker is one resolved prediction, oldest-left to newest-right.
+// Color encodes the outcome bucket from the resolver:
+//   • bright green  — landed inside p50 (model's tightest band)
+//   • soft  green   — landed inside p80 but outside p50
+//   • amber         — landed inside p95 but outside p80
+//   • red           — landed outside p95 (the rare misses we care about)
+//   • muted         — direction-only outcomes from net_flow_direction
+//
+// Trend arrow compares the most-recent half vs the prior half — a
+// degrading recent window with a stable longer window is the early
+// signal of regime change. Hover any marker for the actual reading
+// vs the predicted band.
+// ────────────────────────────────────────────────────────────────────
+function simHeroTrackRecord(t) {
+  const rows = t.recent_resolutions || [];
+  if (rows.length === 0) {
+    return el('div', { class: 'sim-track-empty',
+        'data-tip': 'The track record fills as the resolver grades ' +
+          'predictions for this token. Each cycle\'s prediction is ' +
+          'compared to the actual value at the horizon mark, then ' +
+          'archived. With a 1-minute cadence and 5-minute horizon, ' +
+          'the first resolution lands ~5 minutes after the first ' +
+          'tick. Use BURST ×6 to warm the archive faster.',
+        'data-tip-pos': 'below', 'data-tip-size': 'lg' },
+      el('span', { class: 'sim-track-empty-tag' }, 'TRACK RECORD'),
+      el('span', { class: 'sim-track-empty-msg' },
+        'no resolutions yet for ', t.symbol,
+        ' — populates as the model\'s forecasts get scored against reality'));
+  }
+
+  // Sort oldest → newest (the resolver returns newest-first).
+  const sorted = rows.slice().sort((a, b) => {
+    const ta = Date.parse(a.resolved_at) || 0;
+    const tb = Date.parse(b.resolved_at) || 0;
+    return ta - tb;
+  });
+
+  // Hit-rate aggregate over all rows shown.
+  const counts = { inside_p50: 0, inside_p80: 0, inside_p95: 0,
+                   outside: 0, hit: 0, partial: 0, miss: 0 };
+  for (const r of sorted) {
+    const k = r.outcome_kind || 'unknown';
+    if (k in counts) counts[k] += 1;
+  }
+  const total = sorted.length;
+  const insideP50 = counts.inside_p50 + counts.hit;
+  const insideP80 = insideP50 + counts.inside_p80;
+  const insideP95 = insideP80 + counts.inside_p95 + counts.partial;
+  const outsideCt = counts.outside + counts.miss;
+  const pct = (n) => total ? Math.round((n / total) * 100) : 0;
+
+  // Trend signal — compare the second half vs the first half. A
+  // recent-window drop in inside-p80 rate is the early signal of
+  // regime change.
+  let trendLabel = '';
+  let trendCls = '';
+  if (total >= 4) {
+    const halfN = Math.floor(total / 2);
+    const recent = sorted.slice(-halfN);
+    const prior = sorted.slice(0, halfN);
+    const inP80 = (rs) => rs.filter(r =>
+      ['inside_p50', 'inside_p80', 'hit'].includes(r.outcome_kind)
+    ).length / Math.max(rs.length, 1);
+    const recentRate = inP80(recent);
+    const priorRate = inP80(prior);
+    const diff = recentRate - priorRate;
+    if (Math.abs(diff) < 0.15) {
+      trendLabel = 'stable';
+      trendCls = 'sim-track-trend-stable';
+    } else if (diff > 0) {
+      trendLabel = '↑ improving';
+      trendCls = 'sim-track-trend-up';
+    } else {
+      trendLabel = '↓ degrading';
+      trendCls = 'sim-track-trend-down';
+    }
+  }
+
+  // Build the marker strip — one cell per resolution.
+  const markers = sorted.map((r) => {
+    const kind = r.outcome_kind || 'unknown';
+    const cls =
+      kind === 'inside_p50' || kind === 'hit'      ? 'sim-track-mk-p50'
+      : kind === 'inside_p80'                       ? 'sim-track-mk-p80'
+      : kind === 'inside_p95' || kind === 'partial' ? 'sim-track-mk-p95'
+      : kind === 'outside'    || kind === 'miss'    ? 'sim-track-mk-out'
+      : 'sim-track-mk-flat';
+    const labelMap = {
+      inside_p50: 'inside p50 (tightest band hit)',
+      hit: 'direction hit (high confidence)',
+      inside_p80: 'inside p80 (4-in-5 band hit)',
+      inside_p95: 'inside p95 (caught the wide band)',
+      partial: 'direction hit (hedged)',
+      outside: 'outside p95 (missed)',
+      miss: 'direction miss',
+    };
+    const actual = r.actual_value != null
+      ? `${r.actual_value >= 0 ? '+' : ''}${r.actual_value.toFixed(2)}bp actual`
+      : 'no actual recorded';
+    const point = r.point != null
+      ? `${r.point >= 0 ? '+' : ''}${r.point.toFixed(2)}bp predicted`
+      : '';
+    const p80Range = (r.p80_low != null && r.p80_high != null)
+      ? ` (p80 ${r.p80_low.toFixed(1)} to ${r.p80_high.toFixed(1)})` : '';
+    const when = r.resolved_at
+      ? new Date(r.resolved_at).toISOString().slice(11, 19)
+      : '';
+    const tip = `${when} — ${labelMap[kind] || kind}\n` +
+      `${actual}\n${point}${p80Range}`;
+    return el('span', {
+      class: 'sim-track-mk ' + cls,
+      'data-tip': tip,
+      'data-tip-size': 'lg',
+    });
+  });
+
+  // Hit-rate summary line — terse, scannable.
+  const summary = total + ' resolved · ' +
+    pct(insideP50) + '% p50 · ' +
+    pct(insideP80) + '% in p80 · ' +
+    pct(outsideCt) + '% missed';
+
+  const stripTip = 'Each square is one resolved prediction for ' + t.symbol +
+    ', oldest-left to newest-right. Colour shows where the actual ' +
+    'value landed relative to the model\'s forecast bands. Green = ' +
+    'inside p50 (best); amber = inside p95 (still caught); red = ' +
+    'missed (outside p95). The trend arrow compares the most-recent ' +
+    'half of the strip to the prior half.';
+
+  return el('div', { class: 'sim-track' },
+    el('div', { class: 'sim-track-head' },
+      el('span', { class: 'sim-track-tag tip',
+        'data-tip': stripTip, 'data-tip-size': 'lg' },
+        'TRACK RECORD · LAST ' + total),
+      trendLabel
+        ? el('span', { class: 'sim-track-trend ' + trendCls,
+            'data-tip': 'Comparing the most recent half of the strip ' +
+              'against the prior half. ↑ improving = hit-rate has gone up; ' +
+              '↓ degrading = hit-rate has gone down (an early signal of ' +
+              'regime change worth watching).',
+            'data-tip-size': 'lg' },
+            trendLabel)
+        : null),
+    el('div', { class: 'sim-track-strip' }, ...markers),
+    el('div', { class: 'sim-track-summary' }, summary,
+      el('span', { class: 'sim-track-legend',
+          'data-tip': 'Outcome buckets:\n• inside p50 = inside the model\'s ' +
+            'tightest band\n• inside p80 = inside the 80% band (typical)\n' +
+            '• inside p95 = the wide band caught it\n• outside = missed ' +
+            'the cone entirely (the 5% we expect)',
+          'data-tip-size': 'lg' },
+        ' · what counts as a hit?')));
+}
+
 
 function simHeroJudge(t) {
   const p = t.latest_prediction;
