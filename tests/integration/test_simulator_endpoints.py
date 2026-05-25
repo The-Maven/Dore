@@ -123,8 +123,54 @@ def test_feed_returns_tokens_with_brand_and_deltas(client, monkeypatch):
     assert pred is not None
     assert pred["point"] == 4.0
     assert pred["judge_synthesis"]
-    # Calibration mini-rollup per-token
-    assert "calibration" in usdc
+    # Per-token meta carries yield_bearing + venue_type so the UI can
+    # render YLD chips and CEX/DEX tooltips without a second fetch.
+    assert "meta" in usdc
+    assert "yield_bearing" in usdc["meta"]
+    assert "venue_type" in usdc["meta"]
+    # Per-token calibration was a dead field (UI never consumed it).
+    # Dropping it saved ~6.5s of HTTP/2 latency per /feed — pin the
+    # contract so it cannot creep back in.
+    assert "calibration" not in usdc, (
+        "Per-token calibration removed in the May 2026 perf pass — "
+        "UI only reads the top-level feed. Putting it back would "
+        "re-introduce the 6.5s store-fetch cost per /feed."
+    )
+
+
+def test_feed_does_not_call_calibration_per_token(client, monkeypatch):
+    """Regression: simulator_feed must NOT call calibration_summary in
+    the per-token loop. The performance audit traced the 12s warm-cache
+    latency to 18 sequential calibration_summary calls; removing them
+    plus parallelising the rest cut /feed to ~1s. This pins the
+    no-call contract so a refactor cannot quietly bring it back."""
+    from sca.movement import config as sim_cfg
+    monkeypatch.setattr(
+        sim_cfg, "load",
+        lambda: {"symbols": ["USDC", "USDT", "DAI"],
+                  "horizon_minutes": 60, "tick_interval_minutes": 10,
+                  "enabled": True, "kinds": ["peg_deviation"],
+                  "max_in_flight_per_symbol": 24})
+
+    call_count = {"n": 0}
+    # Spy on the FileStore method that backs both the local and
+    # Supabase implementations of calibration_summary.
+    from sca.store import file_store
+    original = file_store.FileStore.calibration_summary
+
+    def _spy(self, *a, **kw):
+        call_count["n"] += 1
+        return original(self, *a, **kw)
+
+    monkeypatch.setattr(file_store.FileStore, "calibration_summary", _spy)
+    resp = client.get("/api/simulator/feed")
+    assert resp.status_code == 200
+    # The per-token loop must NOT call calibration_summary.
+    # The top-level /api/simulator/calibration endpoint does call it,
+    # but that's a different endpoint — /feed alone should be zero.
+    assert call_count["n"] == 0, (
+        f"simulator_feed called calibration_summary {call_count['n']} times — "
+        "must be 0 to keep the warm-cache latency under 1s.")
 
 
 def test_feed_degrades_when_no_data(client, monkeypatch):

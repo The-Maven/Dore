@@ -55,6 +55,10 @@ def _isolate_state(monkeypatch, tmp_path):
     # out of the path.
     monkeypatch.setenv("SCA_MOVEMENT_TICKER_DISABLED", "1")
     monkeypatch.setenv("SCA_PEG_PRICE_DISABLED", "1")
+    # Disable the simulator /feed cache so tests that mock store data
+    # see fresh payloads on every call (the 3s prod cache would leak
+    # fixture data across tests).
+    monkeypatch.setenv("SCA_SIMULATOR_FEED_CACHE_DISABLED", "1")
     # Isolate the movement simulator config file so test edits don't
     # leak into the real data/movement_config.json.
     try:
