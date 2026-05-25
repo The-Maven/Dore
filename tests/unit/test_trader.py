@@ -709,6 +709,56 @@ def test_v3_position_size_scales_with_edge():
     assert op_large[0].notional_usd > op_small[0].notional_usd
 
 
+def test_stale_data_outcome_excluded_from_win_loss_math(tmp_path, monkeypatch):
+    """Never-sketchy rule: when entry and exit reference the same
+    source-tick (no fresh data between them), mark the trade STALE
+    and exclude from W/L math. The user's complaint about $0.00 FLAT
+    outcomes was actually stale-data — calling them WINS or LOSSES
+    would be dishonest."""
+    import time as _t
+    monkeypatch.setattr(trader, "TRADER_PATH", tmp_path / "t.json")
+    monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 100_000.0)
+    # Use a fresh fetched_at so the entry passes the freshness gate.
+    # The STALE detection happens on resolve, when entry and exit
+    # reference the SAME source-tick (same fetched_at).
+    fresh_ts = _t.time()
+    entry_consensus = {
+        "kind": "single", "max_disagreement_bps": 0.0,
+        "sources": [{"name": "coingecko", "price": 0.992,
+                      "fetched_at": fresh_ts}],
+    }
+    feed = [{
+        "symbol": "FRAX", "current_bps": -80.0,
+        "consensus": entry_consensus,
+        "meta": {"cone_normal_bps": 6, "cone_alert_bps": 25,
+                  "yield_bearing": False},
+        "latest_prediction": {
+            "made_at": "p1", "resolves_at": "2026-05-25T11:05:00+00:00",
+            "point": -78.0, "p80_low": -82.0, "p80_high": -76.0,
+            "horizon_minutes": 5, "confidence_word": "likely",
+        },
+    }]
+    trader.evaluate_cycle(feed, now_iso="2026-05-25T11:00:00+00:00")
+    # Resolve with SAME current_bps + SAME source fetched_at (the
+    # stale-data signature: source never refreshed between entry + exit)
+    feed_resolve = [{
+        **feed[0],
+        "current_bps": -80.0,
+        "consensus": entry_consensus,  # identical, same fetched_at
+    }]
+    trader.evaluate_cycle(feed_resolve, now_iso="2026-05-25T11:06:00+00:00")
+    resolved = [t for t in trader.all_trades() if t["status"] == "resolved"]
+    assert len(resolved) == 1
+    r = resolved[0]
+    assert r["outcome"] == "STALE", (
+        f"expected STALE outcome for same-source-tick resolution, got "
+        f"{r['outcome']!r}")
+    # Win/loss math must exclude it
+    tr = trader.track_record()
+    assert tr["wins"] == 0
+    assert tr["losses"] == 0
+
+
 def test_persona_constants_exposed():
     """Track-record response carries the persona / tagline / version
     so the UI can render the editorial framing without hardcoding."""

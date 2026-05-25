@@ -606,6 +606,41 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 continue
             if now_dt < resolves_dt:
                 continue
+            # STALE-DATA detection. Many "FLAT" outcomes were not the
+            # market being quiet — they were the trader reading the
+            # SAME peg_tick row at entry and at exit because the only
+            # source available (CoinGecko, rate-limited) hadn't returned
+            # a fresh price. We can't honestly evaluate a trade whose
+            # entry and exit reference the same source-tick, so we mark
+            # it STALE and exclude it from win/loss math.
+            entry_sources = list(trade.entry_sources or [])
+            exit_sources = list((tok.get("consensus") or {}).get("sources") or [])
+            entry_fetched_at = None
+            exit_fetched_at = None
+            for s in entry_sources:
+                fa = s.get("fetched_at")
+                if isinstance(fa, (int, float)) and (
+                        entry_fetched_at is None or fa > entry_fetched_at):
+                    entry_fetched_at = float(fa)
+            for s in exit_sources:
+                fa = s.get("fetched_at")
+                if isinstance(fa, (int, float)) and (
+                        exit_fetched_at is None or fa > exit_fetched_at):
+                    exit_fetched_at = float(fa)
+            stale_data = (
+                entry_fetched_at is not None
+                and exit_fetched_at is not None
+                and abs(exit_fetched_at - entry_fetched_at) < 0.5
+                # within half a second = same source tick row
+            ) or (
+                # Fallback heuristic when fetched_at isn't available:
+                # exit bps EXACTLY equals entry to 4dp on a single-
+                # source token is almost certainly stale data.
+                isinstance(current, (int, float))
+                and abs(current - trade.entry_bps) < 1e-6
+                and (trade.entry_consensus_kind == "single"
+                     or not entry_sources)
+            )
             # P&L: long profits from a recovery (entry was low, exit is higher).
             # Short profits from a pullback (entry was high, exit is lower).
             if trade.direction == "long":
@@ -618,20 +653,30 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
             trade.pnl_bps = round(pnl_bps, 4)
             trade.pnl_usd = pnl_usd
             trade.status = "resolved"
-            # Outcome label — used by the UI to surface clear WIN /
-            # LOSS markers. FLAT is the rare exactly-zero P&L case
-            # (we still distinguish it so it's not mis-counted).
-            if pnl_usd > 0:
+            # Outcome label. STALE = no fresh data between entry + exit,
+            # un-evaluable, excluded from win/loss math. FLAT = market
+            # genuinely didn't move enough to register a sign.
+            if stale_data:
+                trade.outcome = "STALE"
+            elif pnl_usd > 0:
                 trade.outcome = "WIN"
             elif pnl_usd < 0:
                 trade.outcome = "LOSS"
             else:
                 trade.outcome = "FLAT"
-            trade.outcome_note = (
-                f"{trade.direction.upper()} {trade.symbol} settled at "
-                f"{current:+.2f}bp ({trade.outcome} "
-                f"${'+' if pnl_usd >= 0 else '-'}{abs(pnl_usd):.2f})"
-            )
+            if trade.outcome == "STALE":
+                trade.outcome_note = (
+                    f"{trade.direction.upper()} {trade.symbol}: no "
+                    f"fresh source data between entry and resolve "
+                    f"(source rate-limited or unchanged). Trade not "
+                    f"evaluated; excluded from win/loss math."
+                )
+            else:
+                trade.outcome_note = (
+                    f"{trade.direction.upper()} {trade.symbol} settled at "
+                    f"{current:+.2f}bp ({trade.outcome} "
+                    f"${'+' if pnl_usd >= 0 else '-'}{abs(pnl_usd):.2f})"
+                )
             # Exit-side receipt: snapshot the source readings + the
             # consensus state at exit so the receipt shows the full
             # round-trip audit trail.
@@ -684,6 +729,10 @@ def track_record() -> dict:
     resolved = [t for t in trades if t.status == "resolved"
                  and t.pnl_usd is not None]
     open_trades = [t for t in trades if t.status == "open"]
+    # STALE trades are resolved-but-un-evaluable — exclude from
+    # win/loss math but surface the count so the user knows.
+    stale = [t for t in resolved if t.outcome == "STALE"]
+    decided = [t for t in resolved if t.outcome != "STALE"]
     today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     deployed_today = sum(
         t.notional_usd for t in trades if t.day_utc == today_utc)
@@ -710,18 +759,27 @@ def track_record() -> dict:
             "net_pnl_usd": 0.0,
             "win_rate": None, "mean_trade_usd": None,
             "current_streak": {"outcome": None, "length": 0},
+            "starting_capital_usd": 10_000.0,
+            "account_equity_usd": 10_000.0,
+            "account_return_pct": 0.0,
+            "pnl_today_usd": 0.0,
+            "pnl_24h_usd": 0.0,
+            "pnl_7d_usd": 0.0,
             "equity_curve": [],
             "daily": [],
             "best_day": None,
             "worst_day": None,
+            "per_strategy": [],
         }
 
-    # Order resolved trades chronologically for streaks + equity curve.
+    # Order DECIDED trades chronologically for streaks + equity curve.
+    # STALE trades don't count toward streaks or W/L math because they
+    # were never actually evaluated.
     by_time = sorted(
-        resolved, key=lambda t: t.resolved_at_real or t.opened_at or "")
-    wins = [t for t in resolved if (t.pnl_usd or 0) > 0]
-    losses = [t for t in resolved if (t.pnl_usd or 0) < 0]
-    net = round(sum(t.pnl_usd or 0 for t in resolved), 2)
+        decided, key=lambda t: t.resolved_at_real or t.opened_at or "")
+    wins = [t for t in decided if (t.pnl_usd or 0) > 0]
+    losses = [t for t in decided if (t.pnl_usd or 0) < 0]
+    net = round(sum(t.pnl_usd or 0 for t in decided), 2)
 
     # Current streak — walk backward through resolved trades while
     # the outcome stays consistent.
@@ -753,8 +811,10 @@ def track_record() -> dict:
                                       else "LOSS"),
         })
 
-    # Per-day aggregates — last 14 UTC days. A day appears even if
-    # no trades resolved (P&L = 0) so the timeline shows the gap.
+    # Per-day aggregates — last 14 UTC days. STALE trades count
+    # toward "trades attempted" but not toward wins/losses (the
+    # daily ledger needs the full attempted volume for the user
+    # to see real activity).
     daily_map: dict[str, dict] = {}
     for t in resolved:
         day = t.day_utc or (t.resolved_at_real or "")[:10]
@@ -762,10 +822,12 @@ def track_record() -> dict:
             continue
         agg = daily_map.setdefault(day, {
             "day_utc": day, "trades": 0, "wins": 0, "losses": 0,
-            "pnl_usd": 0.0, "notional_usd": 0.0,
+            "stale": 0, "pnl_usd": 0.0, "notional_usd": 0.0,
         })
         agg["trades"] += 1
-        if (t.pnl_usd or 0) > 0:
+        if t.outcome == "STALE":
+            agg["stale"] += 1
+        elif (t.pnl_usd or 0) > 0:
             agg["wins"] += 1
         elif (t.pnl_usd or 0) < 0:
             agg["losses"] += 1
@@ -824,6 +886,29 @@ def track_record() -> dict:
         strategy_map.values(),
         key=lambda s: s["pnl_usd"], reverse=True)
 
+    # Account equity + time-windowed P&L. The "account" framing makes
+    # the system legible to a professional reader: simulated capital
+    # starts at $10,000, equity = starting + cumulative_pnl. Windows
+    # let the reader see "today the trader is up $5" vs "all-time
+    # +$23" — short-term vs durable performance.
+    STARTING_CAPITAL_USD = 10_000.0
+    account_equity = round(STARTING_CAPITAL_USD + net, 2)
+    account_return_pct = round((net / STARTING_CAPITAL_USD) * 100, 3)
+    # Cutoff timestamps for windows.
+    from datetime import timedelta as _td
+    now_dt = datetime.now(timezone.utc)
+    cutoff_24h = (now_dt - _td(hours=24)).isoformat(timespec="seconds")
+    cutoff_7d = (now_dt - _td(days=7)).isoformat(timespec="seconds")
+    pnl_24h = round(sum(
+        (t.pnl_usd or 0) for t in resolved
+        if (t.resolved_at_real or "") >= cutoff_24h), 2)
+    pnl_7d = round(sum(
+        (t.pnl_usd or 0) for t in resolved
+        if (t.resolved_at_real or "") >= cutoff_7d), 2)
+    pnl_today = round(sum(
+        (t.pnl_usd or 0) for t in resolved
+        if (t.day_utc or "") == today_utc), 2)
+
     return {
         **base,
         "count_resolved": len(resolved),
@@ -836,6 +921,13 @@ def track_record() -> dict:
             "outcome": streak_outcome,
             "length": streak_length,
         },
+        # Account equity story
+        "starting_capital_usd": STARTING_CAPITAL_USD,
+        "account_equity_usd": account_equity,
+        "account_return_pct": account_return_pct,
+        "pnl_today_usd": pnl_today,
+        "pnl_24h_usd": pnl_24h,
+        "pnl_7d_usd": pnl_7d,
         "equity_curve": equity_curve[-50:],  # last 50 points for the sparkline
         "daily": daily,
         "best_day": best_day,

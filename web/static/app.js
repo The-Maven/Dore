@@ -7810,8 +7810,13 @@ function simRailRow(t, isFocused) {
       ' · no peg data this cycle. Click to focus.'
     : yld
     ? t.symbol + ' · ' + (brand.name || '') + venueLine +
-      ' · YIELD-BEARING: ' + (v >= 0 ? '+' : '') + Number(v).toFixed(2) +
-      'bp is the design drift above $1.00, not a depeg. Click to focus.'
+      ' · YIELD-BEARING (NAV climbs above $1.00 as yield accrues): ' +
+      (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'bp is the ' +
+      'SECONDARY-MARKET price vs the $1.00 issuance peg. ' +
+      (v >= 0 ? 'Trading at a premium to issuance.'
+              : 'Trading at a discount to issuance (liquidity / ' +
+                'redemption-fee dynamics, not strict depeg).') +
+      ' Click to focus.'
     : t.symbol + ' · ' + (brand.name || '') + venueLine +
       ' · ' + (v >= 0 ? '+' : '') + Number(v).toFixed(2) +
       'bp from $1.00. Click to focus this token in the hero pane.';
@@ -7884,8 +7889,13 @@ function simHeroPane(focused, feed) {
           'data-tip-pos': 'below' }, fVenue),
         fYld
           ? el('span', { class: 'sim-yld-tag sim-yld-tag-hero',
-              'data-tip': 'Yield-bearing. The bp figure below is the ' +
-                'design drift above $1.00 as yield accrues, not a depeg.',
+              'data-tip': 'Yield-bearing — the token\'s NAV climbs ' +
+                'above $1.00 as yield accrues. The bp figure below is ' +
+                'the SECONDARY-MARKET price vs the $1.00 issuance peg, ' +
+                'not vs NAV. Negative bp = secondary market is ' +
+                'discounting the token relative to issuance ' +
+                '(liquidity / redemption-fee dynamics, not a strict ' +
+                'depeg). Positive bp = trading at premium to issuance.',
               'data-tip-pos': 'below', 'data-tip-size': 'lg' },
               'YIELD-BEARING')
           : null,
@@ -7935,7 +7945,12 @@ function simHeroPane(focused, feed) {
                 Number(focused.current_bps).toFixed(2) + 'bp')),
         el('span', { class: 'sim-hero-val-sub' },
           fYld
-            ? 'drift above $1.00 issuance peg · last tick'
+            // For yield-bearing, the sign of bp tells the truth about
+            // secondary-market vs issuance peg. "Drift" was wrong
+            // language when the market discounts the token (negative bp).
+            ? (focused.current_bps != null && focused.current_bps >= 0
+                ? 'premium to $1.00 issuance peg · secondary market · last tick'
+                : 'discount to $1.00 issuance peg · secondary market · last tick')
             : 'vs $1.00 peg · last tick'))),
     simDeltaGrid(focused),
     simHeroChart(focused),
@@ -8662,6 +8677,12 @@ function renderTraderBody(wrap, data, focusedSym) {
   const open = data.open || [];
   const resolved = data.resolved || [];
 
+  // ── ACCOUNT EQUITY block — the headline P&L view ─────────────────
+  // Running balance vs starting capital + 24h / 7d / all-time windows.
+  // Sits at the very top so a professional reader sees the account
+  // story before anything else.
+  body.appendChild(_traderAccountEquity(tr));
+
   // ── Day badge: today's allocation usage ──────────────────────────
   const dayBadge = _traderDayBadge(tr);
   if (dayBadge) body.appendChild(dayBadge);
@@ -8720,10 +8741,12 @@ function renderTraderBody(wrap, data, focusedSym) {
     openBlock.append(el('div', { class: 'sim-trader-block-head' },
       el('span', { class: 'sim-trader-block-tag' }, 'OPEN POSITIONS'),
       el('span', { class: 'sim-trader-block-sub' },
-        open.length + ' running')));
+        open.length + ' running · scroll for full list')));
+    const scrollWrap = el('div', { class: 'sim-trader-open-scroll' });
     for (const trade of open) {
-      openBlock.appendChild(_renderTradeCard(trade, true, focusedSym));
+      scrollWrap.appendChild(_renderTradeCard(trade, true, focusedSym));
     }
+    openBlock.appendChild(scrollWrap);
     body.appendChild(openBlock);
   }
 
@@ -8794,6 +8817,79 @@ function _traderStrategyBreakdown(tr) {
       el('span', { class: 'sim-trader-strat-pnl ' + cls },
         s.trades === 0 ? '—'
           : (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2))));
+  }
+  return wrap;
+}
+
+
+function _traderAccountEquity(tr) {
+  // Account equity + time-windowed P&L. The headline figure is the
+  // running balance ($10,000 starting + cumulative P&L) with a sign-
+  // coloured delta + return%. Three timeframe cells (24h / 7d / all-
+  // time) sit below for the at-a-glance read. Empty equity_curve is
+  // OK — we still render the block with the starting capital and
+  // a "no trades yet" caption.
+  const equity = tr.account_equity_usd != null
+    ? tr.account_equity_usd : tr.starting_capital_usd || 10_000;
+  const net = tr.net_pnl_usd || 0;
+  const retPct = tr.account_return_pct != null
+    ? tr.account_return_pct : 0;
+  const isUp = net >= 0;
+  const eqCls = isUp ? 'sim-trader-equity-up' : 'sim-trader-equity-down';
+
+  const wrap = el('div', { class: 'sim-trader-equity-block' });
+  wrap.appendChild(el('div', { class: 'sim-trader-equity-head' },
+    el('span', { class: 'sim-trader-equity-tag tip',
+      'data-tip': 'Account equity = starting capital ($' +
+        (tr.starting_capital_usd || 10000).toLocaleString() +
+        ') + cumulative P&L. The simulated trader starts each ' +
+        'history with the same capital so the equity curve reads ' +
+        'as a real P&L story. The starting capital is editorial — ' +
+        'an anchor for the math, not a real account balance.',
+      'data-tip-size': 'lg' }, 'ACCOUNT EQUITY'),
+    el('span', { class: 'sim-trader-equity-bigrow' },
+      el('span', { class: 'sim-trader-equity-big' },
+        '$' + Number(equity).toLocaleString(undefined,
+          {minimumFractionDigits: 2, maximumFractionDigits: 2})),
+      el('span', { class: 'sim-trader-equity-arrow ' + eqCls },
+        isUp ? '▲' : '▼')),
+    el('span', { class: 'sim-trader-equity-delta ' + eqCls },
+      (net >= 0 ? '+$' : '-$') + Math.abs(net).toFixed(2),
+      el('span', { class: 'sim-trader-equity-pct' },
+        ' (' + (retPct >= 0 ? '+' : '') + retPct.toFixed(2) + '%)'))));
+
+  // Time-window cells
+  const _fmt = (v) => (v >= 0 ? '+$' : '-$') + Math.abs(v).toFixed(2);
+  const _winCls = (v) => v > 0 ? 'sim-trader-pnl-up'
+    : v < 0 ? 'sim-trader-pnl-down' : '';
+  const today = tr.pnl_today_usd || 0;
+  const d24h = tr.pnl_24h_usd || 0;
+  const d7d = tr.pnl_7d_usd || 0;
+  wrap.appendChild(el('div', { class: 'sim-trader-equity-windows' },
+    el('div', { class: 'sim-trader-equity-win' },
+      el('span', { class: 'sim-trader-equity-win-lbl' }, 'TODAY'),
+      el('span', { class: 'sim-trader-equity-win-val ' + _winCls(today) },
+        _fmt(today))),
+    el('div', { class: 'sim-trader-equity-win' },
+      el('span', { class: 'sim-trader-equity-win-lbl' }, 'LAST 24H'),
+      el('span', { class: 'sim-trader-equity-win-val ' + _winCls(d24h) },
+        _fmt(d24h))),
+    el('div', { class: 'sim-trader-equity-win' },
+      el('span', { class: 'sim-trader-equity-win-lbl' }, 'LAST 7D'),
+      el('span', { class: 'sim-trader-equity-win-val ' + _winCls(d7d) },
+        _fmt(d7d))),
+    el('div', { class: 'sim-trader-equity-win' },
+      el('span', { class: 'sim-trader-equity-win-lbl' }, 'ALL-TIME'),
+      el('span', { class: 'sim-trader-equity-win-val ' + _winCls(net) },
+        _fmt(net)))));
+
+  // Bigger equity sparkline (full-width inside the block).
+  if ((tr.equity_curve || []).length >= 2) {
+    const big = _traderEquitySparkline(tr.equity_curve);
+    if (big) {
+      big.classList.add('sim-trader-equity-spark-big');
+      wrap.appendChild(big);
+    }
   }
   return wrap;
 }
@@ -9023,6 +9119,8 @@ function _renderTradeCard(trade, isOpen, focusedSym) {
       ? 'sim-trade-outcome-win'
       : outcome === 'LOSS'
       ? 'sim-trade-outcome-loss'
+      : outcome === 'STALE'
+      ? 'sim-trade-outcome-stale'
       : 'sim-trade-outcome-flat';
     card.appendChild(el('div', { class: 'sim-trade-card-row sim-trade-pnl-row' },
       el('span', { class: 'sim-trade-outcome ' + outcomeCls }, outcome),
@@ -9232,8 +9330,13 @@ function _renderTradeChip(trade, focusedSym) {
   // Compact summary chip for recent settlements. Click to scroll
   // into focus (filters the predictions strip for that token).
   const pnl = trade.pnl_usd;
-  const cls = pnl == null ? ''
-    : pnl >= 0 ? 'sim-trader-chip-win' : 'sim-trader-chip-loss';
+  const outcome = trade.outcome || '';
+  const cls = outcome === 'STALE'
+    ? 'sim-trader-chip-stale'
+    : pnl == null ? ''
+    : pnl > 0 ? 'sim-trader-chip-win'
+    : pnl < 0 ? 'sim-trader-chip-loss'
+    : '';
   const chip = el('div', {
     class: 'sim-trader-chip ' + cls +
       (trade.symbol === focusedSym ? ' sim-trader-chip-focused' : ''),
@@ -9246,7 +9349,8 @@ function _renderTradeChip(trade, focusedSym) {
     el('span', { class: 'sim-trader-chip-dir' },
       trade.direction === 'long' ? '↑' : '↓'),
     el('span', { class: 'sim-trader-chip-pnl' },
-      pnl == null ? '—'
+      outcome === 'STALE' ? 'STALE'
+        : pnl == null ? '—'
         : (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2)));
   return chip;
 }

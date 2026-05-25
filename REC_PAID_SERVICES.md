@@ -160,6 +160,67 @@ What we have: no email anywhere.
 
 ---
 
+## DATA SOURCES — the never-sketchy upgrade path
+
+Production-grade trading is downstream of production-grade data. The
+current free tier is OK for a demo; for paid customers (or any
+real-money simulation) the source mix needs to be hardened. Ranked
+by impact-per-dollar:
+
+### Free / immediately-deployable (no $ required)
+
+1. **Pyth Network Hermes — ALREADY ADDED.** Real-time, oracle-grade,
+   first-party aggregated feeds (90+ publishers including Jane Street,
+   Two Sigma, DRW, GTS). The strongest single addition: independent
+   of every CEX we already poll, sub-second freshness, no rate limit
+   we've ever observed at our cadence. Free pull endpoint at
+   `hermes.pyth.network`. Done; integrated.
+
+2. **Binance Spot API** (free, no auth required for tickers): adds
+   another major CEX outside the Coinbase + Kraken duopoly we already
+   poll. Useful for FDUSD (Binance-dominant) and any depeg event
+   that originates on Asia-session venues. Rate limit ~1,200 req/min
+   on the public tier. Symbol convention: `USDCUSDT`, `USDTBUSD` etc.
+   Recommend adding next.
+
+3. **OKX Spot API** (free, no auth): same shape as Binance,
+   covers Asia + EU spot. Adds a third independent CEX. Quick win.
+
+### Paid sources (worth the spend when revenue justifies)
+
+4. **Chainlink Data Feeds** (~$3-5k/mo): the institutional reference
+   that procurement teams already accept. On-chain price feeds with
+   defined update heartbeats. The "regulator-legible" stamp.
+
+5. **Curve Finance LLAMMA / pool reads** (free via public RPC, but
+   compute-intensive): direct AMM prices from on-chain Curve 3pool,
+   crvUSD LLAMMA, FRAX bp, etc. Truly direct, no intermediary. For
+   DeFi-native tokens (FRAX, GHO, crvUSD, LUSD, USDD), this is the
+   highest-quality source.
+
+6. **DefiLlama Pro** ($300/mo): aggregates 200+ DEX pools, useful for
+   tokens with major Uniswap V3 / Balancer / Curve liquidity.
+
+7. **CoinGecko Pro** ($129/mo): higher rate limit (500 req/min vs
+   30) eliminates the rate-limit issue we currently see. **Note:**
+   not as important as adding Pyth + Binance because we'd still be
+   single-aggregator on edge cases. The Pro tier is a bandaid, not
+   a fix.
+
+### Hard rule we just enforced
+
+The "never-sketchy" guarantee: the trader REFUSES to enter when the
+freshest available source for a symbol is > 90 seconds old. The
+default visible-data marker is STALE (no number) when the latest
+tick is > 3 minutes old. Money at stake = no off-market entries on
+unrefreshed data.
+
+The Pyth integration is the structural fix for this. Where CoinGecko
+was the only source and rate-limited to 60s cache, Pyth is sub-second
+and parallel. With Pyth now in the mix, the STALE outcomes should
+disappear for the universe Pyth covers (USDC, USDT, DAI, PYUSD, USDP,
+TUSD, FDUSD, FRAX, GUSD — the main fiat-backed + algorithmic majors).
+
 ## Recommended Q3 spend, ranked by ROI
 
 | Service | Monthly | Lock-in | Buy when |

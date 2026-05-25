@@ -222,6 +222,37 @@ def test_all_candidates_deduplicates_by_symbol_direction():
     assert "+" in c.strategy or "mean_reversion" in c.strategy
 
 
+def test_eligibility_refuses_stale_source_data():
+    """Never-sketchy rule: if even the freshest source on this token
+    has fetched_at older than 90 seconds, refuse to propose. The
+    trader must not enter an off-market trade because the only data
+    available is stale."""
+    import time as _t
+    now = _t.time()
+    stale_tok = _tok("USDC", current_bps=-10.0, p80_low=-12, p80_high=-8,
+                      sources=[
+                          {"name": "coingecko", "price": 0.999,
+                           "fetched_at": now - 180},  # 3 minutes old
+                      ])
+    cands = strategies.mean_reversion([stale_tok])
+    assert cands == [], (
+        "trader must refuse to enter when only available source data "
+        "is >90s old — money is at stake, no sketchy entries")
+
+
+def test_eligibility_passes_fresh_source_data():
+    """Fresh source data (< 90s) must NOT trip the freshness gate."""
+    import time as _t
+    now = _t.time()
+    fresh_tok = _tok("USDC", current_bps=-10.0, p80_low=-12, p80_high=-8,
+                      sources=[
+                          {"name": "coingecko", "price": 0.999,
+                           "fetched_at": now - 10},  # 10 seconds old
+                      ])
+    cands = strategies.mean_reversion([fresh_tok])
+    assert len(cands) == 1
+
+
 def test_all_candidates_sorts_by_priority_descending():
     """The orchestrator returns highest priority first so the trader
     deploys the strongest signals against the budget first."""

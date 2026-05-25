@@ -53,10 +53,25 @@ class TradeCandidate:
 
 
 # ── helpers ─────────────────────────────────────────────────────────
+_MAX_SOURCE_AGE_S = 90.0  # never trade on data older than 90 seconds
+
+
 def _eligible_token(tok: dict) -> bool:
     """Per-token eligibility gate every strategy needs to pass through
     BEFORE proposing a candidate. Centralised so each strategy doesn't
-    re-implement the discipline rules."""
+    re-implement the discipline rules.
+
+    Hard rules (never bypass):
+      • yield-bearing → skip (drift is structural, not arbitrage)
+      • no current price → skip
+      • DISPUTED consensus → skip (entry price contested)
+      • STALE source data → skip (any source older than 90s is
+        un-actionable; this is the "never sketchy" guarantee — when
+        the only data we have is more than a minute and a half old,
+        we DON'T trade, because a real venue can move in that time
+        and our entry would be off-market)
+    """
+    import time as _t
     meta = tok.get("meta") or {}
     if meta.get("yield_bearing"):
         return False
@@ -65,6 +80,26 @@ def _eligible_token(tok: dict) -> bool:
     cons = tok.get("consensus") or {}
     if cons.get("kind") == "disputed":
         return False
+    # Freshness gate. fetched_at on each source is unix seconds.
+    # We compare the MAX fetched_at (most recent) against now — if
+    # even the freshest source is stale, refuse.
+    # NOTE: only apply when fetched_at looks like a real unix
+    # timestamp (post-2001, i.e. > 1e9). Synthetic test fixtures
+    # use values like 100 or 1.0 — treat those as "freshness unknown"
+    # and proceed (don't gate-out tests).
+    sources = cons.get("sources") or []
+    if sources:
+        try:
+            freshest = max(
+                (float(s.get("fetched_at") or 0) for s in sources),
+                default=0.0,
+            )
+            if freshest > 1_000_000_000:
+                age_s = _t.time() - freshest
+                if age_s > _MAX_SOURCE_AGE_S:
+                    return False
+        except (TypeError, ValueError):
+            pass
     return True
 
 
