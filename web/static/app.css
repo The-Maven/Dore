@@ -5831,6 +5831,329 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   .sim-notice-msg { white-space: normal; }
 }
 
+/* ════════════════════════════════════════════════════════════════════
+   COLLAPSIBLE PANEL WRAPPER (calibration / config)
+   ════════════════════════════════════════════════════════════════════ */
+
+.sim-collapsible-head {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  position: relative;
+  user-select: none;
+  transition: color 120ms ease-out;
+}
+.sim-collapsible-head:hover {
+  color: var(--sim-amber, #D4A24A);
+}
+.sim-collapsible-toggle {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--muted-2, #9A9590);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 2px;
+  transition: background 120ms ease-out, color 120ms ease-out;
+  line-height: 1;
+}
+.sim-collapsible-toggle:hover {
+  background: rgba(212, 162, 74, 0.14);
+  color: var(--paper, #EFEAE0);
+}
+
+/* The body collapse: every child of the panel except the h2 head
+   gets hidden when collapsed. We don't animate height (variable
+   content) — instead we fade + shrink the children for a clean
+   transition. */
+.sim-collapsible.sim-collapsible-collapsed > *:not(.sim-collapsible-head) {
+  display: none;
+}
+.sim-collapsible.sim-collapsible-collapsed {
+  padding-bottom: 14px;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   THE DISCIPLINE TRADER PANEL
+   ════════════════════════════════════════════════════════════════════ */
+
+.sim-trader {
+  margin: 14px 6px 8px;
+  padding: 12px 16px 14px;
+  background: linear-gradient(180deg,
+    rgba(212, 162, 74, 0.06) 0%,
+    rgba(212, 162, 74, 0.02) 100%);
+  border: 1px solid rgba(212, 162, 74, 0.22);
+  border-radius: 6px;
+  position: relative;
+}
+.sim-trader::before {
+  content: "";
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 2px;
+  background: linear-gradient(90deg,
+    rgba(212, 162, 74, 0) 0%,
+    rgba(212, 162, 74, 0.5) 50%,
+    rgba(212, 162, 74, 0) 100%);
+}
+.sim-trader-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.sim-trader-tag {
+  color: var(--sim-amber);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  cursor: help;
+}
+.sim-trader-tagline {
+  flex: 1 1 auto;
+  color: var(--muted-2, #9A9590);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 11px;
+  font-style: italic;
+}
+.sim-trader-toggle {
+  border: none;
+  background: transparent;
+  color: var(--muted-2);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 2px;
+  transition: background 120ms ease-out, color 120ms ease-out;
+}
+.sim-trader-toggle:hover {
+  background: rgba(212, 162, 74, 0.12);
+  color: var(--paper);
+}
+.sim-trader.sim-trader-collapsed .sim-trader-body {
+  display: none;
+}
+
+.sim-trader-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sim-trader-loading {
+  color: var(--muted-2);
+  font-style: italic;
+  font-size: 11px;
+  padding: 8px;
+}
+.sim-trader-summary {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--paper, #EFEAE0);
+  font-variant-numeric: tabular-nums;
+  padding: 4px 0 8px;
+  border-bottom: 1px solid rgba(212, 162, 74, 0.12);
+}
+.sim-trader-summary-line b { color: var(--sim-amber); }
+.sim-trader-summary-open  { color: var(--muted-2); }
+.sim-trader-empty {
+  color: var(--muted-2);
+  font-style: italic;
+}
+.sim-trader-pnl-up   { color: var(--sim-up,   #4AF6C3); }
+.sim-trader-pnl-down { color: var(--sim-down, #FF433D); }
+
+.sim-trader-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sim-trader-block-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.sim-trader-block-tag {
+  color: var(--sim-amber);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+.sim-trader-block-sub {
+  color: var(--muted-2);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+/* Trade card */
+.sim-trade-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 12px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(212, 162, 74, 0.12);
+  border-radius: 4px;
+  position: relative;
+  cursor: help;
+}
+.sim-trade-card.sim-trade-card-focused {
+  border-color: rgba(212, 162, 74, 0.42);
+  box-shadow: 0 0 0 1px rgba(212, 162, 74, 0.18);
+}
+.sim-trade-long  { border-left: 3px solid #4AF6C3; }
+.sim-trade-short { border-left: 3px solid #FF8C1E; }
+.sim-trade-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sim-trade-sym {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--paper);
+  letter-spacing: 0.06em;
+}
+.sim-trade-dir {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 1px 6px;
+  border-radius: 2px;
+}
+.sim-trade-long .sim-trade-dir {
+  background: rgba(74, 246, 195, 0.14);
+  color: var(--sim-up, #4AF6C3);
+  border: 1px solid rgba(74, 246, 195, 0.32);
+}
+.sim-trade-short .sim-trade-dir {
+  background: rgba(255, 140, 30, 0.14);
+  color: #FF8C1E;
+  border: 1px solid rgba(255, 140, 30, 0.32);
+}
+.sim-trade-notional {
+  margin-left: auto;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--sim-amber);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.sim-trade-card-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--paper);
+  font-variant-numeric: tabular-nums;
+  flex-wrap: wrap;
+}
+.sim-trade-label {
+  color: var(--muted-2);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+.sim-trade-num { color: var(--paper); }
+.sim-trade-arrow { color: var(--muted, #6E6B66); }
+.sim-trade-conf-chip {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--sim-amber);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  background: rgba(212, 162, 74, 0.10);
+  border: 1px solid rgba(212, 162, 74, 0.28);
+  border-radius: 2px;
+}
+.sim-trade-pnl {
+  font-weight: 700;
+  font-size: 12px;
+}
+.sim-trade-pnl-bps {
+  color: var(--muted-2);
+  font-size: 10px;
+}
+.sim-trade-rationale {
+  margin-top: 2px;
+  color: var(--muted-2, #9A9590);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 11px;
+  line-height: 1.45;
+  font-style: italic;
+}
+
+/* Recent settlements strip */
+.sim-trader-recent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.sim-trader-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  background: rgba(212, 162, 74, 0.06);
+  border: 1px solid rgba(212, 162, 74, 0.18);
+  border-radius: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  cursor: pointer;
+  transition: transform 120ms ease-out, background 120ms ease-out;
+}
+.sim-trader-chip:hover {
+  transform: translateY(-1px);
+  background: rgba(212, 162, 74, 0.12);
+}
+.sim-trader-chip-focused {
+  border-color: rgba(212, 162, 74, 0.45);
+}
+.sim-trader-chip-win  { border-color: rgba(74, 246, 195, 0.3); }
+.sim-trader-chip-loss { border-color: rgba(255, 67, 61, 0.3); }
+.sim-trader-chip-sym { font-weight: 600; color: var(--paper); }
+.sim-trader-chip-dir { color: var(--muted-2); font-size: 12px; }
+.sim-trader-chip-win  .sim-trader-chip-pnl { color: var(--sim-up); font-weight: 600; }
+.sim-trader-chip-loss .sim-trader-chip-pnl { color: var(--sim-down); font-weight: 600; }
+.sim-trader-chip:has(.sim-trader-chip-pnl:empty) .sim-trader-chip-pnl { color: var(--muted-2); }
+
+/* Light theme */
+:root[data-theme="light"] .sim-trader {
+  background: linear-gradient(180deg,
+    rgba(212, 162, 74, 0.10) 0%,
+    rgba(212, 162, 74, 0.04) 100%);
+  border-color: rgba(212, 162, 74, 0.42);
+}
+:root[data-theme="light"] .sim-trader-tag,
+:root[data-theme="light"] .sim-trader-block-tag,
+:root[data-theme="light"] .sim-trade-notional,
+:root[data-theme="light"] .sim-trade-conf-chip,
+:root[data-theme="light"] .sim-trader-summary-line b { color: #8B6720; }
+:root[data-theme="light"] .sim-trade-card {
+  background: rgba(28, 26, 20, 0.04);
+}
+:root[data-theme="light"] .sim-trade-long  { border-left-color: #287052; }
+:root[data-theme="light"] .sim-trade-short { border-left-color: #9A5C0E; }
+:root[data-theme="light"] .sim-trader-pnl-up   { color: #287052; }
+:root[data-theme="light"] .sim-trader-pnl-down { color: #B43E3E; }
+:root[data-theme="light"] .sim-trade-long .sim-trade-dir {
+  background: rgba(40, 112, 82, 0.12); color: #287052;
+  border-color: rgba(40, 112, 82, 0.4);
+}
+:root[data-theme="light"] .sim-trade-short .sim-trade-dir {
+  background: rgba(154, 92, 14, 0.12); color: #9A5C0E;
+  border-color: rgba(154, 92, 14, 0.4);
+}
+
 /* Light theme variants */
 :root[data-theme="light"] .sim-track {
   background: rgba(212, 162, 74, 0.05);

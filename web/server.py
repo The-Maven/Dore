@@ -2536,6 +2536,33 @@ def _event_summary(ev: dict[str, Any]) -> str:
     return kind
 
 
+@app.get("/api/simulator/trader")
+def simulator_trader() -> dict[str, Any]:
+    """The Discipline Trader's recent activity + track record.
+
+    Returns:
+      - persona / tagline / version (editorial framing)
+      - open[]: currently-open simulated trades (oldest first → newest)
+      - resolved[]: last N closed trades with P&L
+      - track_record: aggregate wins/losses/net PnL/win-rate
+
+    Deterministic — the trader runs inside the ticker cycle. This
+    endpoint just reads the persisted store, so it's cache-friendly
+    and never blocks on the LLM.
+    """
+    from sca.movement.trader import all_trades, track_record, PERSONA_NAME, PERSONA_TAGLINE
+    trades = all_trades()  # already sorted newest-first
+    opens = [t for t in trades if t.get("status") == "open"]
+    resolves = [t for t in trades if t.get("status") == "resolved"]
+    return {
+        "persona": PERSONA_NAME,
+        "tagline": PERSONA_TAGLINE,
+        "open": list(reversed(opens)),  # oldest open at top
+        "resolved": resolves[:20],      # last 20 resolved
+        "track_record": track_record(),
+    }
+
+
 @app.get("/api/simulator/commentary/{symbol}")
 def simulator_commentary(symbol: str, refresh: bool = False) -> dict[str, Any]:
     """Per-token AI Commentary card — structural cheat sheet meets

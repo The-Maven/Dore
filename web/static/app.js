@@ -7074,11 +7074,72 @@ function renderSimulator(mount, feed) {
   // 3. Three-column workspace
   mount.append(simWorkspace(tokens, focused, feed));
 
-  // 4. Calibration page
-  mount.append(simCalibrationPanel(feed.calibration || { count: 0 }));
+  // 4. Calibration page (collapsible)
+  mount.append(_simMakeCollapsible(
+    simCalibrationPanel(feed.calibration || { count: 0 }),
+    'calibration',
+    'Calibration archive'));
 
-  // 5. Config panel
-  mount.append(simConfigPanel(feed.config || {}));
+  // 5. Config panel (collapsible)
+  mount.append(_simMakeCollapsible(
+    simConfigPanel(feed.config || {}),
+    'config',
+    'Configuration'));
+}
+
+
+// Tasteful collapse wrapper for the heavy bottom-of-page panels.
+// Preserves the existing panel structure — just lifts the panel's
+// h2 into a clickable header bar with a chevron toggle. Collapsed
+// state persists per-panel in localStorage so the user's layout
+// preference survives reloads. Smooth height transition (220ms).
+function _simMakeCollapsible(panel, key, _fallbackTitle) {
+  if (!panel) return panel;
+  // Make the existing panel section play the role of "wrapper" by
+  // adding a class + a toggle button. The body is implicit: every
+  // child after the h2.
+  panel.classList.add('sim-collapsible');
+  panel.setAttribute('data-collapse-key', key);
+  // Find the existing header (h2). If missing, prepend a generic one.
+  let head = panel.querySelector('h2');
+  if (!head) {
+    head = el('h2', { class: 'sim-collapsible-fallback-head' },
+      _fallbackTitle || key);
+    panel.prepend(head);
+  }
+  head.classList.add('sim-collapsible-head');
+  const toggle = el('button', {
+    class: 'sim-collapsible-toggle',
+    'data-tip': 'Collapse / expand this panel. Preference persists.',
+    'data-tip-pos': 'below',
+  }, '▾');
+  head.appendChild(toggle);
+  const storeKey = 'dore.simulator.panel.' + key + '.collapsed';
+  const collapsed = (() => {
+    try { return localStorage.getItem(storeKey) === '1'; }
+    catch (_e) { return false; }
+  })();
+  if (collapsed) {
+    panel.classList.add('sim-collapsible-collapsed');
+    toggle.textContent = '▸';
+  }
+  const apply = (next) => {
+    panel.classList.toggle('sim-collapsible-collapsed', next);
+    toggle.textContent = next ? '▸' : '▾';
+    try { localStorage.setItem(storeKey, next ? '1' : '0'); }
+    catch (_e) { /* ignore */ }
+  };
+  toggle.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    apply(!panel.classList.contains('sim-collapsible-collapsed'));
+  });
+  // Allow clicking anywhere on the header to toggle, for ease.
+  head.addEventListener('click', (ev) => {
+    if (ev.target.closest('.sim-collapsible-toggle')) return;
+    if (ev.target.closest('a, button, input, label')) return;
+    apply(!panel.classList.contains('sim-collapsible-collapsed'));
+  });
+  return panel;
 }
 
 // ── tip copy ──────────────────────────────────────────────────────
@@ -7841,6 +7902,10 @@ function simHeroPane(focused, feed) {
     // a hedged forecast from a model with a strong recent track record
     // reads differently from the same forecast from a noisy one.
     simHeroTrackRecord(focused),
+    // The Discipline Trader — agentic simulated trader. Lazy-loaded
+    // (async fetch) so we don't block the hero render; mutates in
+    // place when the response arrives.
+    simHeroTrader(focused),
     simHeroJudge(focused),
     // AI Commentary — per-token structural read, fetched on focus
     // change. Verb-named disclosure + inline-cited per Bloomberg /
@@ -8464,6 +8529,241 @@ function simHeroTrackRecord(t) {
             'the cone entirely (the 5% we expect)',
           'data-tip-size': 'lg' },
         ' · what counts as a hit?')));
+}
+
+
+// ────────────────────────────────────────────────────────────────────
+// THE DISCIPLINE TRADER PANEL
+//
+// Editorial framing of the deterministic trader (sca.movement.trader).
+// Each block:
+//   • Persona header: "THE DISCIPLINE TRADER · patient mean-reversion
+//     arbitrageur" — gold accent
+//   • Open trades: cards showing token + direction + entry + target +
+//     current P&L. Border-coloured by current P&L state.
+//   • Recent settlements: small strip of resolved trades with their
+//     final P&L. Links each to the prediction that triggered it.
+//   • Track record: aggregate wins / losses / net P&L / win rate
+//
+// The whole panel is collapsible (header click toggles open/closed).
+// Lazy-loads on focus change so chip-clicks aren't blocked on the
+// /api/simulator/trader fetch.
+// ────────────────────────────────────────────────────────────────────
+function simHeroTrader(focused) {
+  const wrap = el('div', {
+    class: 'sim-trader',
+    'data-sym': focused ? focused.symbol : '',
+  });
+  // Skeleton — replaced by loadTrader() once the API response lands.
+  wrap.appendChild(el('div', { class: 'sim-trader-head' },
+    el('span', { class: 'sim-trader-tag tip',
+      'data-tip': 'The Discipline Trader is a deterministic, rules-' +
+        'based simulated trader. It opens a position only when the ' +
+        'forecast signals mean-reversion (model points back toward ' +
+        'peg). Position size scales DOWN with cone width — wide cone, ' +
+        'small bet. Yield-bearing tokens are skipped by design. P&L is ' +
+        'simulated against a $10k notional and tracked over time.',
+      'data-tip-size': 'lg' },
+      'THE DISCIPLINE TRADER'),
+    el('span', { class: 'sim-trader-tagline' },
+      'patient mean-reversion arbitrageur'),
+    el('button', { class: 'sim-trader-toggle',
+      'data-tip': 'Collapse / expand the trader panel.' }, '▾')));
+  wrap.appendChild(el('div', { class: 'sim-trader-body' },
+    el('div', { class: 'sim-trader-loading' },
+      el('span', { class: 'sim-commentary-shimmer' },
+        'loading trader state…'))));
+  loadTrader(wrap, focused ? focused.symbol : null);
+  // Collapse toggle. Persist state in localStorage so the user's
+  // preference survives reloads.
+  const toggleBtn = wrap.querySelector('.sim-trader-toggle');
+  const collapsedKey = 'dore.simulator.trader.collapsed';
+  if (localStorage.getItem(collapsedKey) === '1') {
+    wrap.classList.add('sim-trader-collapsed');
+    toggleBtn.textContent = '▸';
+  }
+  toggleBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const next = !wrap.classList.contains('sim-trader-collapsed');
+    wrap.classList.toggle('sim-trader-collapsed', next);
+    toggleBtn.textContent = next ? '▸' : '▾';
+    try { localStorage.setItem(collapsedKey, next ? '1' : '0'); }
+    catch (_e) { /* ignore */ }
+  });
+  return wrap;
+}
+
+
+async function loadTrader(wrap, focusedSym) {
+  try {
+    const resp = await fetch('/api/simulator/trader');
+    if (!resp.ok) {
+      const body = wrap.querySelector('.sim-trader-body');
+      if (body) body.textContent = 'trader unavailable';
+      return;
+    }
+    const data = await resp.json();
+    renderTraderBody(wrap, data, focusedSym);
+  } catch (_e) {
+    const body = wrap.querySelector('.sim-trader-body');
+    if (body) body.textContent = 'trader unavailable';
+  }
+}
+
+
+function renderTraderBody(wrap, data, focusedSym) {
+  const body = wrap.querySelector('.sim-trader-body');
+  if (!body) return;
+  body.innerHTML = '';
+  const tr = data.track_record || {};
+  const open = data.open || [];
+  const resolved = data.resolved || [];
+
+  // ── Track record summary line ────────────────────────────────────
+  const summary = el('div', { class: 'sim-trader-summary' });
+  if (tr.count_resolved === 0) {
+    summary.append(el('span', { class: 'sim-trader-empty' },
+      'No trades yet — waiting for a clean mean-reversion signal.'));
+  } else {
+    const netCls = (tr.net_pnl_usd || 0) >= 0
+      ? 'sim-trader-pnl-up' : 'sim-trader-pnl-down';
+    summary.append(el('span', { class: 'sim-trader-summary-line' },
+      el('b', {}, String(tr.count_resolved)), ' resolved · ',
+      el('b', {}, String(tr.wins)), 'W ',
+      el('b', {}, String(tr.losses)), 'L · win-rate ',
+      el('b', {}, (tr.win_rate != null
+        ? Math.round(tr.win_rate * 100) + '%' : '—')), ' · net ',
+      el('b', { class: netCls },
+        ((tr.net_pnl_usd || 0) >= 0 ? '+' : '') +
+        '$' + Math.abs(tr.net_pnl_usd || 0).toFixed(2))));
+    if (tr.count_open > 0) {
+      summary.append(el('span', { class: 'sim-trader-summary-open' },
+        ' · ', String(tr.count_open), ' open position' +
+        (tr.count_open === 1 ? '' : 's')));
+    }
+  }
+  body.appendChild(summary);
+
+  // ── Open trades ──────────────────────────────────────────────────
+  if (open.length) {
+    const openBlock = el('div', { class: 'sim-trader-block' });
+    openBlock.append(el('div', { class: 'sim-trader-block-head' },
+      el('span', { class: 'sim-trader-block-tag' }, 'OPEN POSITIONS'),
+      el('span', { class: 'sim-trader-block-sub' },
+        open.length + ' running')));
+    for (const trade of open) {
+      openBlock.appendChild(_renderTradeCard(trade, true, focusedSym));
+    }
+    body.appendChild(openBlock);
+  }
+
+  // ── Recent settlements ───────────────────────────────────────────
+  if (resolved.length) {
+    const recentBlock = el('div', { class: 'sim-trader-block' });
+    recentBlock.append(el('div', { class: 'sim-trader-block-head' },
+      el('span', { class: 'sim-trader-block-tag' }, 'RECENT SETTLEMENTS'),
+      el('span', { class: 'sim-trader-block-sub' },
+        'last ' + resolved.length)));
+    const stripWrap = el('div', { class: 'sim-trader-recent' });
+    for (const trade of resolved.slice(0, 8)) {
+      stripWrap.appendChild(_renderTradeChip(trade, focusedSym));
+    }
+    recentBlock.appendChild(stripWrap);
+    body.appendChild(recentBlock);
+  }
+}
+
+
+function _renderTradeCard(trade, isOpen, focusedSym) {
+  // P&L is computed on-the-fly for open trades by comparing entry
+  // to the forecast point (estimate of where they'll close). For
+  // resolved trades, we just read the persisted pnl_usd.
+  const ofThisToken = (trade.symbol === focusedSym);
+  const dirCls = trade.direction === 'long'
+    ? 'sim-trade-long' : 'sim-trade-short';
+  const dirSym = trade.direction === 'long' ? '↑ LONG' : '↓ SHORT';
+  const pnl = trade.pnl_usd;
+  const pnlCls = pnl == null ? ''
+    : pnl >= 0 ? 'sim-trader-pnl-up' : 'sim-trader-pnl-down';
+  const card = el('div', {
+    class: 'sim-trade-card ' + dirCls +
+      (ofThisToken ? ' sim-trade-card-focused' : ''),
+    'data-tip': trade.rationale || '',
+    'data-tip-size': 'lg',
+  });
+  // Header row: SYMBOL + direction + notional
+  card.appendChild(el('div', { class: 'sim-trade-card-head' },
+    el('span', { class: 'sim-trade-sym' }, trade.symbol),
+    el('span', { class: 'sim-trade-dir' }, dirSym),
+    el('span', { class: 'sim-trade-notional' },
+      '$' + Math.round(trade.notional_usd || 0).toLocaleString())));
+  // Forecast → target row
+  card.appendChild(el('div', { class: 'sim-trade-card-row' },
+    el('span', { class: 'sim-trade-label' }, 'ENTRY'),
+    el('span', { class: 'sim-trade-num' },
+      (trade.entry_bps >= 0 ? '+' : '') +
+      Number(trade.entry_bps).toFixed(2) + 'bp'),
+    el('span', { class: 'sim-trade-arrow' }, '→'),
+    el('span', { class: 'sim-trade-label' }, 'TARGET'),
+    el('span', { class: 'sim-trade-num' },
+      (trade.forecast_point_bps >= 0 ? '+' : '') +
+      Number(trade.forecast_point_bps).toFixed(2) + 'bp'),
+    el('span', { class: 'sim-trade-conf-chip' },
+      (trade.confidence_word || '').replace(/_/g, ' '))));
+  // P&L row (only meaningful for resolved trades; open shows "live")
+  if (!isOpen && pnl != null) {
+    card.appendChild(el('div', { class: 'sim-trade-card-row sim-trade-pnl-row' },
+      el('span', { class: 'sim-trade-label' }, 'EXIT'),
+      el('span', { class: 'sim-trade-num' },
+        (trade.exit_bps >= 0 ? '+' : '') +
+        Number(trade.exit_bps).toFixed(2) + 'bp'),
+      el('span', { class: 'sim-trade-arrow' }, '·'),
+      el('span', { class: 'sim-trade-label' }, 'P&L'),
+      el('span', { class: 'sim-trade-pnl ' + pnlCls },
+        (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2)),
+      el('span', { class: 'sim-trade-pnl-bps' },
+        '(' + (trade.pnl_bps >= 0 ? '+' : '') +
+        Number(trade.pnl_bps).toFixed(2) + 'bp)')));
+  } else if (isOpen) {
+    card.appendChild(el('div', { class: 'sim-trade-card-row sim-trade-live-row' },
+      el('span', { class: 'sim-trade-label' }, 'OPENED'),
+      el('span', { class: 'sim-trade-num' },
+        new Date(trade.opened_at).toISOString().slice(11, 16) + ' UTC'),
+      el('span', { class: 'sim-trade-arrow' }, '·'),
+      el('span', { class: 'sim-trade-label' }, 'RESOLVES'),
+      el('span', { class: 'sim-trade-num' },
+        new Date(trade.resolves_at).toISOString().slice(11, 16) + ' UTC')));
+  }
+  // Rationale footnote
+  if (trade.rationale) {
+    card.appendChild(el('div', { class: 'sim-trade-rationale' },
+      trade.rationale));
+  }
+  return card;
+}
+
+
+function _renderTradeChip(trade, focusedSym) {
+  // Compact summary chip for recent settlements. Click to scroll
+  // into focus (filters the predictions strip for that token).
+  const pnl = trade.pnl_usd;
+  const cls = pnl == null ? ''
+    : pnl >= 0 ? 'sim-trader-chip-win' : 'sim-trader-chip-loss';
+  const chip = el('div', {
+    class: 'sim-trader-chip ' + cls +
+      (trade.symbol === focusedSym ? ' sim-trader-chip-focused' : ''),
+    'data-tip': (trade.outcome_note || '') +
+      (trade.rationale ? '\n\nRationale: ' + trade.rationale : ''),
+    'data-tip-size': 'lg',
+    onclick: 'location.hash="#simulator/' + trade.symbol + '"',
+  },
+    el('span', { class: 'sim-trader-chip-sym' }, trade.symbol),
+    el('span', { class: 'sim-trader-chip-dir' },
+      trade.direction === 'long' ? '↑' : '↓'),
+    el('span', { class: 'sim-trader-chip-pnl' },
+      pnl == null ? '—'
+        : (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2)));
+  return chip;
 }
 
 

@@ -408,6 +408,29 @@ def _tick_once(cfg: Optional[dict] = None) -> dict:
         )
         summary["resolver"] = {"errors": 1}
 
+    # 4. The Discipline Trader — opens / resolves simulated trades
+    # based on this cycle's predictions. Deterministic; never blocks
+    # the ticker on its own failure.
+    try:
+        from sca.movement.trader import (
+            evaluate_cycle as trader_evaluate,
+            build_token_blocks_for_trader,
+        )
+        feed_tokens = build_token_blocks_for_trader(cfg["symbols"])
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        opened = trader_evaluate(feed_tokens, now_iso=now_iso)
+        summary["trader"] = {
+            "opened_this_cycle": len(opened),
+            "symbols_evaluated": len(feed_tokens),
+        }
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "movement.ticker.trader_failed", level="warn",
+            error_class=type(exc).__name__,
+            error_message=str(exc)[:160],
+        )
+        summary["trader"] = {"errors": 1}
+
     summary["completed_at"] = datetime.now(timezone.utc).isoformat(
         timespec="seconds")
     log_event(
