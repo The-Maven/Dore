@@ -5633,3 +5633,196 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .sim-ribbon, .sim-status, .sim-workspace, .sim-calibration, .sim-config {
   flex-shrink: 0;
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   F9 SIMULATOR · v3.1 — AI Commentary card + mobile redesign
+   ════════════════════════════════════════════════════════════════════
+   Per-token structural commentary sits below the AI Judge as a
+   distinct card: deeper background, larger body text, inline
+   citations rendered as superscript links + a sources footer.
+   Mobile rules below stack the workspace, kill the ticker tape,
+   and enlarge tap targets to 44pt minimum (Apple HIG).
+*/
+
+/* ── AI Commentary card ──────────────────────────────────────── */
+.sim-hero-commentary {
+  margin: 0 22px 16px;
+  padding: 14px 18px 12px;
+  border: 1px solid rgba(212, 162, 74, 0.22);
+  background: linear-gradient(180deg,
+    rgba(212, 162, 74, 0.04) 0%, rgba(0,0,0,0.18) 100%);
+  border-radius: 1px;
+}
+.sim-hero-commentary-kick {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+.sim-hero-commentary-tag {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  color: var(--gold);
+  text-transform: uppercase;
+}
+.sim-hero-commentary-meta {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--muted-2);
+  font-style: italic;
+}
+.sim-commentary-shimmer {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--muted-2);
+  font-style: italic;
+}
+.sim-commentary-head {
+  font-family: 'Bodoni Moda', serif;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--paper);
+  margin-bottom: 6px;
+  letter-spacing: 0.01em;
+}
+.sim-commentary-para {
+  font-family: 'Inter Tight', sans-serif;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--paper);
+  margin: 0 0 10px;
+}
+.sim-commentary-cite {
+  color: var(--gold);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 10px;
+  vertical-align: super;
+  margin-left: 2px;
+  padding: 0 2px;
+}
+.sim-commentary-cite:hover { text-decoration: underline; }
+.sim-commentary-cites {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(212, 162, 74, 0.18);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: baseline;
+}
+.sim-commentary-cites-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--muted-2);
+  text-transform: uppercase;
+}
+.sim-commentary-cite-link {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted-1);
+  text-decoration: none;
+}
+.sim-commentary-cite-link:hover {
+  color: var(--gold);
+  text-decoration: underline;
+}
+.sim-commentary-disclaimer {
+  margin-top: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--muted-2);
+  font-style: italic;
+}
+
+/* ── MOBILE REDESIGN (≤ 768px) ───────────────────────────────────
+   Per SF research: stack columns, kill ticker tape, sticky symbol
+   header, larger tap targets, hide the WIRE behind a "more" link.
+   Top 40% is dead-zone (Hoober); thumb zone is the bottom third.
+*/
+@media (max-width: 900px) {
+  /* Ticker tape is decorative + redundant with the rail. Hide on mobile. */
+  .sim-ribbon { display: none; }
+
+  /* Status strip stays but stacks to 2×3 grid for legibility. */
+  .sim-status {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  /* Workspace stacks: rail → hero → wire */
+  .sim-workspace {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+  .sim-rail-left {
+    border-right: none;
+    border-bottom: 1px solid var(--sim-rule);
+    max-height: 360px;  /* tap-scrollable list */
+  }
+  .sim-rail-right {
+    border-left: none;
+    border-top: 1px solid var(--sim-rule);
+  }
+  .sim-wire-rows { max-height: 320px; }
+
+  /* Hero compaction */
+  .sim-hero-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 14px 16px;
+  }
+  .sim-hero-value { text-align: left; }
+  .sim-hero-sym { font-size: 28px; }
+  .sim-hero-val-big { font-size: 26px; }
+  .sim-delta-grid {
+    grid-template-columns: repeat(5, 1fr);
+    gap: 1px;
+  }
+  .sim-delta-cell { padding: 6px 8px; }
+  .sim-delta-val { font-size: 12px; }
+  .sim-hero-chart { padding: 4px 12px; }
+  .sim-hero-svg { height: 180px; }
+  .sim-hero-judge,
+  .sim-hero-commentary { margin: 0 16px 12px; }
+
+  /* Rail rows — taller per Apple HIG / Hoober */
+  .sim-rail-row {
+    grid-template-columns: 3px 1fr 60px 70px;
+    padding: 10px 12px;
+    min-height: 48px;
+  }
+  .sim-rail-spark { height: 20px; }
+
+  /* Calibration + config tighter padding */
+  .sim-calibration,
+  .sim-config { padding: 18px 16px; }
+  .sim-cal-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .sim-config-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Very small phones: kill status strip to a single-line + collapse
+     pulley vertical (already small but make sure it doesn't dominate). */
+  .sim-status { grid-template-columns: 1fr 1fr; gap: 1px; }
+  .sim-status-cell { padding: 6px 10px; }
+  .sim-status-val { font-size: 11px; }
+  .sim-pulley-vertical { height: 140px; }
+  .sim-hero-judge-row { grid-template-columns: 1fr; }
+}
+
+/* ── tap-target floor: 44pt buttons everywhere on touch devices */
+@media (pointer: coarse) {
+  .sim-chip, .btn { min-height: 44px; }
+  .sim-rail-row { min-height: 56px; }
+  .sim-config-input { min-height: 44px; padding: 10px 12px; }
+}

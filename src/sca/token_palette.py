@@ -48,11 +48,25 @@ TOKEN_BRAND_COLOURS: dict[str, dict[str, str]] = {
 
     # Synthetic / new-or-unverified
     "USDe":  {"accent": "#A6A8FF", "glow": "#A6A8FF66", "name": "Ethena"},       # lavender-tech
+    "sUSDe": {"accent": "#C1B6FF", "glow": "#C1B6FF66", "name": "Ethena (staked)"},
     "USDf":  {"accent": "#FF8FA3", "glow": "#FF8FA366", "name": "Falcon"},
     "USDD":  {"accent": "#1CB854", "glow": "#1CB85466", "name": "TRON DAO"},
     "USDX":  {"accent": "#EF6C00", "glow": "#EF6C0066", "name": "Stables Labs"},
     "USDY":  {"accent": "#5C7AEA", "glow": "#5C7AEA66", "name": "Ondo"},
     "M":     {"accent": "#A78BFA", "glow": "#A78BFA66", "name": "M^0"},
+
+    # 2024–2026 expansion (researcher-flagged candidates)
+    "USDS":  {"accent": "#3FD0C0", "glow": "#3FD0C066", "name": "Sky"},          # MakerDAO rebrand teal
+    "RLUSD": {"accent": "#00AAE4", "glow": "#00AAE466", "name": "Ripple"},       # Ripple cyan
+    "USDM":  {"accent": "#6FD7C1", "glow": "#6FD7C166", "name": "Mountain"},
+    "USR":   {"accent": "#FF5C8A", "glow": "#FF5C8A66", "name": "Resolv"},
+    "deUSD": {"accent": "#7AE2E2", "glow": "#7AE2E266", "name": "Elixir"},
+    "USD0":  {"accent": "#FFD24F", "glow": "#FFD24F66", "name": "Usual"},
+    "BUIDL": {"accent": "#1F2A3D", "glow": "#1F2A3D66", "name": "BlackRock"},   # institutional graphite
+    "USDB":  {"accent": "#FCFC03", "glow": "#FCFC0366", "name": "Blast"},        # Blast yellow
+    "USDtb": {"accent": "#88E3C2", "glow": "#88E3C266", "name": "Ethena T-bill"},
+    "USYC":  {"accent": "#B8D8B8", "glow": "#B8D8B866", "name": "Hashnote"},
+    "syrupUSDC": {"accent": "#E8A85D", "glow": "#E8A85D66", "name": "Maple"},
 }
 
 # Anonymous fallback palette: distinct hues that don't claim brand

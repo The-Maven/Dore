@@ -2397,6 +2397,57 @@ def _event_summary(ev: dict[str, Any]) -> str:
     return kind
 
 
+@app.get("/api/simulator/commentary/{symbol}")
+def simulator_commentary(symbol: str, refresh: bool = False) -> dict[str, Any]:
+    """Per-token AI Commentary card — structural cheat sheet meets
+    live read. Cached 1h per regime bucket so chip clicks across
+    tokens don't burn LLM budget. Honest fallback when the LLM is
+    unavailable: the deterministic card uses the cheat sheet alone
+    and names the gap.
+
+    Read by the simulator UI when the operator focuses a new token.
+    """
+    from sca.movement.commentary import get_commentary
+    sym = symbol.strip()
+    # Light-weight live state: pull the latest tick + prediction for
+    # JUST this symbol, not the full feed. Keeps commentary response
+    # times below ~1s so chip clicks feel instant.
+    store = get_store()
+    live: dict[str, Any] = {}
+    try:
+        ticks = store.list_peg_ticks(sym, limit=2) or []
+        if ticks:
+            live["current_bps"] = float(
+                ticks[0].get("deviation_bps") or 0.0)
+        preds = store.list_predictions(
+            symbol=sym, kind="peg_deviation", limit=1) or []
+        if preds:
+            p = preds[0]
+            ph = _safe_float(p.get("p80_high"))
+            pl = _safe_float(p.get("p80_low"))
+            if ph is not None and pl is not None:
+                live["cone_p80_bps"] = (ph - pl) / 2
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "simulator.commentary.live_state_failed", level="info",
+            symbol=sym, error_class=type(exc).__name__,
+        )
+    commentary = get_commentary(sym, live, force=refresh)
+    if commentary is None:
+        raise HTTPException(
+            404, f"no structural context registered for symbol: {sym}")
+    return {
+        "symbol": commentary.symbol,
+        "headline": commentary.headline,
+        "body": commentary.body,
+        "citations": commentary.citations,
+        "structural_one_liner": commentary.structural_one_liner,
+        "cone_normal_bps": commentary.cone_normal_bps,
+        "cone_alert_bps": commentary.cone_alert_bps,
+        "model": commentary.model,
+    }
+
+
 @app.get("/api/simulator/config")
 def simulator_config_get() -> dict[str, Any]:
     """Current simulator config — read by the configuration panel."""

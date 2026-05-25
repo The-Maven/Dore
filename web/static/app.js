@@ -6843,7 +6843,82 @@ function simHeroPane(focused, feed) {
           'peg deviation · last tick'))),
     simDeltaGrid(focused),
     simHeroChart(focused),
-    simHeroJudge(focused));
+    simHeroJudge(focused),
+    // AI Commentary — per-token structural read, fetched on focus
+    // change. Verb-named disclosure + inline-cited per Bloomberg /
+    // Shape-of-AI research. Loaded lazily so chip switches don't
+    // wait on the HTTP.
+    simHeroCommentary(focused));
+}
+
+// Per-token AI Commentary — structural cheat sheet + live read.
+// Async-loaded; renders a skeleton then mutates in place when the
+// /api/simulator/commentary/{symbol} response lands.
+function simHeroCommentary(focused) {
+  const wrap = el('div', {
+    class: 'sim-hero-commentary',
+    'data-sym': focused.symbol,
+  },
+    el('div', { class: 'sim-hero-commentary-kick' },
+      el('span', { class: 'sim-hero-commentary-tag' }, 'AI COMMENTARY'),
+      el('span', { class: 'sim-hero-commentary-meta' },
+        'grounded in cited sources')),
+    el('div', { class: 'sim-hero-commentary-body' },
+      el('span', { class: 'sim-commentary-shimmer' }, 'loading…')));
+  // Fetch + replace.
+  loadCommentary(wrap, focused.symbol);
+  return wrap;
+}
+
+async function loadCommentary(wrap, symbol) {
+  try {
+    const resp = await fetch(
+      '/api/simulator/commentary/' + encodeURIComponent(symbol));
+    if (!resp.ok) {
+      wrap.querySelector('.sim-hero-commentary-body').textContent =
+        'No structural context registered for ' + symbol + '.';
+      return;
+    }
+    const data = await resp.json();
+    const body = wrap.querySelector('.sim-hero-commentary-body');
+    body.innerHTML = '';
+    // Headline + body + citations rendered inline.
+    if (data.headline) {
+      body.append(el('div', { class: 'sim-commentary-head' },
+        data.headline));
+    }
+    if (data.body) {
+      const para = el('p', { class: 'sim-commentary-para' });
+      // Replace [n] citations with linked superscript references.
+      let txt = data.body;
+      (data.citations || []).forEach(c => {
+        const re = new RegExp('\\[' + c.n + '\\]', 'g');
+        txt = txt.replace(re,
+          '<a class="sim-commentary-cite" href="' + (c.url || '#') +
+          '" target="_blank" rel="noopener" title="' +
+          (c.label || '').replace(/"/g, '&quot;') + '">[' + c.n + ']</a>');
+      });
+      para.innerHTML = txt;
+      body.append(para);
+    }
+    if (data.citations && data.citations.length) {
+      const cites = el('div', { class: 'sim-commentary-cites' });
+      cites.append(el('span', { class: 'sim-commentary-cites-lbl' },
+        'SOURCES'));
+      data.citations.forEach(c => {
+        cites.append(el('a', {
+          class: 'sim-commentary-cite-link',
+          href: c.url || '#', target: '_blank', rel: 'noopener',
+        }, '[' + c.n + '] ' + (c.label || '')));
+      });
+      body.append(cites);
+    }
+    body.append(el('div', { class: 'sim-commentary-disclaimer' },
+      'AI-generated summary. Verify before acting.'));
+  } catch (e) {
+    const body = wrap.querySelector('.sim-hero-commentary-body');
+    if (body) body.textContent = 'commentary unavailable.';
+  }
 }
 
 // 5-cell delta grid for the focused token. 1m / 5m / 1h / 24h / 7d

@@ -153,9 +153,12 @@ def _kraken_spot(symbol: str, quote: str) -> Optional[float]:
     `c[0]` is the last-trade-closed price, which is what we want as a
     spot reading.
     """
+    # Kraken pairs are case-folded to UPPER throughout the API; the
+    # map is already keyed on the upper-case symbol.
+    sym_u = symbol.upper()
     pair = _KRAKEN_PAIR_MAP.get(
-        (symbol.upper(), quote.upper()),
-        f"{symbol.upper()}{quote.upper()}",
+        (sym_u, quote.upper()),
+        f"{sym_u}{quote.upper()}",
     )
     url = f"https://api.kraken.com/0/public/Ticker?pair={pair}"
     try:
@@ -206,12 +209,115 @@ def _kraken_spot(symbol: str, quote: str) -> Optional[float]:
         return None
 
 
+# CoinGecko ID map for tokens not listed on Coinbase / Kraken (most
+# DeFi-native stablecoins). The /simple/price endpoint is free, no
+# auth, ~30 req/min on the free tier — well within our cadence. We
+# use lower-case CoinGecko slugs because that's their canonical id.
+_COINGECKO_ID_MAP = {
+    "USDC": "usd-coin",
+    "USDT": "tether",
+    "DAI":  "dai",
+    "PYUSD": "paypal-usd",
+    "USDP": "paxos-standard",
+    "TUSD": "true-usd",
+    "FDUSD": "first-digital-usd",
+    "USDG": "global-dollar",
+    "GUSD": "gemini-dollar",
+    "FRAX": "frax",
+    "LUSD": "liquity-usd",
+    "GHO":  "gho",
+    "CRVUSD": "crvusd",
+    "AUSD": "agora-dollar",
+    "USDe": "ethena-usde",
+    "USDf": "falcon-finance-usdf",
+    "USDD": "usdd",
+    "USDX": "usdx-stable",
+    "USDY": "ondo-us-dollar-yield",
+    "M":    "m-by-m0",
+    "EURC": "euro-coin",
+    "EURI": "eurite",
+    "AEUR": "anchored-coins-aeur",
+    # New universe candidates the researcher recommended:
+    "USDS": "usds",                # MakerDAO → Sky rebrand
+    "RLUSD": "ripple-usd",         # Ripple
+    "sUSDe": "ethena-staked-usde",
+    "USDM": "mountain-protocol-usdm",
+    "USR": "resolv-usr",
+    "deUSD": "elixir-deusd",
+    "USD0": "usual-usd",
+    "BUIDL": "blackrock-usd-institutional-digital-liquidity-fund",
+    "USDB": "usdb",
+    "USDtb": "ethena-usdtb",
+    "syrupUSDC": "maple-finance",  # syrupUSDC is via Maple
+    "USYC": "hashnote-us-yield-coin",
+}
+
+
+def _coingecko_spot(symbol: str, quote: str) -> Optional[float]:
+    """CoinGecko simple-price endpoint — free, no auth, the fallback
+    that closes the DeFi-native gap. CB + Kraken don't list FRAX /
+    crvUSD / GHO / USDe / many others; CoinGecko aggregates these
+    from DEX pools and centralised venues alike.
+
+    Rate limit on the free tier: ~30 req/min. We poll at most one
+    per symbol per cycle (every 1–10 minutes per our config), so
+    a 12-token universe stays well inside the limit.
+    """
+    # Case-insensitive lookup — config can send 'crvUSD' (mixed)
+    # while the map keys here are 'CRVUSD'. Try exact, upper, lower.
+    gid = (_COINGECKO_ID_MAP.get(symbol)
+           or _COINGECKO_ID_MAP.get(symbol.upper())
+           or _COINGECKO_ID_MAP.get(symbol.lower()))
+    if not gid:
+        # No mapping for this symbol — caller falls through.
+        return None
+    if quote.upper() != "USD":
+        # CoinGecko supports many vs currencies but the simulator
+        # is USD-pegged today; only fetch when the quote is USD.
+        return None
+    url = ("https://api.coingecko.com/api/v3/simple/price"
+           f"?ids={gid}&vs_currencies=usd")
+    try:
+        import requests
+        resp = requests.get(
+            url, timeout=_HTTP_TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0 (Dore/peg-tick)",
+                     "Accept": "application/json"},
+        )
+        if resp.status_code != 200:
+            log_event(
+                "peg_price.coingecko.non_200", level="info",
+                symbol=symbol, gid=gid, status=resp.status_code,
+            )
+            return None
+        data = resp.json() or {}
+        # Shape: {"<gid>": {"usd": 0.99987}}
+        row = data.get(gid) or {}
+        usd = row.get("usd")
+        return float(usd) if usd is not None else None
+    except (ValueError, KeyError, TypeError) as exc:
+        log_event(
+            "peg_price.coingecko.parse_failed", level="warn",
+            symbol=symbol, error_class=type(exc).__name__,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "peg_price.coingecko.failed", level="info",
+            symbol=symbol, error_class=type(exc).__name__,
+        )
+        return None
+
+
 # Registered source adapters. Order matters for tie-breaking when
 # only one source responds — first-in-list wins the consensus_kind=
-# 'single' attribution.
+# 'single' attribution. CoinGecko is last because it's an aggregator
+# (not a primary venue) — we prefer Coinbase / Kraken when they have
+# the listing, fall back to CoinGecko for DeFi-native tokens.
 _SOURCES: list[tuple[str, Callable[[str, str], Optional[float]]]] = [
     ("coinbase", _coinbase_spot),
     ("kraken", _kraken_spot),
+    ("coingecko", _coingecko_spot),
 ]
 
 

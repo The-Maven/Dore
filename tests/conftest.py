@@ -78,6 +78,15 @@ def _isolate_state(monkeypatch, tmp_path):
             _brave_ctx_mod, "_QUOTA_PATH",
             tmp_path / "movement_brave_quota.json",
         )
+    try:
+        from sca.movement import commentary as _comm_mod
+    except Exception:  # noqa: BLE001
+        _comm_mod = None
+    if _comm_mod is not None:
+        monkeypatch.setattr(
+            _comm_mod, "_CACHE_PATH",
+            tmp_path / "movement_commentary_cache.json",
+        )
     # Belt-and-braces: even with no Brave key in test env, ensure the
     # SCA_WEB_SEARCH_KEY env var is empty so brave_context.fetch
     # returns [] immediately without trying network.
