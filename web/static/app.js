@@ -1914,34 +1914,93 @@ function refreshTicker() {
   const track = $('#ticker-track');
   if (!track) return;
   if (!STATE.tokens.length) {
-    track.innerHTML = '<span class="tick-empty">Loading on-chain reads…</span>';
+    if (track.firstChild
+        && track.firstChild.className !== 'tick-empty') {
+      track.innerHTML = '<span class="tick-empty">Loading on-chain reads…</span>';
+    }
     return;
   }
-  track.innerHTML = '';
-  // two identical passes — the CSS marquee translates -50% for a seamless loop
-  for (let pass = 0; pass < 2; pass++) {
-    STATE.tokens.forEach((t) => track.append(tickItem(t)));
+  // First-principles fix for the "ticker jolt": the marquee CSS
+  // animation translates the track over a long period (e.g. 60s).
+  // The previous implementation wiped innerHTML and rebuilt — that
+  // restarts the animation at frame 0 every SSE tick, causing the
+  // visible jump. Now we DIFF in place: update each token's existing
+  // cell's text + classes rather than replacing the cell. The
+  // animation runs uninterrupted; only the numbers change.
+  const wantedSyms = STATE.tokens.map(t => t.symbol);
+  const wantedSig = wantedSyms.join(',');
+  const existingSig = track.getAttribute('data-ticker-sig') || '';
+  if (existingSig !== wantedSig) {
+    // Token registry changed (rare) — full rebuild is acceptable.
+    track.innerHTML = '';
+    for (let pass = 0; pass < 2; pass++) {
+      STATE.tokens.forEach((t) => {
+        const item = tickItem(t);
+        item.setAttribute('data-ticker-pass', String(pass));
+        track.append(item);
+      });
+    }
+    track.setAttribute('data-ticker-sig', wantedSig);
+    return;
+  }
+  // Same token set — surgical update on each cell. For every
+  // `[data-sim-sym=X]` item already in the DOM, ask tickItem() to
+  // build the fresh version and selectively update its text spans.
+  for (const t of STATE.tokens) {
+    const fresh = tickItem(t);
+    // There are two copies in the marquee (two passes for the
+    // seamless loop). Update both.
+    const cells = track.querySelectorAll(
+      '[data-sim-sym="' + t.symbol + '"]');
+    for (const cell of cells) {
+      _diffTickerCell(cell, fresh);
+    }
+  }
+}
+
+
+function _diffTickerCell(oldCell, newCell) {
+  // Walk through children of the fresh cell and update only the
+  // bits that changed. Preserves DOM identity → marquee animation
+  // never restarts.
+  const oldChildren = oldCell.children;
+  const newChildren = newCell.children;
+  // If structure differs (yld tag added/removed), do a full child swap
+  if (oldChildren.length !== newChildren.length) {
+    oldCell.className = newCell.className;
+    while (oldCell.firstChild) oldCell.removeChild(oldCell.firstChild);
+    while (newCell.firstChild) oldCell.appendChild(newCell.firstChild);
+    return;
+  }
+  // Update className + textContent on each matching child
+  oldCell.className = newCell.className;
+  for (let i = 0; i < oldChildren.length; i++) {
+    const o = oldChildren[i];
+    const n = newChildren[i];
+    if (o.tagName !== n.tagName) {
+      o.replaceWith(n);
+      continue;
+    }
+    if (o.className !== n.className) o.className = n.className;
+    if (o.textContent !== n.textContent) o.textContent = n.textContent;
   }
 }
 
 function refreshInstruments() {
   const box = $('#side-instr');
   if (!box) return;
-  box.innerHTML = '';
-  // v5 unified sidebar: when the user is on the SIMULATOR surface,
-  // the outer instruments rail upgrades to the rich live view —
-  // brand-accent bar, sparkline, bp value with directional colour,
-  // 1m delta. This is the same content the inner sim-rail-left used
-  // to render; consolidating it here frees the simulator's middle
-  // column for bigger content cards.
+  // v5.2 first-principles fix: the previous version wiped
+  // box.innerHTML on every SSE tick, which destroyed hover state,
+  // reset scrollTop on the scrollable rail, and forced the layout
+  // engine to re-measure every one of 25 rows. The user saw this
+  // as the sidebar "flickering / resetting their view." Now we
+  // DIFF — keep existing rows, update text/values in place, and
+  // only rebuild when the token set or ordering genuinely changes.
   const isSim = (location.hash || '').startsWith('#simulator');
   const focusedSim = isSim
     ? ((location.hash.split('/')[1] || '').toUpperCase() ||
         (Object.values(STATE.simFeedBySym)[0] || {}).symbol || '')
     : '';
-  // Sort: in simulator mode, sort the way the inner rail did — live
-  // tokens first, then by |1m delta| descending. Outside simulator,
-  // keep STATE.tokens registry order (matches the rest of the app).
   let tokens = STATE.tokens.slice();
   if (isSim) {
     tokens.sort((a, b) => {
@@ -1955,11 +2014,76 @@ function refreshInstruments() {
       return bD - aD;
     });
   }
-  tokens.forEach((t) => {
-    box.append(_renderInstrumentRow(t, isSim, focusedSim));
-  });
+  // Build a signature over the ORDER + mode + focus. When that's
+  // unchanged we keep the existing row DOM and just refresh values.
+  const sig = tokens.map(t => t.symbol).join(',') +
+    '|' + (isSim ? 'sim' : 'std') +
+    '|' + focusedSim;
+  const prevSig = box.getAttribute('data-instr-sig') || '';
+  if (prevSig !== sig) {
+    // Order changed — preserve scrollTop, then rebuild.
+    const prevScroll = box.scrollTop;
+    box.innerHTML = '';
+    tokens.forEach((t) => {
+      box.append(_renderInstrumentRow(t, isSim, focusedSim));
+    });
+    box.scrollTop = prevScroll;
+    box.setAttribute('data-instr-sig', sig);
+  } else {
+    // Same order + mode — surgical update on each row.
+    const existing = box.children;
+    for (let i = 0; i < tokens.length && i < existing.length; i++) {
+      const t = tokens[i];
+      const fresh = _renderInstrumentRow(t, isSim, focusedSim);
+      _diffSidebarRow(existing[i], fresh);
+    }
+  }
   const c = $('#instr-count');
   if (c) c.textContent = STATE.tokens.length;
+}
+
+
+function _diffSidebarRow(oldRow, newRow) {
+  // In-place update on the sidebar row. Keeps DOM identity so hover
+  // state, focus, and any in-flight animations survive.
+  if (oldRow.className !== newRow.className) {
+    oldRow.className = newRow.className;
+  }
+  // Copy data-attributes (focused state etc.)
+  for (const attr of newRow.attributes) {
+    if (attr.name.startsWith('data-')
+        && oldRow.getAttribute(attr.name) !== attr.value) {
+      oldRow.setAttribute(attr.name, attr.value);
+    }
+  }
+  // Recursively diff children for structural changes.
+  const o = oldRow.children;
+  const n = newRow.children;
+  if (o.length !== n.length) {
+    while (oldRow.firstChild) oldRow.removeChild(oldRow.firstChild);
+    while (newRow.firstChild) oldRow.appendChild(newRow.firstChild);
+    return;
+  }
+  for (let i = 0; i < o.length; i++) {
+    const oc = o[i];
+    const nc = n[i];
+    if (oc.tagName !== nc.tagName) {
+      oc.replaceWith(nc);
+      continue;
+    }
+    if (oc.className !== nc.className) oc.className = nc.className;
+    // Recurse into children only when text differs or grandchildren
+    // exist (sparklines have an <svg> child).
+    if (oc.children.length === 0 && nc.children.length === 0) {
+      if (oc.textContent !== nc.textContent) oc.textContent = nc.textContent;
+    } else if (oc.children.length === nc.children.length) {
+      _diffSidebarRow(oc, nc);
+    } else {
+      // Structure differs — swap subtree
+      while (oc.firstChild) oc.removeChild(oc.firstChild);
+      while (nc.firstChild) oc.appendChild(nc.firstChild);
+    }
+  }
 }
 
 
@@ -7161,20 +7285,93 @@ function flashTokenCell(t) {
 function pushWireRows(newEvents) {
   const wire = document.querySelector('.sim-wire-rows');
   if (!wire) return;
-  // Prepend each new event with a brief fade-in. FIFO cap 40.
+  // Filter out events older than the highest seen — protects against
+  // SSE replays and dedupes when SSE + reconcile both fire.
+  const rowsToAdd = [];
   for (const ev of newEvents) {
     const ts = Number(ev.ts) || 0;
     if (!ts || ts <= SIM_VIEW.lastEventTs) continue;
-    const row = renderWireRow(ev);
-    row.classList.add('sim-wire-fadein');
-    wire.prepend(row);
+    rowsToAdd.push(ev);
   }
-  while (wire.children.length > 40) wire.removeChild(wire.lastChild);
+  if (!rowsToAdd.length) return;
+  // First-principles UX: if the user has scrolled DOWN inside the
+  // Wire to read older events, prepending new rows visually shoves
+  // the line they're reading further down. That's the "jarring"
+  // reset the user flagged. Solution = the Bloomberg/Twitter/Slack
+  // convention: when the user is NOT at the top, buffer the new
+  // events and show a "N new — click to view" pill. When at the
+  // top (or close to it) we prepend live as before.
+  const AT_TOP_THRESHOLD = 30;  // px from top counts as "at top"
+  const userIsAtTop = wire.scrollTop <= AT_TOP_THRESHOLD;
+  if (userIsAtTop) {
+    // Prepend live with the existing fade-in.
+    for (const ev of rowsToAdd) {
+      const row = renderWireRow(ev);
+      row.classList.add('sim-wire-fadein');
+      wire.prepend(row);
+    }
+    while (wire.children.length > 40) wire.removeChild(wire.lastChild);
+  } else {
+    // Buffer the events. Render them at the top but HIDDEN — they
+    // can stay measured for the scroll-anchoring math, and we mark
+    // a "new" pill so the user can promote them with one click.
+    SIM_VIEW.wireBuffer = (SIM_VIEW.wireBuffer || []).concat(rowsToAdd);
+    _renderWireNewPill(wire);
+  }
   SIM_VIEW.lastEventTs = newEvents.reduce((mx, e) => {
     const v = Number(e.ts) || 0;
     return v > mx ? v : mx;
   }, SIM_VIEW.lastEventTs);
 }
+
+
+function _renderWireNewPill(wire) {
+  // Shows a gold pill above the wire: "↑ N NEW EVENTS". One click
+  // scrolls the user to the top + flushes the buffer.
+  const count = (SIM_VIEW.wireBuffer || []).length;
+  if (!count) return;
+  // Find or create the pill outside the scrollable area so it stays
+  // pinned regardless of scroll position.
+  const rail = wire.parentElement;  // .sim-rail-right
+  if (!rail) return;
+  let pill = rail.querySelector('.sim-wire-newpill');
+  if (!pill) {
+    pill = el('button', {
+      class: 'sim-wire-newpill',
+      onclick: 'simWireFlushBuffer(this)',
+    },
+      el('span', { class: 'sim-wire-newpill-arrow' }, '↑'),
+      el('span', { class: 'sim-wire-newpill-n' }, ''),
+      ' NEW');
+    // Insert just before the scrollable rows so it sits above them
+    // visually but doesn't take scroll-space inside the list.
+    wire.insertAdjacentElement('beforebegin', pill);
+  }
+  pill.querySelector('.sim-wire-newpill-n').textContent = String(count);
+}
+
+
+// Globally-named so the inline onclick can reach it.
+window.simWireFlushBuffer = function(pillBtn) {
+  const wire = document.querySelector('.sim-wire-rows');
+  if (!wire) return;
+  const buf = SIM_VIEW.wireBuffer || [];
+  // Flush in chronological order — oldest of the buffered batch
+  // ends up further down once prepended, newest at the very top.
+  for (let i = 0; i < buf.length; i++) {
+    const ev = buf[i];
+    const row = renderWireRow(ev);
+    row.classList.add('sim-wire-fadein');
+    wire.prepend(row);
+  }
+  while (wire.children.length > 40) wire.removeChild(wire.lastChild);
+  SIM_VIEW.wireBuffer = [];
+  // Smooth scroll to top so the user sees the flushed events.
+  wire.scrollTo({ top: 0, behavior: 'smooth' });
+  if (pillBtn && pillBtn.parentElement) {
+    pillBtn.parentElement.removeChild(pillBtn);
+  }
+};
 
 function updateBraveQuotaInPlace(q) {
   const cell = document.querySelector('[data-sim-quota]');
@@ -9011,12 +9208,21 @@ function renderTraderBody(wrap, data, focusedSym) {
     return;  // identical data — keep what's on screen
   }
   body.setAttribute('data-trader-sig', sig);
-  // Animate the swap so the user perceives it as a deliberate
-  // update, not a reload. The fade is cheap and uses the existing
-  // .fade-in keyframe.
+  // First-principles fix for the "view resets" complaint: before
+  // wiping the body, capture the scrollable view-body's scroll
+  // position AND the currently-focused element id (if any). Restore
+  // them after the rebuild so the user's place + focus survive.
+  const viewBody = wrap.closest('.view-body') ||
+    document.querySelector('.view-body');
+  const prevScroll = viewBody ? viewBody.scrollTop : 0;
+  const prevFocusId = document.activeElement
+    && document.activeElement.id ? document.activeElement.id : '';
+  // We skip the fade animation now — a fade on a re-render is
+  // exactly what makes the page feel like it reloaded. With the
+  // sig-skip + in-place children (resolved cards keep their DOM
+  // when nothing changes inside them), there's nothing for the
+  // user to see "swap" anyway.
   body.classList.remove('fade-in');
-  void body.offsetWidth;  // force reflow so the animation restarts
-  body.classList.add('fade-in');
   body.innerHTML = '';
 
   // ── ACCOUNT EQUITY block — the headline P&L view ─────────────────
@@ -9162,6 +9368,21 @@ function renderTraderBody(wrap, data, focusedSym) {
   // ── Per-strategy breakdown — which strategy is winning? ─────────
   if ((tr.per_strategy || []).length) {
     body.appendChild(_traderStrategyBreakdown(tr));
+  }
+  // Restore the user's scroll position + focus after the rebuild.
+  // Wrapped in requestAnimationFrame so layout has settled before
+  // we restore (otherwise the scrollTop assignment fights the
+  // browser's own restore attempt).
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      if (viewBody && prevScroll) viewBody.scrollTop = prevScroll;
+      if (prevFocusId) {
+        const el = document.getElementById(prevFocusId);
+        if (el && typeof el.focus === 'function') {
+          el.focus({ preventScroll: true });
+        }
+      }
+    });
   }
 }
 
