@@ -932,3 +932,60 @@ class SupabaseStore(Store):
             return getattr(resp, "data", None) or []
         except Exception:  # noqa: BLE001
             return []
+
+    # ── trader voice + commentary dive caches (v5.1) ──────────────────
+    # Migration 0010 creates the trader_voice_* and commentary_dive
+    # tables. Pre-0010 deploys degrade gracefully — the upsert quietly
+    # no-ops when the table doesn't exist.
+    def _safe_upsert(self, table: str, row: dict, on_conflict: str) -> None:
+        try:
+            self._client.table(table).upsert(
+                row, on_conflict=on_conflict).execute()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _safe_select_one(self, table: str, filters: dict):
+        try:
+            q = self._client.table(table).select("*")
+            for k, v in filters.items():
+                q = q.eq(k, v)
+            resp = q.limit(1).execute()
+            data = getattr(resp, "data", None) or []
+            return data[0] if data else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def upsert_voice_brief(self, brief: dict) -> None:
+        self._safe_upsert("trader_voice_brief", dict(brief), "day_utc")
+
+    def get_voice_brief(self, day_utc: str):
+        return self._safe_select_one(
+            "trader_voice_brief", {"day_utc": day_utc})
+
+    def upsert_voice_reflection(self, reflection: dict) -> None:
+        self._safe_upsert(
+            "trader_voice_reflection", dict(reflection), "day_utc")
+
+    def get_voice_reflection(self, day_utc: str):
+        return self._safe_select_one(
+            "trader_voice_reflection", {"day_utc": day_utc})
+
+    def upsert_voice_narration(self, trade_id: str, body: str) -> None:
+        self._safe_upsert("trader_voice_narration",
+                            {"trade_id": trade_id, "body": body},
+                            "trade_id")
+
+    def get_voice_narration(self, trade_id: str):
+        row = self._safe_select_one(
+            "trader_voice_narration", {"trade_id": trade_id})
+        return (row or {}).get("body") if row else None
+
+    def upsert_commentary_dive(self, dive: dict) -> None:
+        d = dict(dive)
+        d["id"] = (
+            f"{(d.get('symbol') or '').upper()}:{d.get('inputs_hash') or ''}")
+        self._safe_upsert("commentary_dive", d, "id")
+
+    def get_commentary_dive(self, symbol: str, inputs_hash: str):
+        key = f"{(symbol or '').upper()}:{inputs_hash or ''}"
+        return self._safe_select_one("commentary_dive", {"id": key})

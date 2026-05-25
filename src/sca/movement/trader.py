@@ -743,12 +743,34 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
             except Exception:  # noqa: BLE001 — never block a trade on the layer
                 news_context = []
 
+            # v5.1: strategy-specific horizon override. Hard-depeg
+            # trades hold for hours-to-days because that's how real
+            # depeg recoveries play out (SVB-era USDC took 72h);
+            # closing them after the prediction's 30min default
+            # captures pennies of intra-window noise instead of the
+            # actual move. NAV-discount holds for days. Mean-reversion
+            # and volatility-regime use the prediction's native horizon.
+            horizon_override = (c.extras or {}).get("horizon_min_override")
+            if horizon_override and isinstance(horizon_override, (int, float)):
+                from datetime import datetime, timedelta, timezone
+                try:
+                    base_dt = datetime.fromisoformat(
+                        now_iso.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    base_dt = datetime.now(timezone.utc)
+                override_resolves_at = (
+                    base_dt + timedelta(minutes=int(horizon_override))
+                ).isoformat(timespec="seconds")
+                override_horizon_min = int(horizon_override)
+            else:
+                override_resolves_at = pred.get("resolves_at", "")
+                override_horizon_min = _safe_int(pred.get("horizon_minutes"))
             trade = Trade(
                 id=f"t{int(time.time() * 1000)}-{sym}",
                 symbol=sym,
                 direction=c.direction,
                 opened_at=now_iso,
-                resolves_at=pred.get("resolves_at", ""),
+                resolves_at=override_resolves_at,
                 prediction_made_at=pred.get("made_at", ""),
                 entry_bps=float(current),
                 forecast_point_bps=float(pred.get("point") or 0.0),
@@ -769,7 +791,7 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 forecast_p50_high=_safe_float(pred.get("p50_high")),
                 forecast_p95_low=_safe_float(pred.get("p95_low")),
                 forecast_p95_high=_safe_float(pred.get("p95_high")),
-                horizon_minutes=_safe_int(pred.get("horizon_minutes")),
+                horizon_minutes=override_horizon_min,
                 strategy=c.strategy,
                 paired_with=c.paired_with,
                 venue_outlier=c.venue_outlier,
@@ -1114,11 +1136,25 @@ def track_record() -> dict:
                     reverse=True)[:14]
 
     # Best / worst day by P&L (over the full history, not just last 14).
+    # When only one trading day exists, "best" and "worst" point at the
+    # same row — which is misleading and the user has flagged it twice.
+    # Surface a separate `single_day` field; UI shows that block instead
+    # of the duplicated best+worst pair.
     by_pnl = sorted(
         [d for d in daily_map.values() if d["trades"] > 0],
         key=lambda d: d["pnl_usd"], reverse=True)
-    best_day = by_pnl[0] if by_pnl else None
-    worst_day = by_pnl[-1] if by_pnl else None
+    single_day = None
+    if len(by_pnl) == 0:
+        best_day = None
+        worst_day = None
+    elif len(by_pnl) == 1:
+        # Only one day on record — don't pretend it's both best and worst.
+        single_day = by_pnl[0]
+        best_day = None
+        worst_day = None
+    else:
+        best_day = by_pnl[0]
+        worst_day = by_pnl[-1]
 
     # Per-strategy breakdown — which strategy is winning? Each trade
     # is keyed by its `strategy` field (may be a composite like
@@ -1223,6 +1259,7 @@ def track_record() -> dict:
         "daily": daily,
         "best_day": best_day,
         "worst_day": worst_day,
+        "single_day": single_day,
         "per_strategy": per_strategy,
         # v5 trader voice payload
         "daily_brief": brief,

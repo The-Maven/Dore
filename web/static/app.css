@@ -292,6 +292,43 @@ b { font-weight: 600; }
 .tick-sym[data-token="EURI"]  { color: #1B6FE0; }
 .tick-sym[data-token="AEUR"]  { color: #2E5BFF; }
 
+/* v5.1 — live peg-price ticker items */
+.tick-item-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.tick-item-pending { opacity: 0.55; }
+.tick-yld {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  color: var(--gold, #D4A24A);
+  border: 1px solid rgba(212, 162, 74, 0.45);
+  padding: 0 4px;
+  border-radius: 1px;
+}
+.tick-price {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--paper, #EFEAE0);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.tick-bp {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 1px;
+  background: rgba(255,255,255,0.04);
+  font-variant-numeric: tabular-nums;
+}
+.tick-bp.d-up   { color: var(--green, #4AF6C3); background: rgba(74, 246, 195, 0.08); }
+.tick-bp.d-dn   { color: var(--rose, #FF433D); background: rgba(255, 67, 61, 0.08); }
+.tick-bp.d-flat { color: var(--muted-2, #9A9590); }
+
 /* the USD value — bright + clear, the hard datum of the item */
 .tick-val {
   color: var(--paper); font-weight: 500;
@@ -6800,6 +6837,13 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 }
 .sim-trader-medal-best  { border-left: 3px solid var(--sim-up, #4AF6C3); }
 .sim-trader-medal-worst { border-left: 3px solid var(--sim-down, #FF433D); }
+.sim-trader-medal-single { border-left: 3px solid var(--sim-gold, #D4A24A); }
+.sim-trader-medal-single .sim-trader-medal-lbl {
+  color: var(--sim-gold, #D4A24A);
+}
+.sim-trader-medal-single .sim-trader-medal-val {
+  color: var(--sim-gold, #D4A24A);
+}
 .sim-trader-medal-lbl {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 9px;

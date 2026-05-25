@@ -12,6 +12,7 @@ supabase/migrations/0001_initial_schema.sql, which is authoritative.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Optional
 
 VALID_SURFACES = ("attestation", "sanctions", "redemption")
 VALID_STATUSES = ("pending", "running", "done", "error")
@@ -318,3 +319,33 @@ class Store(ABC):
         """All trades (open + resolved), newest first. Empty list
         when the backend doesn't support trades yet."""
         return []
+
+    # ── trader voice + commentary dive caches ─────────────────────────
+    # v5.1: moved off local disk into the same archive as the rest of
+    # the simulation history. Local JSON cache remains as a hot-path
+    # fallback; the store is the durable source of truth.
+    def upsert_voice_brief(self, brief: dict) -> None:
+        return None
+
+    def get_voice_brief(self, day_utc: str) -> Optional[dict]:
+        return None
+
+    def upsert_voice_reflection(self, reflection: dict) -> None:
+        return None
+
+    def get_voice_reflection(self, day_utc: str) -> Optional[dict]:
+        return None
+
+    def upsert_voice_narration(
+        self, trade_id: str, body: str) -> None:
+        return None
+
+    def get_voice_narration(self, trade_id: str) -> Optional[str]:
+        return None
+
+    def upsert_commentary_dive(self, dive: dict) -> None:
+        return None
+
+    def get_commentary_dive(
+        self, symbol: str, inputs_hash: str) -> Optional[dict]:
+        return None

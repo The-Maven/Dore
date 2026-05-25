@@ -179,17 +179,25 @@ def mean_reversion(feed_tokens: list[dict]) -> list[TradeCandidate]:
 
 
 # ── strategy 2: pairs divergence ───────────────────────────────────
-# A classic basis trade: when two correlated stablecoins drift apart
-# by more than their historical spread, fade the divergence. We pair
-# fiat-backed majors with one another (USDC/USDT, PYUSD/USDP) — the
-# theory is the spread between two attestation-backed dollar tokens
-# should mean-revert quickly because either issuer can mint/redeem.
-PAIRS = [
-    ("USDC", "USDT"),
-    ("USDC", "DAI"),
-    ("PYUSD", "USDP"),
-    ("USDC", "FDUSD"),
-    ("USDT", "DAI"),
+# REBUILT v5.1 from first principles. The previous list (USDC/USDT,
+# USDC/FDUSD, etc.) was statistical hope, NOT arbitrage — there is
+# no settlement path that forces USDC and FDUSD to converge. They
+# are different tokens, different issuers, different redemption
+# mechanisms. A real desk does not trade their spread.
+#
+# The only valid pairs are FUNGIBLE / CONVERTIBLE pairs — assets
+# that are exchangeable 1:1 via a structural mechanism, so a price
+# gap creates a real arbitrage opportunity rather than a guess. The
+# canonical example in this universe: DAI ↔ USDS via the MakerDAO
+# (now Sky) 1:1 migration contract. If USDS trades cheaper than DAI,
+# you can buy USDS, redeem the corresponding DAI, and bank the gap.
+#
+# PAIRS is the curated whitelist — empty until at least one
+# verifiable convertible pair is wired through. Better to emit no
+# candidates than emit ones whose thesis doesn't survive scrutiny.
+PAIRS: list[tuple[str, str]] = [
+    # ("DAI", "USDS"),  # uncomment when both are registered + the
+    #                   # 1:1 migration contract is verified live.
 ]
 PAIRS_DIVERGENCE_BPS = 6.0       # only trade when the gap is > 6bp
 PAIRS_DEFAULT_EDGE_BPS = 4.0     # expected convergence
@@ -544,6 +552,90 @@ def nav_discount(feed_tokens: list[dict]) -> list[TradeCandidate]:
     return out
 
 
+# ── strategy 6: HARD DEPEG — the primary stablecoin alpha ──────────
+# v5.1 rebuild, first-principles. The famous USDC moment in March 2023
+# took the token to $0.87 over the SVB weekend; Circle's mint/redeem
+# mechanism made that a real-money arbitrage for desks who could
+# verify reserves were intact. SVB-era USDC took ~72h to recover.
+#
+# THIS is the trade real stablecoin desks make money on — not
+# 3bp mean-reversion noise around peg. A hard depeg has:
+#   • a clear redemption path (issuer or PSM) that anchors the price
+#     from below for fiat-backed tokens and from above for
+#     overcollateralised tokens;
+#   • a holding period measured in hours-to-days, not minutes;
+#   • asymmetric payoff — bounded loss if the issuer fails, multi-
+#     percentage-point upside if the peg restores.
+#
+# Trigger: |deviation| ≥ 30bp on a NON-structurally-broken token
+# (the trader's own structural-depeg refusal layer keeps known-
+# broken pegs like FRAX out of this strategy).
+HARD_DEPEG_THRESHOLD_BPS = 30.0
+HARD_DEPEG_DEFAULT_HORIZON_MIN = 1440  # 24h — picks up most depeg recoveries
+HARD_DEPEG_MAX_HORIZON_MIN = 4320      # 72h — caps lock-in time
+
+
+def hard_depeg(feed_tokens: list[dict]) -> list[TradeCandidate]:
+    """Buy a hard-depegged stable expecting issuer redemption to
+    restore the peg. Emits one candidate per eligible token.
+
+    Skipped automatically by the trader's structural-depeg layer
+    when the deviation has persisted >5 cycles (USDD/FRAX-style
+    broken pegs aren't recoverable, so this strategy stays out).
+    """
+    out: list[TradeCandidate] = []
+    for tok in feed_tokens or []:
+        if not _eligible_token(tok):
+            continue
+        meta = tok.get("meta") or {}
+        # Yield-bearing tokens have their own (nav_discount) strategy;
+        # don't double-fire. _eligible_token already filters them.
+        current = tok["current_bps"]
+        if abs(current) < HARD_DEPEG_THRESHOLD_BPS:
+            continue
+        # Direction: buy if below peg (long the recovery), short if
+        # above (rare — most depegs are downward, but PSM imbalance
+        # CAN push fiat-backed tokens to premium temporarily).
+        if current < 0:
+            direction = "long"
+            edge = abs(current) * 0.7  # expect ~70% recovery
+            recovery_target = current * 0.3
+        else:
+            direction = "short"
+            edge = current * 0.7
+            recovery_target = current * 0.3
+        # HIGH priority — this is the alpha-rich strategy in the
+        # library. Promotes over mean_reversion when both fire on
+        # the same token.
+        priority = round(edge * 2.0, 3)
+        pred = tok.get("latest_prediction") or {}
+        rationale = (
+            f"{tok['symbol']} is {abs(current):.1f}bp "
+            f"{'below' if current < 0 else 'above'} the $1.00 peg — "
+            f"hard depeg territory. {'Long' if direction == 'long' else 'Short'} "
+            f"the recovery toward {recovery_target:+.1f}bp on the "
+            f"issuer's mint/redeem mechanism. Variable hold "
+            f"(24-72h); exits on thesis completion or stop-loss."
+        )
+        out.append(TradeCandidate(
+            strategy="hard_depeg",
+            symbol=tok["symbol"], direction=direction,
+            edge_bps=round(edge, 3),
+            priority_score=priority,
+            rationale=rationale,
+            current_bps=current,
+            prediction=pred, meta=meta,
+            consensus=tok.get("consensus") or {},
+            extras={
+                "deviation_bps": round(current, 2),
+                "horizon_min_override": HARD_DEPEG_DEFAULT_HORIZON_MIN,
+                "exit_thesis_bps": 5.0,  # exit when within ±5bp
+                "stop_loss_bps": abs(current) * 2.0,
+            },
+        ))
+    return out
+
+
 # ── orchestrator ────────────────────────────────────────────────────
 STRATEGIES = [
     mean_reversion,
@@ -551,6 +643,7 @@ STRATEGIES = [
     cross_venue_arb,
     volatility_regime,
     nav_discount,
+    hard_depeg,
 ]
 
 

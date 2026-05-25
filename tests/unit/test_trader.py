@@ -467,8 +467,10 @@ def test_track_record_aggregates_wins_losses_correctly(monkeypatch):
     # reflects most-recent outcome.
     assert len(tr["equity_curve"]) == 2
     assert tr["current_streak"]["length"] >= 1
-    assert tr["best_day"] is not None
-    assert tr["best_day"]["pnl_usd"] >= tr["worst_day"]["pnl_usd"]
+    # Only one UTC day of trading → single_day (best/worst are None)
+    assert tr["single_day"] is not None
+    assert tr["best_day"] is None
+    assert tr["worst_day"] is None
 
 
 def test_skips_when_current_bps_is_none(tmp_path, monkeypatch):
@@ -661,6 +663,10 @@ def test_v3_pnl_math_long_correct_under_wide_values(tmp_path, monkeypatch):
     notional + bp values + scaled-up edge sizing."""
     monkeypatch.setattr(trader, "TRADER_PATH", tmp_path / "t.json")
     monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 100_000.0)
+    # v5.1: hard_depeg fires above ±30bp; neutralise its 24h hold so
+    # the test's 6-minute mock cycle can still resolve.
+    from sca.movement import strategies
+    monkeypatch.setattr(strategies, "HARD_DEPEG_DEFAULT_HORIZON_MIN", 5)
     feed = [{
         "symbol": "FRAX", "current_bps": -50.0,
         "consensus": _agreed_consensus(),
@@ -697,6 +703,10 @@ def test_v3_pnl_math_short_correct_under_wide_values(tmp_path, monkeypatch):
     means a +30bp move in our favour."""
     monkeypatch.setattr(trader, "TRADER_PATH", tmp_path / "t.json")
     monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 100_000.0)
+    # v5.1: hard_depeg fires above ±30bp; neutralise its 24h hold so
+    # the test's 6-minute mock cycle can still resolve.
+    from sca.movement import strategies
+    monkeypatch.setattr(strategies, "HARD_DEPEG_DEFAULT_HORIZON_MIN", 5)
     feed = [{
         "symbol": "LUSD", "current_bps": 40.0,
         "consensus": _agreed_consensus(),

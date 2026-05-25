@@ -1846,55 +1846,68 @@ function refreshGrid() {
 // scroll is cosmetic CSS; the figures update only on a real poll and are
 // held static between reads.
 function tickItem(t) {
+  // v5.1: live peg-price ticker. The previous version showed on-
+  // chain SUPPLY which sat at "LOADING" forever because the SSE
+  // simulator feed was the live source. We now read from
+  // STATE.simFeedBySym (populated by the simulator + SSE), falling
+  // back to on-chain supply only if no peg data is available.
+  const live = STATE.simFeedBySym[t.symbol];
+  if (live && live.current_bps != null) {
+    return _tickItemLive(t, live);
+  }
+  return _tickItemFallback(t);
+}
+
+
+function _tickItemLive(t, live) {
+  // Brand mark + symbol + USD price + bp deviation chip + 1m arrow.
+  // The USD price comes from the consensus_price slot in the live
+  // payload when available, else derived from current_bps.
+  const meta = live.meta || {};
+  const yld = !!meta.yield_bearing;
+  const cb = Number(live.current_bps);
+  const cons = live.consensus || {};
+  let priceUsd = null;
+  for (const s of (cons.sources || [])) {
+    if (s && typeof s.price === 'number') { priceUsd = s.price; break; }
+  }
+  if (priceUsd == null) {
+    // Derive from bp deviation around the expected peg.
+    const peg = (meta.expected_peg != null) ? meta.expected_peg : 1.0;
+    priceUsd = peg * (1 + cb / 10_000);
+  }
+  const d1m = (live.deltas || {}).d1m;
+  const bpCls = cb > 0 ? 'd-up' : cb < 0 ? 'd-dn' : 'd-flat';
+  const dCls = d1m == null ? 'd-flat'
+    : d1m > 0 ? 'd-up' : d1m < 0 ? 'd-dn' : 'd-flat';
+  const arrow = dCls === 'd-up' ? '▲' : dCls === 'd-dn' ? '▼' : '◇';
+  return el('span', { class: 'tick-item tick-item-live',
+                       'data-sim-sym': t.symbol },
+    tokenMark(t.symbol, 'tmark-tick'),
+    el('span', { class: 'tick-sym', 'data-token': t.symbol }, t.symbol),
+    yld ? el('span', { class: 'tick-yld' }, 'YLD') : null,
+    el('span', { class: 'tick-price' }, priceUsd.toFixed(4)),
+    el('span', { class: 'tick-bp ' + bpCls },
+      (cb >= 0 ? '+' : '') + cb.toFixed(2) + 'bp'),
+    el('span', { class: 'tick-delta ' + dCls },
+      el('span', { class: 'tick-arrow' }, arrow),
+      el('span', { class: 'tick-pct' },
+        d1m == null ? 'FLAT'
+          : Math.abs(Number(d1m)).toFixed(2) + 'bp')));
+}
+
+
+function _tickItemFallback(t) {
+  // No live peg data yet — show a compact placeholder rather than
+  // the loud "LOADING" of the old supply-only ticker. We use the
+  // brand mark + symbol so the marquee still reads as a market list.
   const s = STATE.supply[t.symbol];
   const native = nativeOf(s);
-  const isErr = s === 'error';
-  const pending = native == null;
-  // real measured change between the last two real reads — never simulated
-  const delta = STATE.realDelta[t.symbol] != null
-    ? STATE.realDelta[t.symbol] : null;
-  const dCls = pending ? 'd-flat' : (deltaClass(delta) || 'd-flat');
-  // directional mark on the REAL delta — ▲ genuine rise, ▼ genuine fall.
-  // The flat state gets a designed hollow diamond, not a dead dash.
-  const arrow = dCls === 'd-up' ? '▲' : dCls === 'd-dn' ? '▼' : '◇';
-  // absolute supply move, for the dense secondary figure
-  const absMove = (delta != null && native != null)
-    ? native * delta : null;
-  const item = el('span', {
-    class: 'tick-item' + (isErr ? ' tick-err' : '')
-      + (pending ? ' tick-pending' : ''),
-  },
-    // brand-coloured token mark — always present, carries colour even
-    // when supply is flat. Reuses the tokenMark() sprite + data-token.
+  return el('span', { class: 'tick-item tick-item-pending' },
     tokenMark(t.symbol, 'tmark-tick'),
-    // the symbol carries its brand colour too — data-token drives the
-    // per-token hue in CSS, so every item is vivid by brand identity.
     el('span', { class: 'tick-sym', 'data-token': t.symbol }, t.symbol),
-    el('span', { class: 'tick-val' }, pending ? '— —' : fmtUSD(native)),
-  );
-  if (isErr) {
-    item.append(el('span', { class: 'tick-delta d-flat' },
-      el('span', { class: 'tick-arrow' }, '×'),
-      el('span', { class: 'tick-pct' }, 'OFFLINE')));
-  } else if (pending) {
-    item.append(el('span', { class: 'tick-delta d-flat' },
-      el('span', { class: 'tick-arrow' }, '◇'),
-      el('span', { class: 'tick-pct' }, 'LOADING')));
-  } else {
-    // a flat reading shows a calm, deliberate "FLAT" label; a real move
-    // shows the signed percentage.
-    const dTxt = dCls === 'd-flat' ? 'FLAT' : fmtDelta(delta);
-    const dWrap = el('span', { class: 'tick-delta ' + dCls },
-      el('span', { class: 'tick-arrow' }, arrow),
-      el('span', { class: 'tick-pct' }, dTxt));
-    // show the honest absolute Δ alongside the % when there is real motion
-    if (dCls !== 'd-flat' && absMove != null) {
-      dWrap.append(el('span', { class: 'tick-abs' },
-        (absMove >= 0 ? '+' : '−') + fmtMag(Math.abs(absMove))));
-    }
-    item.append(dWrap);
-  }
-  return item;
+    el('span', { class: 'tick-price' },
+      native != null ? fmtUSD(native) : '—'));
 }
 
 function refreshTicker() {
@@ -6825,6 +6838,9 @@ function _simReconcileTokens(mount, tokens) {
   // stay in sync with each SSE diff.
   tokens.forEach(t => { STATE.simFeedBySym[t.symbol] = t; });
   refreshInstruments();
+  // v5.1: also repaint the top live-price ticker so the marquee
+  // reflects the latest peg deviation in real time.
+  refreshTicker();
 }
 
 function _simReconcileStatusStrip(mount, feed) {
@@ -8932,6 +8948,32 @@ function simHeroTrader(focused) {
 }
 
 
+function _traderBodySig(tr, open, resolved, focusedSym) {
+  // Cheap fingerprint over the fields that visibly drive the trader
+  // panel. Float rounding keeps tiny mark-to-market drift from
+  // forcing a re-render on every poll.
+  const r = (v) => v == null ? '' : Math.round(Number(v) * 100) / 100;
+  return [
+    'eq:' + r(tr.account_equity_usd),
+    'pnl:' + r(tr.net_pnl_usd),
+    'today:' + r(tr.pnl_today_usd),
+    'd24:' + r(tr.pnl_24h_usd),
+    'd7:' + r(tr.pnl_7d_usd),
+    'cr:' + (tr.count_resolved || 0),
+    'co:' + (tr.count_open || 0),
+    'rem:' + r(tr.budget_remaining_today_usd),
+    'st:' + ((tr.current_streak || {}).outcome || '') +
+      '/' + ((tr.current_streak || {}).length || 0),
+    'opens:' + open.map(t => t.id + ':' + r(t.pnl_usd)).join(','),
+    'res:' + resolved.slice(0, 8).map(
+      t => t.id + ':' + (t.outcome || '')).join(','),
+    'foc:' + (focusedSym || ''),
+    'brief:' + ((tr.daily_brief || {}).inputs_hash || ''),
+    'refl:' + ((tr.yesterday_reflection || {}).inputs_hash || ''),
+  ].join('|');
+}
+
+
 async function loadTrader(wrap, focusedSym) {
   try {
     const resp = await fetch('/api/simulator/trader');
@@ -8952,10 +8994,27 @@ async function loadTrader(wrap, focusedSym) {
 function renderTraderBody(wrap, data, focusedSym) {
   const body = wrap.querySelector('.sim-trader-body');
   if (!body) return;
-  body.innerHTML = '';
+  // v5.1: signature-based skip. The previous implementation wiped
+  // body.innerHTML on every refresh, which felt like a browser
+  // reload. Generate a fingerprint of the data the trader card
+  // depends on; if it matches what's already rendered, skip the
+  // rebuild entirely. When it DOES change, the swap fades in
+  // instead of slamming.
   const tr = data.track_record || {};
   const open = data.open || [];
   const resolved = data.resolved || [];
+  const sig = _traderBodySig(tr, open, resolved, focusedSym);
+  if (body.getAttribute('data-trader-sig') === sig) {
+    return;  // identical data — keep what's on screen
+  }
+  body.setAttribute('data-trader-sig', sig);
+  // Animate the swap so the user perceives it as a deliberate
+  // update, not a reload. The fade is cheap and uses the existing
+  // .fade-in keyframe.
+  body.classList.remove('fade-in');
+  void body.offsetWidth;  // force reflow so the animation restarts
+  body.classList.add('fade-in');
+  body.innerHTML = '';
 
   // ── ACCOUNT EQUITY block — the headline P&L view ─────────────────
   // Running balance vs starting capital + 24h / 7d / all-time windows.
@@ -9093,7 +9152,7 @@ function renderTraderBody(wrap, data, focusedSym) {
   }
 
   // ── Best / worst day badges ──────────────────────────────────────
-  if (tr.best_day || tr.worst_day) {
+  if (tr.best_day || tr.worst_day || tr.single_day) {
     body.appendChild(_traderBestWorstRow(tr));
   }
 
@@ -9415,6 +9474,25 @@ function _traderDailyLedger(tr) {
 
 function _traderBestWorstRow(tr) {
   const wrap = el('div', { class: 'sim-trader-bestworst' });
+  // Single-day case: when only one UTC day has resolved trades,
+  // duplicating it as "best" AND "worst" is misleading — and the user
+  // has flagged it twice. Render a single neutral medal instead.
+  if (tr.single_day) {
+    const d = tr.single_day;
+    const sign = (d.pnl_usd || 0) >= 0 ? '+' : '-';
+    wrap.appendChild(el('div', {
+      class: 'sim-trader-medal sim-trader-medal-single',
+      'data-tip': 'Only one UTC day of trading on record so far. ' +
+        'Best/worst splits appear once a second day resolves.',
+      'data-tip-size': 'lg' },
+      el('span', { class: 'sim-trader-medal-lbl' }, 'ONE DAY SO FAR'),
+      el('span', { class: 'sim-trader-medal-val' },
+        sign + '$' + Math.abs(d.pnl_usd).toFixed(2)),
+      el('span', { class: 'sim-trader-medal-date' },
+        d.day_utc + ' · ' + d.trades + ' trade' +
+        (d.trades === 1 ? '' : 's'))));
+    return wrap;
+  }
   if (tr.best_day) {
     const d = tr.best_day;
     wrap.appendChild(el('div', {
@@ -9429,7 +9507,7 @@ function _traderBestWorstRow(tr) {
         '+$' + Math.abs(d.pnl_usd).toFixed(2)),
       el('span', { class: 'sim-trader-medal-date' }, d.day_utc)));
   }
-  if (tr.worst_day && tr.worst_day !== tr.best_day) {
+  if (tr.worst_day) {
     const d = tr.worst_day;
     wrap.appendChild(el('div', {
       class: 'sim-trader-medal sim-trader-medal-worst',

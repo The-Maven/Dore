@@ -79,9 +79,20 @@ def test_mean_reversion_skips_when_cone_past_alert():
 
 
 # ── pairs_divergence ───────────────────────────────────────────────
-def test_pairs_divergence_emits_both_legs_when_spread_exceeds_threshold():
-    """USDC at -8bp, USDT at +2bp → spread = -10bp (USDC cheaper).
-    Should emit: long USDC + short USDT, both same priority."""
+def test_pairs_divergence_default_whitelist_is_empty():
+    """v5.1: PAIRS list is empty by design. USDC/USDT-style pairs
+    have no convergence path and were removed; only verifiable
+    convertible pairs (e.g. DAI↔USDS via the migration contract)
+    should ever be added back, and only after the settlement path
+    is wired."""
+    assert strategies.PAIRS == []
+
+
+def test_pairs_divergence_fires_when_a_fungible_pair_is_whitelisted(monkeypatch):
+    """When an operator adds a real convertible pair, the mechanics
+    still emit both legs. This pins the strategy's correctness so a
+    future fungible-pair addition (DAI↔USDS) doesn't regress."""
+    monkeypatch.setattr(strategies, "PAIRS", [("USDC", "USDT")])
     cands = strategies.pairs_divergence([
         _tok("USDC", current_bps=-8.0, p80_low=-10, p80_high=-6),
         _tok("USDT", current_bps=+2.0, p80_low=0, p80_high=4),
@@ -89,14 +100,14 @@ def test_pairs_divergence_emits_both_legs_when_spread_exceeds_threshold():
     syms = {(c.symbol, c.direction) for c in cands}
     assert ("USDC", "long") in syms
     assert ("USDT", "short") in syms
-    # Edge = spread/2 = 5
     for c in cands:
         if c.symbol in ("USDC", "USDT") and c.strategy == "pairs_divergence":
             assert abs(c.edge_bps - 5.0) < 1e-6
 
 
-def test_pairs_divergence_skips_when_spread_too_small():
+def test_pairs_divergence_skips_when_spread_too_small(monkeypatch):
     """Spread under threshold (6bp) → no candidates."""
+    monkeypatch.setattr(strategies, "PAIRS", [("USDC", "USDT")])
     cands = strategies.pairs_divergence([
         _tok("USDC", current_bps=-2.0, p80_low=-4, p80_high=0),
         _tok("USDT", current_bps=+1.0, p80_low=-1, p80_high=3),
@@ -104,8 +115,9 @@ def test_pairs_divergence_skips_when_spread_too_small():
     assert cands == []
 
 
-def test_pairs_divergence_skips_if_either_leg_yield_bearing():
+def test_pairs_divergence_skips_if_either_leg_yield_bearing(monkeypatch):
     """Yield-bearing leg disqualifies the whole pair."""
+    monkeypatch.setattr(strategies, "PAIRS", [("USDY", "USDT")])
     cands = strategies.pairs_divergence([
         _tok("USDY", current_bps=1000, p80_low=990, p80_high=1010,
              yield_bearing=True),
@@ -323,6 +335,59 @@ def test_nav_discount_skips_within_threshold(monkeypatch):
     feed = [_tok("SUSDE", current_bps=40.0,
                   p80_low=35, p80_high=45, yield_bearing=True)]
     assert strategies.nav_discount(feed) == []
+
+
+# ── hard_depeg (the primary alpha strategy) ────────────────────────
+def test_hard_depeg_fires_on_deep_below_peg():
+    """v5.1: a token >30bp below peg triggers a long on the recovery.
+    This is the strategy real desks use during events like SVB-era
+    USDC at $0.87."""
+    cands = strategies.hard_depeg([
+        _tok("USDC", current_bps=-87.0,
+              p80_low=-100, p80_high=-60),
+    ])
+    assert len(cands) == 1
+    c = cands[0]
+    assert c.direction == "long"
+    assert c.strategy == "hard_depeg"
+    assert c.edge_bps > 50  # 70% of 87 ≈ 60bp
+    # Horizon must NOT default to the prediction's 30min — depegs
+    # need hours-to-days to resolve.
+    assert c.extras.get("horizon_min_override") >= 60
+
+
+def test_hard_depeg_skips_within_threshold():
+    """A 25bp deviation is below the 30bp hard-depeg threshold and
+    is left to mean_reversion."""
+    assert strategies.hard_depeg([
+        _tok("USDC", current_bps=-25.0,
+              p80_low=-30, p80_high=-15),
+    ]) == []
+
+
+def test_hard_depeg_does_not_fire_on_yield_bearing():
+    """sUSDe at +1230bp is not a depeg — it's NAV climbing as yield
+    accrues. hard_depeg must skip yield-bearing tokens; nav_discount
+    handles those."""
+    assert strategies.hard_depeg([
+        _tok("SUSDE", current_bps=1230,
+              p80_low=1225, p80_high=1235, yield_bearing=True),
+    ]) == []
+
+
+def test_hard_depeg_priority_beats_mean_reversion():
+    """When both strategies fire on the same setup, the orchestrator
+    picks hard_depeg — depeg arbitrage is alpha-rich, mean-reversion
+    on a 50bp+ deviation is statistical hope on a token that may
+    actually be broken."""
+    feed = [_tok("USDC", current_bps=-40.0,
+                  p80_low=-44, p80_high=-30)]
+    merged = strategies.all_candidates(feed)
+    usdc_long = [c for c in merged
+                  if c.symbol == "USDC" and c.direction == "long"]
+    assert usdc_long
+    # The composite name should include hard_depeg
+    assert "hard_depeg" in usdc_long[0].strategy
 
 
 def test_all_candidates_sorts_by_priority_descending():

@@ -735,3 +735,52 @@ class FileStore(Store):
         snapshot.sort(
             key=lambda r: r.get("opened_at") or "", reverse=True)
         return [dict(r) for r in snapshot[:limit]]
+
+    # ── trader voice + commentary dive caches (v5.1) ──────────────────
+    def upsert_voice_brief(self, brief: dict) -> None:
+        if not hasattr(self, "_voice_briefs"):
+            self._voice_briefs: dict[str, dict] = {}
+        with self._sim_lock:
+            self._voice_briefs[brief.get("day_utc", "")] = dict(brief)
+
+    def get_voice_brief(self, day_utc: str):
+        with self._sim_lock:
+            return dict((self._voice_briefs or {}).get(day_utc) or {}) \
+                if getattr(self, "_voice_briefs", None) and \
+                   self._voice_briefs.get(day_utc) else None
+
+    def upsert_voice_reflection(self, reflection: dict) -> None:
+        if not hasattr(self, "_voice_reflections"):
+            self._voice_reflections: dict[str, dict] = {}
+        with self._sim_lock:
+            self._voice_reflections[reflection.get("day_utc", "")] = dict(reflection)
+
+    def get_voice_reflection(self, day_utc: str):
+        with self._sim_lock:
+            return dict((self._voice_reflections or {}).get(day_utc) or {}) \
+                if getattr(self, "_voice_reflections", None) and \
+                   self._voice_reflections.get(day_utc) else None
+
+    def upsert_voice_narration(self, trade_id: str, body: str) -> None:
+        if not hasattr(self, "_voice_narrations"):
+            self._voice_narrations: dict[str, str] = {}
+        with self._sim_lock:
+            self._voice_narrations[trade_id] = body
+
+    def get_voice_narration(self, trade_id: str):
+        with self._sim_lock:
+            return (getattr(self, "_voice_narrations", None) or {}).get(trade_id)
+
+    def upsert_commentary_dive(self, dive: dict) -> None:
+        if not hasattr(self, "_dive_cache"):
+            self._dive_cache: dict[str, dict] = {}
+        key = f"{(dive.get('symbol') or '').upper()}:{dive.get('inputs_hash') or ''}"
+        with self._sim_lock:
+            self._dive_cache[key] = dict(dive)
+
+    def get_commentary_dive(self, symbol: str, inputs_hash: str):
+        key = f"{(symbol or '').upper()}:{inputs_hash or ''}"
+        with self._sim_lock:
+            return dict((getattr(self, "_dive_cache", None) or {}).get(key) or {}) \
+                if getattr(self, "_dive_cache", None) and \
+                   self._dive_cache.get(key) else None

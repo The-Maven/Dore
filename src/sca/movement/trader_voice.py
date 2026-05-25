@@ -96,9 +96,8 @@ def generate_daily_brief(
       • recent_news  — top news items from brave_context
       • yesterday_pnl_usd — context anchor
 
-    Cached by UTC day; once written, it stays. Force-refresh only
-    when an operator explicitly asks for it (e.g. dramatic news
-    drops mid-day)."""
+    Cached by UTC day. Reads first from the store (durable across
+    replicas), falls back to the local JSON file. Writes both."""
     inputs = {
         "token_states": token_states,
         "recent_news": recent_news,
@@ -106,14 +105,30 @@ def generate_daily_brief(
     }
     fp = _fingerprint(inputs)
     path = _brief_path(day_utc)
-    with _VOICE_LOCK:
-        if path.exists() and not force_refresh:
-            try:
-                cached = json.loads(path.read_text(encoding="utf-8"))
-                if cached.get("inputs_hash") == fp:
-                    return DailyBrief(**cached)
-            except (OSError, json.JSONDecodeError):
-                pass
+    if not force_refresh:
+        # Store first (durable, multi-replica-safe)
+        try:
+            from sca.store import get_store
+            row = get_store().get_voice_brief(day_utc)
+            if row and row.get("inputs_hash") == fp:
+                return DailyBrief(
+                    day_utc=row.get("day_utc", day_utc),
+                    generated_at=str(row.get("generated_at", "")),
+                    body=row.get("body", ""),
+                    fallback=bool(row.get("fallback", False)),
+                    inputs_hash=fp,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        # Local cache fallback
+        with _VOICE_LOCK:
+            if path.exists():
+                try:
+                    cached = json.loads(path.read_text(encoding="utf-8"))
+                    if cached.get("inputs_hash") == fp:
+                        return DailyBrief(**cached)
+                except (OSError, json.JSONDecodeError):
+                    pass
 
     # Build the prompt. Keep it FACTUAL — give the LLM the data, ask
     # it for a narrative read, not a forecast.
@@ -185,6 +200,12 @@ def generate_daily_brief(
                 "trader_voice.cache_write_failed", level="warn",
                 kind="brief", error_class=type(exc).__name__,
             )
+    # v5.1: durable copy in the store
+    try:
+        from sca.store import get_store
+        get_store().upsert_voice_brief(asdict(brief))
+    except Exception:  # noqa: BLE001
+        pass
     return brief
 
 
@@ -213,6 +234,14 @@ def generate_trade_narration(trade: dict) -> str:
     Falls back to a templated rationale on LLM failure."""
     tid = trade.get("id") or ""
     if tid:
+        # Store first (durable, multi-replica-safe)
+        try:
+            from sca.store import get_store
+            stored = get_store().get_voice_narration(tid)
+            if stored:
+                return stored
+        except Exception:  # noqa: BLE001
+            pass
         path = _narration_path(tid)
         with _VOICE_LOCK:
             if path.exists():
@@ -278,6 +307,12 @@ def generate_trade_narration(trade: dict) -> str:
                     encoding="utf-8")
             except OSError:
                 pass
+        # v5.1: durable copy in the store
+        try:
+            from sca.store import get_store
+            get_store().upsert_voice_narration(tid, body)
+        except Exception:  # noqa: BLE001
+            pass
     return body
 
 
@@ -310,14 +345,30 @@ def generate_reflection(
     inputs = {"day": day_utc, "n_trades": len(resolved)}
     fp = _fingerprint({"trades": [t.get("id") for t in resolved]})
     path = _reflection_path(day_utc)
-    with _VOICE_LOCK:
-        if path.exists() and not force_refresh:
-            try:
-                cached = json.loads(path.read_text(encoding="utf-8"))
-                if cached.get("inputs_hash") == fp:
-                    return DailyReflection(**cached)
-            except (OSError, json.JSONDecodeError, TypeError):
-                pass
+    if not force_refresh:
+        # Store first (v5.1 durable cache)
+        try:
+            from sca.store import get_store
+            row = get_store().get_voice_reflection(day_utc)
+            if row and row.get("inputs_hash") == fp:
+                return DailyReflection(
+                    day_utc=row.get("day_utc", day_utc),
+                    generated_at=str(row.get("generated_at", "")),
+                    body=row.get("body", ""),
+                    stats=row.get("stats") or {},
+                    fallback=bool(row.get("fallback", False)),
+                    inputs_hash=fp,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        with _VOICE_LOCK:
+            if path.exists():
+                try:
+                    cached = json.loads(path.read_text(encoding="utf-8"))
+                    if cached.get("inputs_hash") == fp:
+                        return DailyReflection(**cached)
+                except (OSError, json.JSONDecodeError, TypeError):
+                    pass
 
     # Aggregate stats deterministically (the LLM gets ALREADY-computed
     # numbers — never asks it to do arithmetic on raw trade rows).
@@ -419,6 +470,12 @@ def generate_reflection(
                 "trader_voice.cache_write_failed", level="warn",
                 kind="reflection", error_class=type(exc).__name__,
             )
+    # v5.1: durable copy in the store
+    try:
+        from sca.store import get_store
+        get_store().upsert_voice_reflection(asdict(refl))
+    except Exception:  # noqa: BLE001
+        pass
     return refl
 
 

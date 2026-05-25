@@ -316,6 +316,23 @@ def generate_dive(*,
         "pl_lens": pl_lens, "citations": citations,
     })
     path = _dive_path(symbol, fp)
+    if not force_refresh:
+        # Store first (v5.1 durable cache)
+        try:
+            from sca.store import get_store
+            row = get_store().get_commentary_dive(symbol, fp)
+            if row:
+                return CommentaryDive(
+                    symbol=row.get("symbol", symbol),
+                    intro=row.get("intro", "") or "",
+                    sections=row.get("sections") or [],
+                    citations=row.get("citations") or [],
+                    fallback=bool(row.get("fallback", False)),
+                    generated_at=str(row.get("generated_at", "")),
+                    inputs_hash=fp,
+                )
+        except Exception:  # noqa: BLE001
+            pass
     with _DIVE_LOCK:
         if path.exists() and not force_refresh:
             try:
@@ -353,4 +370,10 @@ def generate_dive(*,
                 "commentary_dive.cache_write_failed", level="warn",
                 symbol=symbol, error_class=type(exc).__name__,
             )
+    # v5.1: durable copy in the store
+    try:
+        from sca.store import get_store
+        get_store().upsert_commentary_dive(asdict(dive))
+    except Exception:  # noqa: BLE001
+        pass
     return dive
