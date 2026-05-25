@@ -125,7 +125,8 @@ def _supply_series(symbol: str, limit: int = 60) -> list[float]:
 def _emit_for_symbol(symbol: str, kinds: list[str],
                      horizon_minutes: int,
                      *,
-                     max_in_flight: int | None = None) -> dict:
+                     max_in_flight: int | None = None,
+                     run_judge: bool = True) -> dict:
     """Build + persist one prediction per enabled kind for `symbol`.
     Returns a per-kind summary dict for observability.
 
@@ -283,22 +284,29 @@ def _emit_for_symbol(symbol: str, kinds: list[str],
             "confidence_word": f.confidence_word,
             "engine_notes": f.notes,
         }
-        try:
-            # web_ctx was fetched ONCE for the symbol above
-            # (coalesced across kinds — see cost-discipline notes in
-            # brave_context.py).
-            j = compose_judge(
-                judge_summary, sentence if forecasts else "",
-                used, calibration, web_context=web_ctx,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log_event(
-                "movement.ticker.judge_failed", level="warn",
-                symbol=symbol, kind=f.kind,
-                error_class=type(exc).__name__,
-            )
-            from sca.movement.judge import JudgeOutput
+        from sca.movement.judge import JudgeOutput
+        if not run_judge:
+            # Skip the LLM call for non-mover symbols to keep cycle
+            # cost bounded. The deterministic forecast row is still
+            # written; the UI falls back to engine prose for tokens
+            # without judge output.
             j = JudgeOutput(synthesis=None, insight=None, pitch=None)
+        else:
+            try:
+                # web_ctx was fetched ONCE for the symbol above
+                # (coalesced across kinds — see cost-discipline notes
+                # in brave_context.py).
+                j = compose_judge(
+                    judge_summary, sentence if forecasts else "",
+                    used, calibration, web_context=web_ctx,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log_event(
+                    "movement.ticker.judge_failed", level="warn",
+                    symbol=symbol, kind=f.kind,
+                    error_class=type(exc).__name__,
+                )
+                j = JudgeOutput(synthesis=None, insight=None, pitch=None)
 
         try:
             row = {
@@ -355,7 +363,30 @@ def _tick_once(cfg: Optional[dict] = None) -> dict:
     summary["peg_tick_refresh"] = peg_tick_runner.refresh_for_symbols(
         cfg["symbols"])
 
-    # 2. Emit predictions per symbol/kind. The in-flight cap is
+    # 2. Pick the "judge symbol" — the largest mover this cycle by
+    # |current peg deviation|. Only this symbol gets the LLM judge
+    # call. Others get the deterministic forecast without judge prose.
+    # Why: 12 symbols × judge call = 12 LLM calls per cycle, which
+    # was rate-limiting DeepSeek and producing empty responses. The
+    # editorial framing — "the judge focuses on what's moving" — is
+    # also stronger than spraying synthesis on every quiet token.
+    from sca.store import get_store as _gs
+    _store = _gs()
+    largest_mover = None
+    largest_abs = -1.0
+    for symbol in cfg["symbols"]:
+        try:
+            recent = _store.list_peg_ticks(symbol, limit=1) or []
+        except Exception:  # noqa: BLE001
+            recent = []
+        if recent:
+            v = float(recent[0].get("deviation_bps") or 0.0)
+            if abs(v) > largest_abs:
+                largest_abs = abs(v)
+                largest_mover = symbol
+    summary["judge_symbol"] = largest_mover
+
+    # 3. Emit predictions per symbol/kind. The in-flight cap is
     # honored per-symbol so a single misconfigured token can't drag
     # the rest of the cycle.
     in_flight_cap = cfg.get("max_in_flight_per_symbol", 24)
@@ -363,6 +394,7 @@ def _tick_once(cfg: Optional[dict] = None) -> dict:
         per = _emit_for_symbol(
             symbol, cfg["kinds"], cfg["horizon_minutes"],
             max_in_flight=in_flight_cap,
+            run_judge=(symbol == largest_mover),
         )
         summary["per_symbol"].append(per)
 

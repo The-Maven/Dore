@@ -2278,6 +2278,8 @@ def simulator_feed() -> dict[str, Any]:
         "movement.judge.citation_forged",
         "movement.judge.length_cap_triggered",
         "movement.judge.llm_unavailable",
+        "movement.judge.llm_failed",
+        "movement.judge.parse_failed",
         "movement.config.updated",
         "peg_price.dispute",
         "peg_price.no_source_responded",

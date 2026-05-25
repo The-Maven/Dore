@@ -74,24 +74,15 @@ class JudgeOutput:
 
 # ── prompt ───────────────────────────────────────────────────────────
 _JUDGE_SYSTEM = """\
-You are the judge layer of a stablecoin forecasting product. You \
-read a deterministic forecast (numbers + bands), a cited driver list \
-(verified candidates from our corpus + observability events), a \
-WEB CONTEXT block (live Brave search — UNVERIFIED leads), and the \
-model's recent calibration record. You produce three short outputs.
+You are a stablecoin forecast judge. Output a SHORT JSON object \
+with three fields. Be terse. Do not exceed the word limits.
 
-Output schema — return EXACTLY this JSON, no preamble:
-{
-  "synthesis": "one paragraph (≤ 80 words) restating the forecast in \
-plain English. Cite numbers verbatim. Name uncertainty with the \
-phrase 'inside the X% band' instead of weasel words.",
-  "insight": "one sentence (≤ 30 words) on what this means for a \
-sophisticated investor or compliance team. No future-tense pitching.",
-  "pitch": "one sentence (≤ 25 words) describing ONE concrete \
-consideration the operator should weigh. Acceptable values include: \
-a watch action, an exposure check, a reconcile step, or the literal \
-string 'no action'."
-}
+Schema — return ONLY this JSON, NO preamble, NO trailing prose:
+{"synthesis":"<= 40 words, ONE sentence, plain English restating \
+the forecast. Cite the point and one band: e.g. 'USDC at -1.5bp \
+inside the 50% band [-2.5, 0.0]'. No filler.",
+ "insight":"<= 20 words, ONE clause on what it means.",
+ "pitch":"<= 12 words. Often the literal 'no action'."}
 
 Strict rules:
 1. Every number you cite must be in the forecast. Never invent one.
@@ -144,16 +135,36 @@ def compose(forecast_summary: dict,
         attribution_candidates, calibration_record,
         web_context or [],
     )
+    raw = ""
     try:
+        # Bumped to 600 tokens — multiline JSON with the schema +
+        # the three full sentences hits ~400 chars; 600 gives the
+        # model headroom so a slightly verbose response isn't
+        # truncated. One retry on empty body (DeepSeek occasionally
+        # returns a 200 with content="" under rate pressure; a
+        # single retry usually resolves it).
+        # 240 tokens at low temperature — tight forecast prose
+        # rarely exceeds 50 words for synthesis + 20 for insight +
+        # 12 for pitch. ~280-360 chars total; 240 tokens (~960 chars)
+        # gives 2x headroom. The tighter cap also discourages the
+        # LLM from rambling into a truncated mid-string crash.
         raw = llm_client.complete(
-            system=_JUDGE_SYSTEM, prompt=prompt, max_tokens=400,
+            system=_JUDGE_SYSTEM, prompt=prompt, max_tokens=240,
         )
+        if not raw or not raw.strip():
+            log_event("movement.judge.empty_response_retrying", level="info")
+            raw = llm_client.complete(
+                system=_JUDGE_SYSTEM, prompt=prompt, max_tokens=240,
+            )
     except Exception as exc:  # noqa: BLE001
         log_event(
             "movement.judge.llm_failed", level="warn",
             error_class=type(exc).__name__,
             error_message=str(exc)[:200],
         )
+        return JudgeOutput(synthesis=None, insight=None, pitch=None)
+    if not raw or not raw.strip():
+        log_event("movement.judge.empty_after_retry", level="warn")
         return JudgeOutput(synthesis=None, insight=None, pitch=None)
 
     parsed = _parse_json_loose(raw)
@@ -264,7 +275,11 @@ def _build_prompt(forecast_summary: dict, attribution_sentence: str,
 def _parse_json_loose(raw: str) -> Optional[dict]:
     """Tolerant JSON extraction: handles fenced code blocks, trailing
     text, and the occasional 'here is the JSON:' preamble. Returns
-    None if no parseable object is found."""
+    None if no parseable object is found.
+
+    Salvage path: if the body is truncated mid-string (LLM hit
+    max_tokens), try to recover whichever fields parsed cleanly so
+    the row can still ship with at least synthesis populated."""
     import json
     s = (raw or "").strip()
     if not s:
@@ -273,19 +288,35 @@ def _parse_json_loose(raw: str) -> Optional[dict]:
     if s.startswith("```"):
         s = re.sub(r"^```(?:json)?\s*", "", s)
         s = re.sub(r"\s*```$", "", s).strip()
-    # Find the outermost { ... }.
     start = s.find("{")
+    if start == -1:
+        return None
     end = s.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    candidate = s[start:end + 1]
-    try:
-        out = json.loads(candidate)
-        if isinstance(out, dict):
-            return out
-        return None
-    except json.JSONDecodeError:
-        return None
+    if end > start:
+        candidate = s[start:end + 1]
+        try:
+            out = json.loads(candidate)
+            if isinstance(out, dict):
+                return out
+        except json.JSONDecodeError:
+            pass  # fall through to salvage
+
+    # SALVAGE: pull individual string fields with a regex. This
+    # handles truncated bodies where the LLM ran out of tokens
+    # mid-pitch. We give up the field that's truncated but keep
+    # whatever's complete.
+    salvaged: dict[str, str] = {}
+    for field in ("synthesis", "insight", "pitch"):
+        m = re.search(
+            r'"' + field + r'"\s*:\s*"((?:[^"\\]|\\.)*)"', s)
+        if m:
+            try:
+                # The captured group is a JSON string literal body
+                # without the surrounding quotes; decode escapes.
+                salvaged[field] = json.loads('"' + m.group(1) + '"')
+            except (json.JSONDecodeError, ValueError):
+                salvaged[field] = m.group(1)
+    return salvaged or None
 
 
 def _clean(text, *, field: str | None = None) -> Optional[str]:
