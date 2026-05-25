@@ -53,25 +53,45 @@ PERSONA_NAME = "The Discipline Trader"
 PERSONA_TAGLINE = (
     "patient mean-reversion arbitrageur — profit-focused, risk-managed"
 )
-# Capital sizing (v2):
-#   • The trader operates against a $10,000 DAILY allocation — any
-#     new trade opened today must fit inside the remaining day budget.
-#     The daily clock is UTC-keyed and resets at 00:00 UTC.
-#   • A single trade is sized at notional × cone-shrink (0.25–1.0).
-#   • The notional cap (MAX_OPEN_NOTIONAL) is the cross-day cap on
-#     concurrent open positions — even if today is fresh, we won't
-#     stack more than 5 open trades at once.
+# Capital sizing (v3 — May 2026 rework):
+#   • $10,000 daily budget per UTC day, fresh at 00:00 UTC.
+#   • Default position $2,000 — fits 5 full-size trades per day so the
+#     tape has variety. Position scales DOWN with cone width + UP with
+#     edge magnitude (see _size_position).
+#   • Concurrent cap raised to $20,000 (10 trades at default size) so
+#     the trader isn't constantly bumping the cap.
+#
+# Entry rule (v3): switched from "cone reaches peg" to "trade the
+# edge." Detail:
+#   - Below peg → look at p80_high. If p80_high > current_bps, the
+#     model expects an upward move of at least (p80_high - current).
+#     Take a long; size scales with that gap.
+#   - Above peg → look at p80_low. If p80_low < current_bps, the
+#     model expects a pullback. Take a short.
+#   - Demand at least MIN_EDGE_BPS of expected movement before entering;
+#     anything smaller is microstructure noise.
+#
+# This unlocks the common case where the cone is narrow but offset
+# from current (the model says "I think peg moves slightly toward 0"),
+# without requiring the cone to fully bridge to peg.
 DAILY_BUDGET_USD = 10_000.0     # USD — resets at 00:00 UTC daily
-NOTIONAL_PER_TRADE = 10_000.0   # full position when cone is normal
-MAX_OPEN_NOTIONAL = 50_000.0    # 5 concurrent trades absolute cap
-ENTRY_THRESHOLD_BPS = 4.0       # don't trade peg deviations smaller than 4bp
-TRADER_VERSION = "discipline_v2"
+NOTIONAL_PER_TRADE = 2_000.0    # default per-trade size
+MAX_OPEN_NOTIONAL = 20_000.0    # 10 concurrent trades absolute cap
+ENTRY_THRESHOLD_BPS = 3.0       # only trade meaningful deviations
+MIN_EDGE_BPS = 1.0              # minimum predicted movement to enter
+EDGE_FULL_SIZE_BPS = 5.0        # edge at which we deploy full notional
+TRADER_VERSION = "discipline_v3"
 
 
 @dataclass
 class Trade:
     """One simulated trade. Stored append-only; status migrates from
-    'open' → 'resolved' once the prediction horizon elapses."""
+    'open' → 'resolved' once the prediction horizon elapses.
+
+    v3 fields carry the full audit trail a professional decision-
+    maker needs: which sources reported what at entry + exit, the
+    consensus state at each point, and the exact forecast that
+    triggered the trade. This is the "receipt" the UI renders."""
     id: str
     symbol: str
     direction: str  # 'long' (expect peg up) | 'short' (expect peg down)
@@ -88,6 +108,18 @@ class Trade:
     rationale: str            # plain-English why we took the trade
     # v2 fields — used for daily budget tracking + the story-over-time UX.
     day_utc: str = ""         # YYYY-MM-DD, set on open; never mutated
+    # v3 fields — the receipt audit trail.
+    edge_bps: float = 0.0                # predicted in-favour movement at entry
+    entry_sources: list = field(default_factory=list)
+        # ^ list[{name, price, fetched_at}] — per-source snapshot at entry
+    entry_consensus_kind: str = ""       # 'agreed' | 'single' | 'disputed'
+    entry_max_disagreement_bps: float = 0.0
+    entry_consensus_price: Optional[float] = None  # canonical price used
+    forecast_p50_low: Optional[float] = None
+    forecast_p50_high: Optional[float] = None
+    forecast_p95_low: Optional[float] = None
+    forecast_p95_high: Optional[float] = None
+    horizon_minutes: Optional[int] = None
     # Filled when the trade resolves:
     status: str = "open"      # 'open' | 'resolved'
     exit_bps: Optional[float] = None
@@ -96,6 +128,15 @@ class Trade:
     pnl_bps: Optional[float] = None  # signed bp move in our favour
     outcome: str = ""         # 'WIN' | 'LOSS' | 'FLAT' (resolved trades only)
     outcome_note: str = ""
+    # Exit-side receipt
+    exit_sources: list = field(default_factory=list)
+    exit_consensus_kind: str = ""
+    exit_max_disagreement_bps: float = 0.0
+    exit_consensus_price: Optional[float] = None
+    # Calibration: did the actual outcome land where the model expected?
+    landed_inside_p50: Optional[bool] = None
+    landed_inside_p80: Optional[bool] = None
+    landed_inside_p95: Optional[bool] = None
 
 
 # ── persistence ──────────────────────────────────────────────────────
@@ -129,6 +170,20 @@ def _save_trades(trades: list[Trade]) -> None:
         atomic_write_json(TRADER_PATH, rows)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _safe_float(v) -> Optional[float]:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(v) -> Optional[int]:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def all_trades() -> list[dict]:
@@ -172,62 +227,77 @@ def _decide_to_trade(
             "— regime change in progress, not the time to add risk"
         )
 
-    # Mean-reversion thesis. The deterministic forecast model (EWMA)
-    # is sticky — it predicts the recent average, which is close to
-    # the current value when the regime is stable. A market-maker
-    # taking peg-reversion bets does NOT wait for the model to PREDICT
-    # the reversion; they bet that the cone INCLUDES peg, meaning the
-    # model considers 0bp a plausible outcome over the horizon.
+    # v3 mean-reversion thesis. The EWMA forecast is sticky, so the
+    # old rule ("cone reaches peg") was almost never satisfied on
+    # tokens with persistent depegs. Real market-makers trade the
+    # EDGE — the gap between where price is now and where the model
+    # thinks it'll go, even if neither point is at peg.
     #
-    # Rule: take a position OPPOSITE to current_bps when the p80 band
-    # straddles or reaches toward 0. Strength of edge = how much of
-    # the deviation gets covered by the cone's near edge to 0.
+    # Below peg → check p80_high (the optimistic edge of the cone).
+    #   If p80_high > current_bps, the model expects at least
+    #   (p80_high - current_bps) bp of upward movement. That's our
+    #   edge.
+    # Above peg → mirror: check p80_low. The expected pullback is
+    #   (current_bps - p80_low).
     if current_bps < 0:
-        # Below peg → long the token, profit if peg recovers toward 0.
-        # The cone must REACH toward peg (p80_high >= 0 is the
-        # strong signal; near-zero also acceptable).
-        slack_to_peg = p80_high  # how far the upper edge is above 0
-        if slack_to_peg < -1.0:
+        edge_bps = p80_high - current_bps
+        if edge_bps < MIN_EDGE_BPS:
             return False, (
-                f"model's 80% band tops out at {p80_high:+.1f}bp — "
-                f"doesn't reach toward peg from {current_bps:+.1f}bp. No "
-                f"mean-reversion edge."
+                f"model's optimistic edge ({p80_high:+.2f}bp) is only "
+                f"{edge_bps:.2f}bp above current — below {MIN_EDGE_BPS}bp "
+                "noise floor"
             )
-        recovery_target = max(0.0, p80_high) if slack_to_peg > 0 else point
+        target = (max(0.0, p80_high) if p80_high > 0 else p80_high)
         return True, (
-            f"{symbol} trading {abs(current_bps):.2f}bp below peg with "
-            f"the model's 80% band reaching up to {p80_high:+.1f}bp. "
-            f"Long position takes the recovery toward "
-            f"{recovery_target:+.1f}bp if reversion materialises."
+            f"{symbol} trading {abs(current_bps):.2f}bp below peg. "
+            f"Model's optimistic 80% edge ({p80_high:+.2f}bp) is "
+            f"{edge_bps:.2f}bp above current — long takes the recovery "
+            f"toward {target:+.2f}bp."
         )
     if current_bps > 0:
-        # Above peg → short, profit if peg pulls back toward 0.
-        slack_to_peg = -p80_low
-        if slack_to_peg < -1.0:
+        edge_bps = current_bps - p80_low
+        if edge_bps < MIN_EDGE_BPS:
             return False, (
-                f"model's 80% band bottoms out at {p80_low:+.1f}bp — "
-                f"doesn't reach down toward peg from {current_bps:+.1f}bp. "
-                f"No mean-reversion edge."
+                f"model's pessimistic edge ({p80_low:+.2f}bp) is only "
+                f"{edge_bps:.2f}bp below current — below {MIN_EDGE_BPS}bp "
+                "noise floor"
             )
-        pullback_target = min(0.0, p80_low) if slack_to_peg > 0 else point
+        target = (min(0.0, p80_low) if p80_low < 0 else p80_low)
         return True, (
-            f"{symbol} trading {current_bps:.2f}bp above peg with the "
-            f"model's 80% band reaching down to {p80_low:+.1f}bp. "
-            f"Short position takes the pullback toward "
-            f"{pullback_target:+.1f}bp if reversion materialises."
+            f"{symbol} trading {current_bps:.2f}bp above peg. "
+            f"Model's pessimistic 80% edge ({p80_low:+.2f}bp) is "
+            f"{edge_bps:.2f}bp below current — short takes the pullback "
+            f"toward {target:+.2f}bp."
         )
     return False, "no deviation to trade"
 
 
-def _size_position(cone_half_bps: float, normal_bps: Optional[float]) -> float:
-    """Scale the notional down when uncertainty is high. A cone twice
-    the normal width gets half the position. Bounded between 25% and
-    100% of the per-trade notional."""
+def _size_position(
+    cone_half_bps: float,
+    edge_bps: float,
+    normal_bps: Optional[float],
+) -> float:
+    """Compute the position size for this opportunity.
+
+    Two factors:
+      • Edge magnitude — how much movement the model predicts in our
+        favour. Larger edge = larger position. Linear scaling to
+        EDGE_FULL_SIZE_BPS, capped at 1.0.
+      • Cone width — how UNCERTAIN the model is. A cone twice the
+        token's normal width halves the position. Floored at 0.25
+        of the default notional so we don't open dust positions.
+
+    The final size is base × edge_scale × cone_scale.
+    """
+    edge_scale = min(1.0, max(0.0, edge_bps / EDGE_FULL_SIZE_BPS))
     if normal_bps is None or normal_bps <= 0:
-        return NOTIONAL_PER_TRADE
-    ratio = cone_half_bps / normal_bps
-    scale = max(0.25, min(1.0, 1.0 / max(ratio, 1.0)))
-    return NOTIONAL_PER_TRADE * scale
+        cone_scale = 1.0
+    else:
+        ratio = cone_half_bps / normal_bps
+        cone_scale = max(0.25, min(1.0, 1.0 / max(ratio, 1.0)))
+    # Floor at 0.25 of default so trades aren't sub-meaningful.
+    combined = max(0.25, edge_scale * cone_scale)
+    return NOTIONAL_PER_TRADE * combined
 
 
 def _build_one_token_block(store, raw_sym: str) -> dict | None:
@@ -360,6 +430,19 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
             pred = tok.get("latest_prediction") or {}
             meta = tok.get("meta") or {}
             current = tok.get("current_bps")
+            consensus = tok.get("consensus") or {}
+            # Production-discipline: refuse to enter on DISPUTED
+            # consensus. When the peg sources disagree by >5bp, the
+            # entry price is contested — a real trader wouldn't size
+            # in until ground truth resolves.
+            if consensus.get("kind") == "disputed":
+                log_event(
+                    "trader.skipped.disputed_consensus", level="info",
+                    symbol=sym,
+                    max_disagreement_bps=consensus.get(
+                        "max_disagreement_bps"),
+                )
+                continue
             should, reason = _decide_to_trade(sym, current, pred, meta)
             if not should:
                 continue
@@ -374,13 +457,7 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                     cap=MAX_OPEN_NOTIONAL,
                 )
                 break
-            # Direction is keyed off the sign of current_bps. The
-            # _decide_to_trade gate above already verifies current is
-            # a finite number AND |current| >= ENTRY_THRESHOLD_BPS,
-            # so by here we know it's a non-zero number. Belt-and-
-            # braces: if a future _decide_to_trade refactor lets None
-            # through, fail closed (skip the trade) rather than open
-            # an "unsigned" short by accident.
+            # Direction null-safety (audit-fix retained from v2).
             if not isinstance(current, (int, float)):
                 log_event(
                     "trader.skipped.non_numeric_current",
@@ -390,12 +467,14 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 continue
             direction = "long" if current < 0 else "short"
             cone_half = (pred["p80_high"] - pred["p80_low"]) / 2
-            notional = _size_position(cone_half, meta.get("cone_normal_bps"))
-            # Day-budget gate. If we can't fit the FULL sized position,
-            # shrink it to whatever's left today. Refuse the trade
-            # entirely if the budget remainder is less than 25% of the
-            # default position (we'd be opening a token-position too
-            # small to matter).
+            # Compute the edge for sizing (in-favour predicted move).
+            if direction == "long":
+                edge_bps = pred["p80_high"] - current
+            else:
+                edge_bps = current - pred["p80_low"]
+            notional = _size_position(
+                cone_half, edge_bps, meta.get("cone_normal_bps"))
+            # Day-budget gate.
             if notional > day_budget_remaining:
                 if day_budget_remaining < NOTIONAL_PER_TRADE * 0.25:
                     log_event(
@@ -407,6 +486,19 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                     )
                     break
                 notional = round(day_budget_remaining, 2)
+
+            # Entry source snapshot for the receipt audit trail.
+            sources_snapshot = list(consensus.get("sources") or [])
+            entry_consensus_price = None
+            for s in sources_snapshot:
+                p = s.get("price")
+                if isinstance(p, (int, float)) and entry_consensus_price is None:
+                    entry_consensus_price = float(p)
+            # Prefer the consensus_price field if present; else mean
+            # of source readings; else infer from current_bps.
+            if entry_consensus_price is None and isinstance(current, (int, float)):
+                entry_consensus_price = 1.0 + (current / 10_000.0)
+
             trade = Trade(
                 id=f"t{int(time.time() * 1000)}-{sym}",
                 symbol=sym,
@@ -423,6 +515,17 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 confidence_word=pred.get("confidence_word", ""),
                 rationale=reason,
                 day_utc=today_utc,
+                edge_bps=round(edge_bps, 4),
+                entry_sources=sources_snapshot,
+                entry_consensus_kind=consensus.get("kind", "") or "",
+                entry_max_disagreement_bps=float(
+                    consensus.get("max_disagreement_bps") or 0.0),
+                entry_consensus_price=entry_consensus_price,
+                forecast_p50_low=_safe_float(pred.get("p50_low")),
+                forecast_p50_high=_safe_float(pred.get("p50_high")),
+                forecast_p95_low=_safe_float(pred.get("p95_low")),
+                forecast_p95_high=_safe_float(pred.get("p95_high")),
+                horizon_minutes=_safe_int(pred.get("horizon_minutes")),
             )
             trades.append(trade)
             opened_now.append(trade)
@@ -432,7 +535,9 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 "trader.trade.opened", level="info",
                 symbol=sym, direction=direction,
                 entry_bps=current, target_bps=pred["point"],
-                notional_usd=notional,
+                notional_usd=notional, edge_bps=round(edge_bps, 2),
+                consensus_kind=consensus.get("kind", ""),
+                source_count=len(sources_snapshot),
             )
 
         # 2. Mark-to-market + resolve open trades. For each open
@@ -488,6 +593,29 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 f"{current:+.2f}bp ({trade.outcome} "
                 f"${'+' if pnl_usd >= 0 else '-'}{abs(pnl_usd):.2f})"
             )
+            # Exit-side receipt: snapshot the source readings + the
+            # consensus state at exit so the receipt shows the full
+            # round-trip audit trail.
+            exit_consensus = tok.get("consensus") or {}
+            trade.exit_sources = list(exit_consensus.get("sources") or [])
+            trade.exit_consensus_kind = exit_consensus.get("kind", "") or ""
+            trade.exit_max_disagreement_bps = float(
+                exit_consensus.get("max_disagreement_bps") or 0.0)
+            # Convert bp → price for the canonical exit_consensus_price.
+            trade.exit_consensus_price = 1.0 + (current / 10_000.0)
+            # Calibration: did the actual exit land inside the model's
+            # forecast bands? Used by the LLM judge for trust signal.
+            if trade.forecast_p50_low is not None \
+                    and trade.forecast_p50_high is not None:
+                trade.landed_inside_p50 = (
+                    trade.forecast_p50_low <= current <= trade.forecast_p50_high)
+            if trade.p80_low is not None and trade.p80_high is not None:
+                trade.landed_inside_p80 = (
+                    trade.p80_low <= current <= trade.p80_high)
+            if trade.forecast_p95_low is not None \
+                    and trade.forecast_p95_high is not None:
+                trade.landed_inside_p95 = (
+                    trade.forecast_p95_low <= current <= trade.forecast_p95_high)
             log_event(
                 "trader.trade.resolved", level="info",
                 trade_id=trade.id, symbol=trade.symbol,

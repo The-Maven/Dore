@@ -2563,13 +2563,17 @@ def simulator_trader() -> dict[str, Any]:
       - persona / tagline / version (editorial framing)
       - open[]: currently-open simulated trades (oldest first → newest)
       - resolved[]: last N closed trades with P&L
-      - track_record: aggregate wins/losses/net PnL/win-rate
+      - track_record: aggregate wins/losses/net PnL/win-rate +
+        daily budget tracking, equity curve, streak, daily ledger,
+        best/worst day
 
     Deterministic — the trader runs inside the ticker cycle. This
     endpoint just reads the persisted store, so it's cache-friendly
     and never blocks on the LLM.
     """
-    from sca.movement.trader import all_trades, track_record, PERSONA_NAME, PERSONA_TAGLINE
+    from sca.movement.trader import (
+        all_trades, track_record, PERSONA_NAME, PERSONA_TAGLINE,
+    )
     trades = all_trades()  # already sorted newest-first
     opens = [t for t in trades if t.get("status") == "open"]
     resolves = [t for t in trades if t.get("status") == "resolved"]
@@ -2580,6 +2584,19 @@ def simulator_trader() -> dict[str, Any]:
         "resolved": resolves[:20],      # last 20 resolved
         "track_record": track_record(),
     }
+
+
+@app.get("/api/simulator/trader/trade/{trade_id}")
+def simulator_trader_trade(trade_id: str) -> dict[str, Any]:
+    """Full trade receipt — used by the UI for the "receipt detail"
+    modal. Returns every field on the trade so a professional reader
+    can audit entry sources, consensus state, forecast bands at
+    entry, exit-side readings, and the calibration outcome."""
+    from sca.movement.trader import all_trades
+    for t in all_trades():
+        if t.get("id") == trade_id:
+            return t
+    raise HTTPException(404, f"no trade with id: {trade_id}")
 
 
 @app.get("/api/simulator/commentary/{symbol}")

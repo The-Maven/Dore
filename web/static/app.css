@@ -6387,6 +6387,181 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 :root[data-theme="light"] .sim-trader-medal-worst .sim-trader-medal-lbl,
 :root[data-theme="light"] .sim-trader-medal-worst .sim-trader-medal-val { color: #B43E3E; }
 
+/* ── TRADE RECEIPT (collapsible per-card audit trail) ────────── */
+.sim-trade-receipt-toggle {
+  margin-top: 6px;
+  align-self: flex-start;
+  background: rgba(212, 162, 74, 0.06);
+  color: var(--sim-amber, #D4A24A);
+  border: 1px solid rgba(212, 162, 74, 0.22);
+  border-radius: 2px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: background 120ms ease-out;
+}
+.sim-trade-receipt-toggle:hover {
+  background: rgba(212, 162, 74, 0.14);
+}
+.sim-trade-receipt {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(212, 162, 74, 0.14);
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 200ms ease-out, max-height 240ms cubic-bezier(0.2, 0.9, 0.1, 1);
+  overflow: hidden;
+}
+.sim-trade-receipt-hidden {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-top: 0;
+  border-width: 0;
+}
+.sim-trade-receipt-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sim-trade-receipt-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  border-bottom: 1px dashed rgba(212, 162, 74, 0.14);
+  padding-bottom: 3px;
+}
+.sim-trade-receipt-tag {
+  color: var(--sim-amber, #D4A24A);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+.sim-trade-receipt-sub {
+  color: var(--muted-2, #9A9590);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+.sim-trade-receipt-srcs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sim-trade-receipt-src-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 80px;
+  gap: 10px;
+  align-items: baseline;
+  padding: 1px 0;
+}
+.sim-trade-receipt-venue {
+  color: var(--paper, #EFEAE0);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  font-size: 9px;
+}
+.sim-trade-receipt-price {
+  color: var(--paper, #EFEAE0);
+  font-weight: 600;
+}
+.sim-trade-receipt-tstamp {
+  color: var(--muted-2, #9A9590);
+  font-size: 9px;
+  text-align: right;
+}
+.sim-trade-receipt-empty {
+  color: var(--muted, #6E6B66);
+  font-style: italic;
+  font-size: 10px;
+}
+.sim-trade-receipt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 2px;
+}
+.sim-trade-receipt-meta-lbl {
+  color: var(--muted-2, #9A9590);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.10em;
+}
+.sim-trade-receipt-meta-val {
+  color: var(--paper, #EFEAE0);
+  font-weight: 600;
+}
+.sim-trade-receipt-ck-ok   { color: var(--sim-up, #4AF6C3); }
+.sim-trade-receipt-ck-warn { color: #FF8C1E; }
+.sim-trade-receipt-ck-bad  { color: var(--sim-down, #FF433D); }
+
+.sim-trade-receipt-fc-grid {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  gap: 4px 12px;
+  align-items: baseline;
+}
+.sim-trade-receipt-edge {
+  color: var(--sim-amber, #D4A24A);
+}
+
+.sim-trade-receipt-cal-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.sim-trade-receipt-cal-pip {
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  border: 1px solid rgba(212, 162, 74, 0.18);
+  color: var(--muted-2, #9A9590);
+  background: rgba(212, 162, 74, 0.04);
+}
+.sim-trade-receipt-cal-in {
+  background: rgba(74, 246, 195, 0.10);
+  border-color: rgba(74, 246, 195, 0.38);
+  color: var(--sim-up, #4AF6C3);
+}
+.sim-trade-receipt-cal-out {
+  background: rgba(255, 67, 61, 0.08);
+  border-color: rgba(255, 67, 61, 0.32);
+  color: var(--sim-down, #FF433D);
+}
+
+:root[data-theme="light"] .sim-trade-receipt {
+  background: rgba(28, 26, 20, 0.04);
+  border-color: rgba(212, 162, 74, 0.24);
+}
+:root[data-theme="light"] .sim-trade-receipt-tag,
+:root[data-theme="light"] .sim-trade-receipt-edge {
+  color: #8B6720;
+}
+:root[data-theme="light"] .sim-trade-receipt-cal-in {
+  background: rgba(40, 112, 82, 0.10);
+  border-color: rgba(40, 112, 82, 0.38);
+  color: #287052;
+}
+:root[data-theme="light"] .sim-trade-receipt-cal-out {
+  background: rgba(180, 62, 62, 0.10);
+  border-color: rgba(180, 62, 62, 0.38);
+  color: #B43E3E;
+}
+:root[data-theme="light"] .sim-trade-receipt-ck-ok { color: #287052; }
+:root[data-theme="light"] .sim-trade-receipt-ck-bad { color: #B43E3E; }
+
 /* Recent settlements strip */
 .sim-trader-recent {
   display: flex;

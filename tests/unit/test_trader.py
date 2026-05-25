@@ -156,10 +156,12 @@ def test_does_not_duplicate_open_trade_for_same_prediction():
 
 def test_caps_total_open_notional(monkeypatch):
     """Trader refuses to open more than MAX_OPEN_NOTIONAL across all
-    symbols. Raise the daily budget for this test so the concurrent
-    cap (not the daily one) is what bites — that's what we're testing."""
-    # Lift daily budget so we hit the concurrent cap first.
+    symbols. Set per-trade notional high so we hit the cap quickly."""
+    # v3 default: $2k per trade, $20k cap → 10 trades fit. Raise the
+    # default size to $5k so 4 trades exhaust the $20k concurrent cap.
     monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 200_000.0)
+    monkeypatch.setattr(trader, "NOTIONAL_PER_TRADE", 5_000.0)
+    monkeypatch.setattr(trader, "MAX_OPEN_NOTIONAL", 20_000.0)
     feeds = []
     for i, sym in enumerate(["USDC", "USDT", "DAI", "PYUSD", "USDP", "TUSD"]):
         feeds.append({
@@ -173,14 +175,17 @@ def test_caps_total_open_notional(monkeypatch):
             },
         })
     opened = trader.evaluate_cycle(feeds, now_iso="2026-05-25T11:00:00+00:00")
-    # First 5 should open (5 × 10k = 50k concurrent cap); the 6th refused.
-    assert len(opened) == 5
+    # First 4 fit ($20k cap / $5k each); 5th and 6th refused.
+    assert len(opened) == 4
 
 
 def test_caps_daily_budget(monkeypatch):
-    """New v2 contract: even with concurrent slots free, the trader
-    refuses to open if today's $10,000 allocation is exhausted."""
-    # Use the default $10k daily — only one full position fits.
+    """v3 contract: even with concurrent slots free, the trader
+    refuses to open if today's $10,000 daily budget is exhausted.
+
+    Set per-trade to $10k so a single trade exhausts the budget."""
+    monkeypatch.setattr(trader, "NOTIONAL_PER_TRADE", 10_000.0)
+    monkeypatch.setattr(trader, "MAX_OPEN_NOTIONAL", 50_000.0)
     feeds = []
     for i, sym in enumerate(["USDC", "USDT", "DAI"]):
         feeds.append({
@@ -194,9 +199,7 @@ def test_caps_daily_budget(monkeypatch):
             },
         })
     opened = trader.evaluate_cycle(feeds, now_iso="2026-05-25T11:00:00+00:00")
-    # Only one trade fits the $10k daily budget at full notional.
     assert len(opened) == 1
-    # Trade carries the day_utc tag for budget tracking
     assert opened[0].day_utc == "2026-05-25"
 
 
@@ -439,13 +442,248 @@ def test_build_token_blocks_handles_malformed_context(tmp_path, monkeypatch):
     assert block["meta"]["cone_alert_bps"] is None
 
 
+def test_v3_refuses_to_trade_on_disputed_consensus():
+    """Production discipline: peg sources disagreeing by >5bp means
+    the entry price is contested. Refuse to size in until ground
+    truth resolves."""
+    feed = [{
+        "symbol": "USDC", "current_bps": -10.0,
+        "consensus": {
+            "kind": "disputed",
+            "max_disagreement_bps": 7.2,
+            "sources": [
+                {"name": "coinbase", "price": 0.99990, "fetched_at": 100},
+                {"name": "kraken", "price": 0.99997, "fetched_at": 100},
+            ],
+        },
+        "meta": {"cone_normal_bps": 5, "cone_alert_bps": 25},
+        "latest_prediction": {
+            "made_at": "p1", "resolves_at": "2030-01-01T00:00:00+00:00",
+            "point": -2.0, "p80_low": -7.0, "p80_high": 3.0,
+            "confidence_word": "likely",
+        },
+    }]
+    opened = trader.evaluate_cycle(feed, now_iso="2026-05-25T11:00:00+00:00")
+    assert opened == [], (
+        "must not enter a trade while peg sources are disputed — "
+        "ground truth is contested")
+
+
+def test_v3_captures_full_receipt_audit_trail():
+    """v3 contract: every trade carries the per-source readings + the
+    consensus state at entry. The UI renders this as a receipt."""
+    feed = [{
+        "symbol": "USDC", "current_bps": -10.0,
+        "consensus": {
+            "kind": "agreed", "max_disagreement_bps": 0.4,
+            "sources": [
+                {"name": "coinbase", "price": 0.99899, "fetched_at": 100},
+                {"name": "kraken", "price": 0.99903, "fetched_at": 100.5},
+                {"name": "coingecko", "price": 0.99901, "fetched_at": 100.7},
+            ],
+        },
+        "meta": {"cone_normal_bps": 5, "cone_alert_bps": 25},
+        "latest_prediction": {
+            "made_at": "p1", "resolves_at": "2030-01-01T00:00:00+00:00",
+            "point": -2.0, "p50_low": -5.0, "p50_high": 1.0,
+            "p80_low": -7.0, "p80_high": 3.0,
+            "p95_low": -10.0, "p95_high": 6.0,
+            "horizon_minutes": 5, "confidence_word": "likely",
+        },
+    }]
+    opened = trader.evaluate_cycle(feed, now_iso="2026-05-25T11:00:00+00:00")
+    assert len(opened) == 1
+    t = opened[0]
+    # Receipt: source snapshot + consensus state + full forecast bands.
+    assert t.entry_consensus_kind == "agreed"
+    assert len(t.entry_sources) == 3
+    assert {s["name"] for s in t.entry_sources} == {
+        "coinbase", "kraken", "coingecko"}
+    assert abs(t.entry_max_disagreement_bps - 0.4) < 1e-6
+    assert t.forecast_p50_low == -5.0
+    assert t.forecast_p95_high == 6.0
+    assert t.horizon_minutes == 5
+    assert t.edge_bps > 0
+    # Edge for long-from-below-peg: p80_high - current = 3 - (-10) = 13
+    assert abs(t.edge_bps - 13.0) < 1e-6
+
+
+def test_v3_edge_rule_opens_on_narrow_cone_with_offset():
+    """v3 unlocks the common case the v2 rule missed: cone is narrow
+    but offset from current (model predicts SOME movement toward peg,
+    not necessarily reaching peg). USDT-style: trading -10bp, model
+    point -9.5bp, cone ±1.5bp → p80_high -8.0bp → edge = 2bp."""
+    feed = [{
+        "symbol": "USDT", "current_bps": -10.0,
+        "consensus": {"kind": "agreed", "sources": []},
+        "meta": {"cone_normal_bps": 8, "cone_alert_bps": 20},
+        "latest_prediction": {
+            "made_at": "p1", "resolves_at": "2030-01-01T00:00:00+00:00",
+            "point": -9.5,
+            "p80_low": -11.0, "p80_high": -8.0,  # narrow cone, offset from current
+            "p50_low": -10.5, "p50_high": -9.0,
+            "p95_low": -12.0, "p95_high": -7.0,
+            "horizon_minutes": 5, "confidence_word": "likely",
+        },
+    }]
+    opened = trader.evaluate_cycle(feed, now_iso="2026-05-25T11:00:00+00:00")
+    # v2 would have skipped this (cone doesn't reach peg).
+    assert len(opened) == 1, (
+        "v3 edge rule must open on narrow-offset cone — this is "
+        "what unlocks live trading on real EWMA forecasts")
+    t = opened[0]
+    assert t.direction == "long"
+    assert abs(t.edge_bps - 2.0) < 1e-6  # p80_high(-8) - current(-10) = +2
+
+
+def test_v3_pnl_math_long_correct_under_wide_values(tmp_path, monkeypatch):
+    """Stress: a long opened at -50bp resolving at -30bp earns
+    +20bp × notional × 0.0001. Verify the math with non-trivial
+    notional + bp values + scaled-up edge sizing."""
+    monkeypatch.setattr(trader, "TRADER_PATH", tmp_path / "t.json")
+    monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 100_000.0)
+    monkeypatch.setattr(trader, "NOTIONAL_PER_TRADE", 8_000.0)
+    feed = [{
+        "symbol": "FRAX", "current_bps": -50.0,
+        "consensus": {"kind": "agreed", "sources": []},
+        "meta": {"cone_normal_bps": 6, "cone_alert_bps": 18},
+        "latest_prediction": {
+            "made_at": "p1", "resolves_at": "2026-05-25T11:05:00+00:00",
+            "point": -45.0,
+            "p80_low": -53.0, "p80_high": -42.0,
+            "p50_low": -49.0, "p50_high": -46.0,
+            "p95_low": -56.0, "p95_high": -39.0,
+            "horizon_minutes": 5, "confidence_word": "likely",
+        },
+    }]
+    trader.evaluate_cycle(feed, now_iso="2026-05-25T11:00:00+00:00")
+    # Resolve at -30bp — way better than the model expected
+    trader.evaluate_cycle(
+        [{**feed[0], "current_bps": -30.0}],
+        now_iso="2026-05-25T11:06:00+00:00")
+    resolved = [t for t in trader.all_trades() if t["status"] == "resolved"]
+    assert len(resolved) == 1
+    r = resolved[0]
+    assert r["outcome"] == "WIN"
+    # Long entry at -50, exit at -30 → +20bp move in our favour.
+    assert abs(r["pnl_bps"] - 20.0) < 1e-6
+    expected_usd = round(20.0 * r["notional_usd"] * 0.0001, 2)
+    assert abs(r["pnl_usd"] - expected_usd) < 0.01
+    # Cone calibration: exit at -30 is ABOVE p80_high(-42) → outside p80.
+    assert r["landed_inside_p80"] is False
+    assert r["landed_inside_p95"] is False  # also above p95_high(-39)
+
+
+def test_v3_pnl_math_short_correct_under_wide_values(tmp_path, monkeypatch):
+    """Mirror of the long test for short — entry at +40, exit at +10
+    means a +30bp move in our favour."""
+    monkeypatch.setattr(trader, "TRADER_PATH", tmp_path / "t.json")
+    monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 100_000.0)
+    monkeypatch.setattr(trader, "NOTIONAL_PER_TRADE", 8_000.0)
+    feed = [{
+        "symbol": "LUSD", "current_bps": 40.0,
+        "consensus": {"kind": "agreed", "sources": []},
+        "meta": {"cone_normal_bps": 6, "cone_alert_bps": 18},
+        "latest_prediction": {
+            "made_at": "p1", "resolves_at": "2026-05-25T11:05:00+00:00",
+            "point": 35.0,
+            "p80_low": 30.0, "p80_high": 43.0,
+            "p50_low": 33.0, "p50_high": 41.0,
+            "p95_low": 25.0, "p95_high": 47.0,
+            "horizon_minutes": 5, "confidence_word": "likely",
+        },
+    }]
+    trader.evaluate_cycle(feed, now_iso="2026-05-25T11:00:00+00:00")
+    trader.evaluate_cycle(
+        [{**feed[0], "current_bps": 10.0}],  # big pullback past p95_low(25)
+        now_iso="2026-05-25T11:06:00+00:00")
+    resolved = [t for t in trader.all_trades() if t["status"] == "resolved"]
+    assert len(resolved) == 1
+    r = resolved[0]
+    assert r["outcome"] == "WIN"
+    assert r["direction"] == "short"
+    # Short entry +40, exit +10 → +30bp move in our favour.
+    assert abs(r["pnl_bps"] - 30.0) < 1e-6
+    # Exit at +10 is below p95_low(25), so outside all bands.
+    assert r["landed_inside_p50"] is False
+    assert r["landed_inside_p80"] is False
+    assert r["landed_inside_p95"] is False
+
+
+def test_v3_pnl_math_loss_when_market_moves_against():
+    """Long opened at -10, exit at -15 → market moved AGAINST us.
+    -5bp move; -5bp × $2k × 0.0001 = -$1.00 loss."""
+    feed = [{
+        "symbol": "USDC", "current_bps": -10.0,
+        "consensus": {"kind": "agreed", "sources": []},
+        "meta": {"cone_normal_bps": 5, "cone_alert_bps": 20},
+        "latest_prediction": {
+            "made_at": "p1", "resolves_at": "2026-05-25T11:05:00+00:00",
+            "point": -7.0, "p80_low": -10.5, "p80_high": -3.5,
+            "p50_low": -9.0, "p50_high": -5.0,
+            "p95_low": -13.0, "p95_high": -1.0,
+            "horizon_minutes": 5, "confidence_word": "likely",
+        },
+    }]
+    trader.evaluate_cycle(feed, now_iso="2026-05-25T11:00:00+00:00")
+    trader.evaluate_cycle(
+        [{**feed[0], "current_bps": -15.0}],  # market moved against us
+        now_iso="2026-05-25T11:06:00+00:00")
+    resolved = [t for t in trader.all_trades() if t["status"] == "resolved"]
+    r = resolved[0]
+    assert r["outcome"] == "LOSS"
+    assert r["pnl_usd"] < 0
+    # Long -10 → -15: that's -5bp against us
+    assert abs(r["pnl_bps"] + 5.0) < 1e-6
+
+
+def test_v3_position_size_scales_with_edge():
+    """Larger predicted edge → larger position. Two trades with the
+    same cone width but different edges should produce different
+    notionals."""
+    # Small edge: p80_high just slightly above current
+    feed_small = [{
+        "symbol": "USDC", "current_bps": -10.0,
+        "consensus": {"kind": "agreed", "sources": []},
+        "meta": {"cone_normal_bps": 5, "cone_alert_bps": 20},
+        "latest_prediction": {
+            "made_at": "p-small", "resolves_at": "2030-01-01T00:00:00+00:00",
+            "point": -9.0,
+            "p80_low": -11.5, "p80_high": -8.5,  # edge = 1.5bp
+            "confidence_word": "likely",
+        },
+    }]
+    op_small = trader.evaluate_cycle(
+        feed_small, now_iso="2026-05-25T11:00:00+00:00")
+
+    import os
+    if trader.TRADER_PATH.exists():
+        os.remove(trader.TRADER_PATH)
+
+    # Large edge: p80_high 6bp above current
+    feed_large = [{
+        "symbol": "USDT", "current_bps": -10.0,
+        "consensus": {"kind": "agreed", "sources": []},
+        "meta": {"cone_normal_bps": 5, "cone_alert_bps": 20},
+        "latest_prediction": {
+            "made_at": "p-large", "resolves_at": "2030-01-01T00:00:00+00:00",
+            "point": -5.0,
+            "p80_low": -11.5, "p80_high": -4.0,  # edge = 6bp
+            "confidence_word": "likely",
+        },
+    }]
+    op_large = trader.evaluate_cycle(
+        feed_large, now_iso="2026-05-25T11:00:00+00:00")
+    assert op_large[0].notional_usd > op_small[0].notional_usd
+
+
 def test_persona_constants_exposed():
     """Track-record response carries the persona / tagline / version
     so the UI can render the editorial framing without hardcoding."""
     tr = trader.track_record()
     assert tr["persona"] == "The Discipline Trader"
     assert tr["tagline"]
-    assert tr["version"] == "discipline_v2"
+    assert tr["version"] == "discipline_v3"
     # v2 contract: daily budget tracking present even with no trades
     assert "daily_budget_usd" in tr
     assert tr["daily_budget_usd"] == 10_000.0
@@ -456,6 +694,8 @@ def test_persona_constants_exposed():
 def test_daily_budget_resets_at_new_utc_day(monkeypatch, tmp_path):
     """New v2 contract: opening a position on day N consumes day N's
     budget. The next UTC day, the budget is fresh."""
+    # Set per-trade = $10k so one trade exhausts the daily budget.
+    monkeypatch.setattr(trader, "NOTIONAL_PER_TRADE", 10_000.0)
     # Day 1 — full budget exhausted by one $10k trade
     feed = [{
         "symbol": "USDC", "current_bps": -10.0,

@@ -8957,7 +8957,179 @@ function _renderTradeCard(trade, isOpen, focusedSym) {
     card.appendChild(el('div', { class: 'sim-trade-rationale' },
       trade.rationale));
   }
+  // "View receipt" — opens the trade-receipt detail with full
+  // entry/exit source breakdown, consensus state, forecast bands,
+  // and calibration outcome. Production-grade audit trail.
+  const receiptToggle = el('button', {
+    class: 'sim-trade-receipt-toggle',
+    'data-tip': 'Show the full audit trail — entry/exit source ' +
+      'readings, consensus state, forecast bands, calibration outcome.',
+  }, '▾ RECEIPT');
+  card.appendChild(receiptToggle);
+  const receipt = _renderTradeReceipt(trade);
+  if (receipt) {
+    receipt.classList.add('sim-trade-receipt-hidden');
+    card.appendChild(receipt);
+    receiptToggle.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const hidden = receipt.classList.toggle('sim-trade-receipt-hidden');
+      receiptToggle.textContent = hidden ? '▾ RECEIPT' : '▴ HIDE';
+    });
+  }
   return card;
+}
+
+
+// Build the full receipt block for a trade — production-grade audit
+// trail showing every input + output. Renders entry sources, forecast
+// bands, exit sources, calibration outcome. Hidden until the user
+// clicks the RECEIPT toggle on the trade card.
+function _renderTradeReceipt(trade) {
+  const wrap = el('div', { class: 'sim-trade-receipt' });
+  // Section 1: ENTRY — per-source readings + consensus state
+  const entry = el('div', { class: 'sim-trade-receipt-section' });
+  entry.appendChild(el('div', { class: 'sim-trade-receipt-head' },
+    el('span', { class: 'sim-trade-receipt-tag' }, 'ENTRY'),
+    el('span', { class: 'sim-trade-receipt-sub' },
+      trade.opened_at
+        ? new Date(trade.opened_at).toISOString().slice(0, 19) + ' UTC'
+        : '—')));
+  if (trade.entry_sources && trade.entry_sources.length) {
+    const tbl = el('div', { class: 'sim-trade-receipt-srcs' });
+    for (const s of trade.entry_sources) {
+      tbl.appendChild(el('div', { class: 'sim-trade-receipt-src-row' },
+        el('span', { class: 'sim-trade-receipt-venue' },
+          (s.name || '?').toUpperCase()),
+        el('span', { class: 'sim-trade-receipt-price' },
+          s.price != null ? '$' + Number(s.price).toFixed(6) : '—'),
+        el('span', { class: 'sim-trade-receipt-tstamp' },
+          s.fetched_at
+            ? new Date(Number(s.fetched_at) * 1000).toISOString().slice(11, 19) + 'Z'
+            : '—')));
+    }
+    entry.appendChild(tbl);
+  } else {
+    entry.appendChild(el('div', { class: 'sim-trade-receipt-empty' },
+      'no source snapshot recorded for entry (legacy trade)'));
+  }
+  // Consensus meta
+  if (trade.entry_consensus_kind) {
+    const ck = trade.entry_consensus_kind;
+    const ckCls = ck === 'agreed' ? 'sim-trade-receipt-ck-ok'
+      : ck === 'disputed' ? 'sim-trade-receipt-ck-bad'
+      : 'sim-trade-receipt-ck-warn';
+    entry.appendChild(el('div', { class: 'sim-trade-receipt-meta' },
+      el('span', { class: 'sim-trade-receipt-meta-lbl' }, 'consensus'),
+      el('span', { class: 'sim-trade-receipt-meta-val ' + ckCls },
+        ck.toUpperCase()),
+      el('span', { class: 'sim-trade-receipt-meta-lbl' }, '· spread'),
+      el('span', { class: 'sim-trade-receipt-meta-val' },
+        (trade.entry_max_disagreement_bps != null
+          ? trade.entry_max_disagreement_bps.toFixed(2) : '—') + 'bp'),
+      el('span', { class: 'sim-trade-receipt-meta-lbl' }, '· entry'),
+      el('span', { class: 'sim-trade-receipt-meta-val' },
+        (trade.entry_bps >= 0 ? '+' : '') +
+        Number(trade.entry_bps).toFixed(2) + 'bp')));
+  }
+  wrap.appendChild(entry);
+
+  // Section 2: FORECAST — what the model said at entry
+  const fc = el('div', { class: 'sim-trade-receipt-section' });
+  fc.appendChild(el('div', { class: 'sim-trade-receipt-head' },
+    el('span', { class: 'sim-trade-receipt-tag' }, 'FORECAST AT ENTRY'),
+    el('span', { class: 'sim-trade-receipt-sub' },
+      trade.horizon_minutes != null
+        ? '+' + trade.horizon_minutes + 'min horizon' : '')));
+  fc.appendChild(el('div', { class: 'sim-trade-receipt-fc-grid' },
+    el('span', { class: 'sim-trade-receipt-meta-lbl' }, 'p50'),
+    el('span', { class: 'sim-trade-receipt-meta-val' },
+      _fmtBand(trade.forecast_p50_low, trade.forecast_p50_high)),
+    el('span', { class: 'sim-trade-receipt-meta-lbl' }, 'p80'),
+    el('span', { class: 'sim-trade-receipt-meta-val' },
+      _fmtBand(trade.p80_low, trade.p80_high)),
+    el('span', { class: 'sim-trade-receipt-meta-lbl' }, 'p95'),
+    el('span', { class: 'sim-trade-receipt-meta-val' },
+      _fmtBand(trade.forecast_p95_low, trade.forecast_p95_high)),
+    el('span', { class: 'sim-trade-receipt-meta-lbl' }, 'point'),
+    el('span', { class: 'sim-trade-receipt-meta-val' },
+      (trade.forecast_point_bps >= 0 ? '+' : '') +
+      Number(trade.forecast_point_bps).toFixed(2) + 'bp'),
+    el('span', { class: 'sim-trade-receipt-meta-lbl' }, 'edge'),
+    el('span', { class: 'sim-trade-receipt-meta-val sim-trade-receipt-edge' },
+      (trade.edge_bps != null
+        ? (trade.edge_bps >= 0 ? '+' : '') + Number(trade.edge_bps).toFixed(2) + 'bp'
+        : '—'))));
+  wrap.appendChild(fc);
+
+  // Section 3: EXIT (resolved only)
+  if (trade.status === 'resolved') {
+    const exitS = el('div', { class: 'sim-trade-receipt-section' });
+    exitS.appendChild(el('div', { class: 'sim-trade-receipt-head' },
+      el('span', { class: 'sim-trade-receipt-tag' }, 'EXIT'),
+      el('span', { class: 'sim-trade-receipt-sub' },
+        trade.resolved_at_real
+          ? new Date(trade.resolved_at_real).toISOString().slice(0, 19) + ' UTC'
+          : '—')));
+    if (trade.exit_sources && trade.exit_sources.length) {
+      const tbl = el('div', { class: 'sim-trade-receipt-srcs' });
+      for (const s of trade.exit_sources) {
+        tbl.appendChild(el('div', { class: 'sim-trade-receipt-src-row' },
+          el('span', { class: 'sim-trade-receipt-venue' },
+            (s.name || '?').toUpperCase()),
+          el('span', { class: 'sim-trade-receipt-price' },
+            s.price != null ? '$' + Number(s.price).toFixed(6) : '—'),
+          el('span', { class: 'sim-trade-receipt-tstamp' },
+            s.fetched_at
+              ? new Date(Number(s.fetched_at) * 1000).toISOString().slice(11, 19) + 'Z'
+              : '—')));
+      }
+      exitS.appendChild(tbl);
+    }
+    if (trade.exit_consensus_kind) {
+      const ck = trade.exit_consensus_kind;
+      const ckCls = ck === 'agreed' ? 'sim-trade-receipt-ck-ok'
+        : ck === 'disputed' ? 'sim-trade-receipt-ck-bad'
+        : 'sim-trade-receipt-ck-warn';
+      exitS.appendChild(el('div', { class: 'sim-trade-receipt-meta' },
+        el('span', { class: 'sim-trade-receipt-meta-lbl' }, 'consensus'),
+        el('span', { class: 'sim-trade-receipt-meta-val ' + ckCls },
+          ck.toUpperCase()),
+        el('span', { class: 'sim-trade-receipt-meta-lbl' }, '· exit'),
+        el('span', { class: 'sim-trade-receipt-meta-val' },
+          (trade.exit_bps >= 0 ? '+' : '') +
+          Number(trade.exit_bps).toFixed(2) + 'bp')));
+    }
+    wrap.appendChild(exitS);
+
+    // Section 4: CALIBRATION — did the actual outcome land where
+    // the model said it would?
+    const cal = el('div', { class: 'sim-trade-receipt-section' });
+    cal.appendChild(el('div', { class: 'sim-trade-receipt-head' },
+      el('span', { class: 'sim-trade-receipt-tag' }, 'CALIBRATION'),
+      el('span', { class: 'sim-trade-receipt-sub' },
+        'where did the exit land?')));
+    const landRow = el('div', { class: 'sim-trade-receipt-cal-row' });
+    const fmtLand = (lbl, v) =>
+      el('span', {
+        class: 'sim-trade-receipt-cal-pip ' +
+          (v === true ? 'sim-trade-receipt-cal-in'
+            : v === false ? 'sim-trade-receipt-cal-out' : ''),
+      }, lbl, v === true ? ' ✓' : v === false ? ' ✕' : ' ·');
+    landRow.appendChild(fmtLand('p50', trade.landed_inside_p50));
+    landRow.appendChild(fmtLand('p80', trade.landed_inside_p80));
+    landRow.appendChild(fmtLand('p95', trade.landed_inside_p95));
+    cal.appendChild(landRow);
+    wrap.appendChild(cal);
+  }
+
+  return wrap;
+}
+
+
+function _fmtBand(lo, hi) {
+  if (lo == null || hi == null) return '—';
+  const fmt = v => (v >= 0 ? '+' : '') + Number(v).toFixed(2);
+  return '[' + fmt(lo) + ', ' + fmt(hi) + ']';
 }
 
 

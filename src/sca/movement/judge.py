@@ -268,6 +268,18 @@ def _build_prompt(forecast_summary: dict, attribution_sentence: str,
                      "track record is empty so the call carries less "
                      "weight)")
     lines.append("")
+    # Discipline Trader context — the judge sees the simulated
+    # trader's recent performance on this token + the all-time track
+    # record. Lets the narrative reference real P&L when commenting
+    # on whether the forecast is actionable.
+    try:
+        symbol = (forecast_summary or {}).get("symbol", "")
+        trader_block = _trader_prompt_block(symbol)
+        if trader_block:
+            lines.append(trader_block)
+            lines.append("")
+    except Exception:  # noqa: BLE001 — never break the judge for this
+        pass
     # Chaos-engineering fragility block — the judge sees which
     # defensive invariants are currently passing so its narrative
     # stays grounded in tested resilience state rather than implied
@@ -281,6 +293,73 @@ def _build_prompt(forecast_summary: dict, attribution_sentence: str,
     except Exception:  # noqa: BLE001 — never break the judge for this
         pass
     lines.append("Return the JSON object now.")
+    return "\n".join(lines)
+
+
+def _trader_prompt_block(symbol: str) -> str:
+    """Render a markdown block summarising what the Discipline Trader
+    has been doing for THIS symbol — open positions + recent
+    settlements — plus the all-time track record. The judge uses
+    this to keep the narrative grounded in the simulated trader's
+    real-money-style activity instead of implying performance the
+    audit trail wouldn't support."""
+    try:
+        from sca.movement.trader import all_trades, track_record
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        trades = all_trades()
+        tr = track_record()
+    except Exception:  # noqa: BLE001
+        return ""
+    if not trades and tr.get("count_resolved", 0) == 0:
+        return ""
+    lines = ["## Discipline Trader context"]
+    # All-time summary
+    if tr.get("count_resolved", 0) > 0:
+        net = tr.get("net_pnl_usd", 0)
+        net_sign = "+" if net >= 0 else "-"
+        lines.append(
+            f"- all-time: {tr['count_resolved']} resolved · "
+            f"{tr['wins']}W / {tr['losses']}L · win-rate "
+            f"{int((tr.get('win_rate') or 0) * 100)}% · net "
+            f"{net_sign}${abs(net):.2f}"
+        )
+        streak = tr.get("current_streak") or {}
+        if streak.get("length", 0) > 1:
+            lines.append(
+                f"- current run: {streak['length']} {streak.get('outcome', '')}"
+                f" in a row"
+            )
+    # Per-symbol open positions on this token (if any)
+    if symbol:
+        open_this = [t for t in trades
+                     if t.get("symbol") == symbol
+                     and t.get("status") == "open"]
+        if open_this:
+            for t in open_this[:2]:
+                lines.append(
+                    f"- OPEN {t.get('direction', '').upper()} {symbol} "
+                    f"@ {t.get('entry_bps', 0):+.2f}bp, ${t.get('notional_usd', 0):.0f} "
+                    f"notional, target {t.get('forecast_point_bps', 0):+.2f}bp"
+                )
+        # Per-symbol recent resolved (last 3)
+        resolved_this = [t for t in trades
+                         if t.get("symbol") == symbol
+                         and t.get("status") == "resolved"][:3]
+        for t in resolved_this:
+            pnl = t.get("pnl_usd")
+            if pnl is None:
+                continue
+            sign = "+" if pnl >= 0 else "-"
+            lines.append(
+                f"- {t.get('outcome', '?')} {t.get('direction', '').upper()} "
+                f"{symbol}: {sign}${abs(pnl):.2f} "
+                f"(entry {t.get('entry_bps', 0):+.2f}bp → exit "
+                f"{t.get('exit_bps', 0):+.2f}bp)"
+            )
+    if len(lines) == 1:  # only the header — no real content
+        return ""
     return "\n".join(lines)
 
 
