@@ -6376,158 +6376,653 @@ function viewSimulator(symbolArg) {
   loadSimulator(mount, symbolArg);
 }
 
-// Per-view state for the simulator: which tokens are visible on
-// the multi-token candle overlay, and the live-poll timer handle.
-// Object (not class) so the live poll can mutate it freely.
+// Per-view state for the v3 simulator. SSE-driven; the poll is a
+// reconciliation heartbeat (every 20s) so a missed SSE event
+// doesn't strand the page on stale data.
 const SIM_VIEW = {
-  selected: null,      // Set of selected symbols; null = "all"
+  focused: null,            // currently focused token (centre pane)
+  selectedRail: null,       // Set of symbols visible in left rail (null=all)
+  sse: null,                // EventSource handle
   pollTimer: null,
-  lastTimeline: null,
-  pulseSeq: 0,         // bumps every tick so pulley animation restarts
+  lastFeed: null,
+  lastTickAt: null,
+  pulseSeq: 0,
+  lastEventTs: '',          // newest event ts seen; for SSE diff dedup
+  wireRows: [],             // rolling buffer of WIRE rows, FIFO 40
 };
 
 async function loadSimulator(mount, symbolArg) {
   mount.innerHTML = '';
   mount.append(el('div', { class: 'sim-loading' },
     el('span', { class: 'spinner' }),
-    ' composing forecast archive…'));
+    ' composing live workspace…'));
 
-  if (SIM_VIEW.pollTimer) {
-    clearInterval(SIM_VIEW.pollTimer);
-    SIM_VIEW.pollTimer = null;
-  }
+  // Reset any prior connections from a previous mount.
+  if (SIM_VIEW.pollTimer) { clearInterval(SIM_VIEW.pollTimer); SIM_VIEW.pollTimer = null; }
+  if (SIM_VIEW.sse) { try { SIM_VIEW.sse.close(); } catch (e) {} SIM_VIEW.sse = null; }
 
-  const data = await fetchSimulatorData();
-  if (!data) {
+  const feed = await fetchSimulatorFeed();
+  if (!feed) {
     mount.innerHTML = '';
     mount.append(el('div', { class: 'sim-error' },
-      'Simulator endpoints unreachable. The ticker may not have started yet — ',
-      'try TICK NOW or check the F1 monitor.'));
+      'Simulator endpoints unreachable. The ticker may not have started yet.'));
     return;
   }
 
-  // Seed selection: all symbols with at least one tick, or fall
-  // back to the config's symbol list. Persists across polls via
-  // SIM_VIEW.selected.
-  if (SIM_VIEW.selected === null) {
-    SIM_VIEW.selected = new Set(
-      (data.timeline.tokens || [])
-        .filter(t => (t.ticks || []).length > 0)
-        .map(t => t.symbol));
-    if (SIM_VIEW.selected.size === 0) {
-      SIM_VIEW.selected = new Set(data.state.config.symbols || []);
-    }
+  // Seed focused token. Deep-link arg wins; else the first token
+  // with data; else first in the config list.
+  if (symbolArg) {
+    SIM_VIEW.focused = symbolArg.toUpperCase();
+  } else if (!SIM_VIEW.focused) {
+    const withData = (feed.tokens || []).find(t => t.current_bps !== null);
+    SIM_VIEW.focused = (withData && withData.symbol) ||
+      ((feed.tokens || [])[0] || {}).symbol || null;
   }
 
-  mount.innerHTML = '';
-  renderSimulator(mount, data, symbolArg);
+  // Seed event wire from the initial snapshot.
+  SIM_VIEW.wireRows = (feed.events || []).slice(0, 40);
+  SIM_VIEW.lastEventTs = SIM_VIEW.wireRows
+    .reduce((mx, e) => (e.ts && e.ts > mx ? e.ts : mx), '');
 
-  // Breathing: poll every 15s so the chart visibly updates without
-  // a full re-render. Pauses when the tab is hidden so we don't
-  // burn CPU on a backgrounded page.
+  mount.innerHTML = '';
+  renderSimulator(mount, feed);
+
+  // SSE — the primary live channel. EventSource handles reconnect
+  // automatically. Token-cell flashes + WIRE rows fade in on each
+  // tick event.
+  try {
+    const sse = new EventSource('/api/simulator/stream');
+    SIM_VIEW.sse = sse;
+    sse.addEventListener('tick', (ev) => {
+      try {
+        const payload = JSON.parse(ev.data);
+        applySimTick(mount, payload);
+      } catch (e) { /* swallow */ }
+    });
+    sse.addEventListener('snapshot', (ev) => {
+      try {
+        const payload = JSON.parse(ev.data);
+        SIM_VIEW.lastFeed = payload;
+      } catch (e) { /* swallow */ }
+    });
+    sse.addEventListener('heartbeat', () => {
+      // SSE is alive but nothing changed — flash the live dot.
+      const dot = document.querySelector('.sim-live-dot');
+      if (dot) {
+        dot.classList.remove('sim-live-dot-beat');
+        // Trigger reflow to restart the CSS animation.
+        void dot.offsetWidth;
+        dot.classList.add('sim-live-dot-beat');
+      }
+    });
+  } catch (e) {
+    console.warn('SSE init failed; will rely on poll', e);
+  }
+
+  // Reconciliation heartbeat: every 20s reload the full feed so a
+  // missed SSE diff can never strand the view on stale data.
   SIM_VIEW.pollTimer = setInterval(async () => {
     if (document.hidden) return;
-    const next = await fetchSimulatorData();
+    const next = await fetchSimulatorFeed();
     if (!next) return;
     redrawSimulator(mount, next);
-  }, 15000);
+  }, 20000);
 }
 
-async function fetchSimulatorData() {
+async function fetchSimulatorFeed() {
   try {
-    const [stateResp, predsResp, calResp, timelineResp] = await Promise.all([
-      fetch('/api/simulator/state'),
-      fetch('/api/simulator/predictions?limit=60'),
+    const [feedResp, calResp] = await Promise.all([
+      fetch('/api/simulator/feed'),
       fetch('/api/simulator/calibration'),
-      fetch('/api/simulator/timeline?limit_per_symbol=120&bin_minutes=5'),
     ]);
-    const out = {
-      state: await stateResp.json(),
-      preds: await predsResp.json(),
-      calibration: await calResp.json(),
-      timeline: await timelineResp.json(),
-    };
-    SIM_VIEW.lastTimeline = out.timeline;
-    return out;
+    const feed = await feedResp.json();
+    feed.calibration = await calResp.json();
+    SIM_VIEW.lastFeed = feed;
+    return feed;
   } catch (err) {
-    console.error('simulator data fetch failed', err);
+    console.error('simulator feed fetch failed', err);
     return null;
   }
 }
 
-function redrawSimulator(mount, data) {
-  // Bump pulse sequence — used to restart the pipeline pulley
-  // animation so the operator sees a fresh "tick fired" pulse on
-  // each successful poll cycle that emitted at least one row.
-  const lastSummary = (data.state.ticker || {}).last_summary || {};
-  const lastTickAt = (data.state.ticker || {}).last_tick_at;
+function redrawSimulator(mount, feed) {
+  const lastTickAt = (feed.ticker || {}).last_tick_at;
   if (lastTickAt && lastTickAt !== SIM_VIEW.lastTickAt) {
     SIM_VIEW.pulseSeq++;
     SIM_VIEW.lastTickAt = lastTickAt;
   }
+  // Refresh the wire from the full event list (FIFO 40).
+  const fresh = (feed.events || []).slice(0, 40);
+  SIM_VIEW.wireRows = fresh;
+  SIM_VIEW.lastEventTs = fresh.reduce(
+    (mx, e) => (e.ts && e.ts > mx ? e.ts : mx), '');
   mount.innerHTML = '';
-  renderSimulator(mount, data, '');
+  renderSimulator(mount, feed);
 }
 
-function renderSimulator(mount, data, symbolArg) {
-  const { state, preds, calibration, timeline } = data;
-
-  // 1. Pipeline pulley — at the top, sets the visual tempo.
-  mount.append(simPipelinePulley(state));
-
-  // 2. Compact SOTU strip — liveness + quota at a glance.
-  mount.append(simStateStrip(state));
-
-  // 3. Schema-missing banner (only when the migration hasn't landed).
-  if (preds && preds.schema_missing) {
-    mount.append(el('section', { class: 'sim-schema-banner fade-in' },
-      el('div', { class: 'sim-schema-kick' }, 'SCHEMA MISSING'),
-      el('div', { class: 'sim-schema-body' },
-        'The predictions table is not yet provisioned. Apply ',
-        el('code', {}, 'supabase/migrations/0007_movement_simulator.sql'),
-        ' against the live database to enable the archive. ',
-        'Until then, the simulator runs end-to-end against the in-',
-        'memory FileStore (visible in tests + offline dev) and the ',
-        'live archive stays empty.')));
+// Surgical update on each SSE tick. Avoids a full re-render so the
+// UI feels genuinely live — cells flash, new wire rows fade in,
+// the chart updates its last candle without redrawing the page.
+function applySimTick(mount, payload) {
+  const tokens = payload.tokens || [];
+  const newEvents = payload.events || [];
+  const quota = payload.brave_quota || null;
+  const tickAt = payload.ticker_last_tick_at;
+  if (tickAt && tickAt !== SIM_VIEW.lastTickAt) {
+    SIM_VIEW.pulseSeq++;
+    SIM_VIEW.lastTickAt = tickAt;
+    // Restart the pulley animation by replacing the marker.
+    const marker = document.querySelector('.sim-pulley-marker');
+    if (marker) {
+      marker.setAttribute('data-seq', String(SIM_VIEW.pulseSeq));
+      const cl = marker.cloneNode(true);
+      marker.replaceWith(cl);
+    }
   }
-
-  // Group predictions by symbol so each token gets its own panel.
-  // Newest-first ordering is preserved within each symbol.
-  const bySymbol = new Map();
-  for (const p of (preds.predictions || [])) {
-    const arr = bySymbol.get(p.symbol) || [];
-    arr.push(p);
-    bySymbol.set(p.symbol, arr);
+  // Update per-token cells: flash + replace text.
+  for (const t of tokens) {
+    flashTokenCell(t);
   }
-
-  // If the user landed on a /simulator/SYMBOL deep link, sort that
-  // symbol first so it's the first panel they see.
-  const symbols = Array.from(bySymbol.keys());
-  if (symbolArg) {
-    symbols.sort((a, b) => {
-      if (a === symbolArg) return -1;
-      if (b === symbolArg) return 1;
-      return a.localeCompare(b);
-    });
-  } else {
-    symbols.sort();
+  // Push new events on top of the WIRE.
+  if (newEvents.length) {
+    pushWireRows(newEvents);
   }
+  if (quota) updateBraveQuotaInPlace(quota);
+}
 
-  // 4. Main canvas — one hero with candle chart + token chips +
-  //    pistons + judge synthesis. The user's main breathing surface.
-  const tokens = (timeline.tokens || []);
-  const haveAnyTicks = tokens.some(t => (t.ticks || []).length > 0);
-  if (!haveAnyTicks && symbols.length === 0) {
-    mount.append(simEmptyState());
-  } else {
-    mount.append(simMainCanvas(tokens, bySymbol));
+function flashTokenCell(t) {
+  // Find every DOM node that holds this token's value and animate
+  // a brief flash + write the new value.
+  const cells = document.querySelectorAll(
+    '[data-sim-sym="' + t.symbol + '"]');
+  if (!cells.length) return;
+  const newV = t.current_bps;
+  const fmt = (v) => v == null ? '—'
+    : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'bp';
+  for (const cell of cells) {
+    const slot = cell.querySelector('[data-sim-val]');
+    if (slot) {
+      const prev = parseFloat(slot.getAttribute('data-prev'));
+      const cls = (Number.isFinite(prev) && newV != null)
+        ? (newV > prev ? 'sim-flash-up' : (newV < prev ? 'sim-flash-down' : ''))
+        : '';
+      slot.textContent = fmt(newV);
+      slot.setAttribute('data-prev', String(newV));
+      if (cls) {
+        slot.classList.remove('sim-flash-up', 'sim-flash-down');
+        void slot.offsetWidth;
+        slot.classList.add(cls);
+      }
+    }
+    // Update inline delta digits with flash.
+    const dslot = cell.querySelector('[data-sim-delta="d1m"]');
+    if (dslot && t.deltas) {
+      const v = t.deltas.d1m;
+      dslot.textContent = v == null ? '—'
+        : (v >= 0 ? '+' : '') + Number(v).toFixed(2);
+      dslot.classList.remove('sim-delta-up', 'sim-delta-down', 'sim-delta-flat');
+      dslot.classList.add(
+        v == null ? 'sim-delta-flat'
+          : v > 0 ? 'sim-delta-up' : v < 0 ? 'sim-delta-down' : 'sim-delta-flat');
+    }
   }
+}
 
-  // 5. Calibration page — the front door of the product.
-  mount.append(simCalibrationPanel(calibration));
+function pushWireRows(newEvents) {
+  const wire = document.querySelector('.sim-wire-rows');
+  if (!wire) return;
+  // Prepend each new event with a brief fade-in. FIFO cap 40.
+  for (const ev of newEvents) {
+    if (!ev.ts || ev.ts <= SIM_VIEW.lastEventTs) continue;
+    const row = renderWireRow(ev);
+    row.classList.add('sim-wire-fadein');
+    wire.prepend(row);
+  }
+  while (wire.children.length > 40) wire.removeChild(wire.lastChild);
+  SIM_VIEW.lastEventTs = newEvents.reduce(
+    (mx, e) => (e.ts && e.ts > mx ? e.ts : mx), SIM_VIEW.lastEventTs);
+}
 
-  // 6. Config panel — at the foot. Authoring requires sign-in.
-  mount.append(simConfigPanel(state.config || {}));
+function updateBraveQuotaInPlace(q) {
+  const cell = document.querySelector('[data-sim-quota]');
+  if (!cell) return;
+  cell.textContent = (q.calls || 0) + ' / ' + (q.cap || '?');
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  F9 SIMULATOR · v3 — Bloomberg-class live workspace
+// ─────────────────────────────────────────────────────────────────────
+// Single feed payload powers the page. Layout top-to-bottom:
+//  1. Bloomberg ribbon (two-row scrolling ticker tape)
+//  2. Delta grid + status strip
+//  3. THREE-COLUMN workspace: left rail (token list w/ sparklines),
+//     centre (focused-token hero w/ candle + judge), right rail (THE WIRE)
+//  4. Calibration archive
+//  5. Config panel
+function renderSimulator(mount, feed) {
+  const tokens = feed.tokens || [];
+  const focused = tokens.find(t => t.symbol === SIM_VIEW.focused)
+    || tokens[0] || null;
+  if (focused) SIM_VIEW.focused = focused.symbol;
+
+  // 1. Bloomberg ribbon
+  mount.append(simBloombergRibbon(tokens));
+
+  // 2. Status strip — compact, dense, info-only
+  mount.append(simStatusBar(feed));
+
+  // 3. Three-column workspace
+  mount.append(simWorkspace(tokens, focused, feed));
+
+  // 4. Calibration page
+  mount.append(simCalibrationPanel(feed.calibration || { count: 0 }));
+
+  // 5. Config panel
+  mount.append(simConfigPanel(feed.config || {}));
+}
+
+// ── Bloomberg ribbon ──────────────────────────────────────────────
+// Two-row scrolling tape. Row A: per-token brand-pill + symbol +
+// value + colored delta + inline sparkline. Row B: peg-deviation
+// track (the Doré-unique view). Auto-scrolls right-to-left at
+// ~50 px/s; pauses on hover so a viewer can read details.
+function simBloombergRibbon(tokens) {
+  return el('section', { class: 'sim-ribbon fade-in' },
+    el('div', { class: 'sim-ribbon-row sim-ribbon-row-a' },
+      el('div', { class: 'sim-ribbon-marquee' },
+        // Render the same content twice so the seamless loop has
+        // something to fade into when the first copy scrolls off.
+        el('div', { class: 'sim-ribbon-track' },
+          tokens.map(simRibbonCell),
+          tokens.map(simRibbonCell)))),
+    el('div', { class: 'sim-ribbon-row sim-ribbon-row-b' },
+      el('div', { class: 'sim-ribbon-pegtracks' },
+        tokens.map(simPegTrack))));
+}
+
+function simRibbonCell(t) {
+  const brand = t.brand || { accent: '#D4A24A', name: '' };
+  const v = t.current_bps;
+  const d1m = (t.deltas || {}).d1m;
+  const dColor = (d1m == null) ? 'sim-delta-flat'
+    : d1m > 0 ? 'sim-delta-up'
+    : d1m < 0 ? 'sim-delta-down' : 'sim-delta-flat';
+  const cell = el('div', {
+    class: 'sim-ribbon-cell',
+    'data-sim-sym': t.symbol,
+    onclick: 'location.hash="#simulator/' + t.symbol + '"',
+  },
+    el('span', {
+      class: 'sim-ribbon-pill',
+      style: 'background:' + brand.accent + '; box-shadow: 0 0 6px ' + brand.glow,
+    }),
+    el('span', { class: 'sim-ribbon-sym' }, t.symbol),
+    el('span', {
+      class: 'sim-ribbon-val',
+      'data-sim-val': '',
+      'data-prev': v == null ? '' : String(v),
+    }, v == null ? '—'
+       : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'bp'),
+    el('span', {
+      class: 'sim-ribbon-delta ' + dColor,
+      'data-sim-delta': 'd1m',
+    }, d1m == null ? '—'
+       : (d1m >= 0 ? '▲ ' : '▼ ') +
+         Math.abs(Number(d1m)).toFixed(2)),
+    // Inline sparkline as a sub-element at low opacity behind the value.
+    sparklineSvg(t.sparkline || [], brand.accent, 64, 18));
+  return cell;
+}
+
+function simPegTrack(t) {
+  // Horizontal track ±25bp; a brand-coloured dot for the current
+  // peg deviation. The track is the rare Doré-unique view — no
+  // competitor renders peg-deviation as a live ribbon track.
+  const v = t.current_bps;
+  const max = 25;
+  const clamped = v == null ? 0 : Math.max(-max, Math.min(max, v));
+  // Map [-max, max] → [0%, 100%]
+  const leftPct = ((clamped + max) / (2 * max)) * 100;
+  const brand = t.brand || { accent: '#D4A24A' };
+  return el('div', { class: 'sim-pegtrack' },
+    el('span', { class: 'sim-pegtrack-sym' }, t.symbol),
+    el('div', { class: 'sim-pegtrack-rail' },
+      el('div', { class: 'sim-pegtrack-zero' }),
+      v != null ? el('div', {
+        class: 'sim-pegtrack-dot',
+        style: 'left:' + leftPct.toFixed(1) + '%; background:' +
+               brand.accent + '; box-shadow: 0 0 10px ' + brand.glow,
+        title: t.symbol + ' peg deviation ' + v.toFixed(2) + 'bp',
+      }) : null));
+}
+
+// ── status bar ────────────────────────────────────────────────────
+function simStatusBar(feed) {
+  const ticker = feed.ticker || {};
+  const cfg = feed.config || {};
+  const q = feed.brave_quota || {};
+  const sources = feed.sources || [];
+  const lastTickAgo = ticker.last_tick_at ? agoLabel(ticker.last_tick_at) : '—';
+  // Compute aggregated source-consensus state
+  let agreedCount = 0, disputedCount = 0, singleCount = 0;
+  for (const t of (feed.tokens || [])) {
+    const ck = (t.consensus || {}).kind;
+    if (ck === 'agreed') agreedCount++;
+    else if (ck === 'disputed') disputedCount++;
+    else if (ck === 'single') singleCount++;
+  }
+  return el('section', { class: 'sim-status fade-in' },
+    el('div', { class: 'sim-status-cell' },
+      el('span', { class: 'sim-live-dot sim-live-dot-beat',
+        title: 'Stream is live' }),
+      el('span', { class: 'sim-status-lbl' }, 'LIVE'),
+      el('span', { class: 'sim-status-val' },
+        ticker.running ? 'STREAMING' : 'IDLE')),
+    el('div', { class: 'sim-status-cell' },
+      el('span', { class: 'sim-status-lbl' }, 'LAST TICK'),
+      el('span', { class: 'sim-status-val' }, lastTickAgo)),
+    el('div', { class: 'sim-status-cell' },
+      el('span', { class: 'sim-status-lbl' }, 'CADENCE'),
+      el('span', { class: 'sim-status-val' },
+        (cfg.tick_interval_minutes || 10) + 'm · ' +
+        (cfg.horizon_minutes || 60) + 'm horizon')),
+    el('div', { class: 'sim-status-cell' },
+      el('span', { class: 'sim-status-lbl' }, 'PEG SOURCES'),
+      el('span', { class: 'sim-status-val' },
+        sources.map(s => s.name).join('+') || 'none',
+        el('span', { style: 'color:var(--muted-2); margin-left:6px' },
+          '· ' + agreedCount + '✓ ' + singleCount + '○ ' +
+          disputedCount + '✕'))),
+    el('div', { class: 'sim-status-cell' },
+      el('span', { class: 'sim-status-lbl' }, 'BRAVE QUOTA'),
+      el('span', { class: 'sim-status-val', 'data-sim-quota': '' },
+        String(q.calls || 0) + ' / ' + String(q.cap || '?'))));
+}
+
+// ── three-column workspace ─────────────────────────────────────────
+function simWorkspace(tokens, focused, feed) {
+  return el('section', { class: 'sim-workspace fade-in' },
+    simTokenRail(tokens, focused),
+    simHeroPane(focused, feed),
+    simWire(feed));
+}
+
+// LEFT RAIL — token list with sparklines + values
+function simTokenRail(tokens, focused) {
+  return el('aside', { class: 'sim-rail-left' },
+    el('div', { class: 'sim-rail-head' },
+      el('span', { class: 'sim-rail-title' }, 'INSTRUMENTS'),
+      el('span', { class: 'sim-rail-count' }, String(tokens.length))),
+    el('div', { class: 'sim-rail-list' },
+      tokens.map(t => simRailRow(t, focused && t.symbol === focused.symbol))));
+}
+
+function simRailRow(t, isFocused) {
+  const brand = t.brand || { accent: '#D4A24A', name: '' };
+  const v = t.current_bps;
+  const d1m = (t.deltas || {}).d1m;
+  const dColor = (d1m == null) ? 'sim-delta-flat'
+    : d1m > 0 ? 'sim-delta-up'
+    : d1m < 0 ? 'sim-delta-down' : 'sim-delta-flat';
+  const row = el('div', {
+    class: 'sim-rail-row ' + (isFocused ? 'sim-rail-row-focused' : ''),
+    'data-sim-sym': t.symbol,
+    onclick: 'location.hash="#simulator/' + t.symbol + '"',
+  },
+    el('div', { class: 'sim-rail-bar',
+      style: 'background:' + brand.accent }),
+    el('div', { class: 'sim-rail-meta' },
+      el('div', { class: 'sim-rail-sym' }, t.symbol),
+      el('div', { class: 'sim-rail-name' }, brand.name || '—')),
+    el('div', { class: 'sim-rail-spark' },
+      sparklineSvg(t.sparkline || [], brand.accent, 70, 22)),
+    el('div', { class: 'sim-rail-values' },
+      el('div', { class: 'sim-rail-val', 'data-sim-val': '',
+          'data-prev': v == null ? '' : String(v) },
+        v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'bp'),
+      el('div', {
+        class: 'sim-rail-delta ' + dColor,
+        'data-sim-delta': 'd1m',
+      }, d1m == null ? '—'
+         : (d1m >= 0 ? '▲ ' : '▼ ') +
+           Math.abs(Number(d1m)).toFixed(2))));
+  return row;
+}
+
+// CENTRE — focused token hero
+function simHeroPane(focused, feed) {
+  if (!focused) {
+    return el('main', { class: 'sim-hero sim-hero-empty' },
+      el('h2', {}, 'No data yet.'),
+      el('p', {}, 'Press BURST ×6 to populate the archive.'));
+  }
+  const brand = focused.brand || { accent: '#D4A24A', name: '' };
+  return el('main', { class: 'sim-hero' },
+    el('div', { class: 'sim-hero-head',
+      style: 'border-left-color:' + brand.accent },
+      el('div', { class: 'sim-hero-headline' },
+        el('span', { class: 'sim-hero-sym',
+          style: 'color:' + brand.accent }, focused.symbol),
+        el('span', { class: 'sim-hero-name' }, brand.name || ''),
+        focused.latest_prediction && focused.latest_prediction.confidence_word
+          ? el('span', { class: 'sim-hero-conf' },
+              focused.latest_prediction.confidence_word.replace(/_/g, ' '))
+          : null),
+      el('div', { class: 'sim-hero-value' },
+        el('span', { class: 'sim-hero-val-big',
+          'data-sim-sym': focused.symbol },
+          el('span', { 'data-sim-val': '',
+            'data-prev': focused.current_bps == null ? ''
+              : String(focused.current_bps) },
+            focused.current_bps == null ? '—'
+              : (focused.current_bps >= 0 ? '+' : '') +
+                Number(focused.current_bps).toFixed(2) + 'bp')),
+        el('span', { class: 'sim-hero-val-sub' },
+          'peg deviation · last tick'))),
+    simDeltaGrid(focused),
+    simHeroChart(focused),
+    simHeroJudge(focused));
+}
+
+// 5-cell delta grid for the focused token. 1m / 5m / 1h / 24h / 7d
+function simDeltaGrid(t) {
+  const cells = [
+    { lbl: '1M',  k: 'd1m'  },
+    { lbl: '5M',  k: 'd5m'  },
+    { lbl: '1H',  k: 'd1h'  },
+    { lbl: '24H', k: 'd24h' },
+    { lbl: '7D',  k: 'd7d'  },
+  ];
+  return el('div', { class: 'sim-delta-grid' },
+    cells.map(c => {
+      const v = (t.deltas || {})[c.k];
+      const cls = (v == null) ? 'sim-delta-flat'
+        : v > 0 ? 'sim-delta-up'
+        : v < 0 ? 'sim-delta-down' : 'sim-delta-flat';
+      const glyph = (v == null) ? '◇'
+        : v > 0 ? '▲' : v < 0 ? '▼' : '◇';
+      return el('div', { class: 'sim-delta-cell ' + cls },
+        el('div', { class: 'sim-delta-lbl' }, c.lbl),
+        el('div', { class: 'sim-delta-val' },
+          el('span', { class: 'sim-delta-glyph' }, glyph),
+          ' ', v == null ? '—'
+            : (v >= 0 ? '+' : '') + Number(v).toFixed(2),
+          el('span', { class: 'sim-delta-unit' }, 'bp')));
+    }));
+}
+
+function simHeroChart(t) {
+  // Use the sparkline data to render a denser line chart with
+  // bands derived from the latest_prediction.
+  const sp = t.sparkline || [];
+  const brand = t.brand || { accent: '#D4A24A' };
+  const W = 760, H = 220, padL = 36, padR = 36, padT = 12, padB = 22;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  if (sp.length < 2) {
+    return el('div', { class: 'sim-hero-chart-empty' },
+      'Sparkline charges after the next ' + Math.max(2 - sp.length, 0) +
+      ' tick(s) land. BURST ×6 to warm immediately.');
+  }
+  const vs = sp.map(p => p.v);
+  let lo = Math.min(...vs);
+  let hi = Math.max(...vs);
+  const pred = t.latest_prediction;
+  if (pred && pred.p95_low != null && pred.p95_high != null) {
+    lo = Math.min(lo, pred.p95_low);
+    hi = Math.max(hi, pred.p95_high);
+  }
+  if (hi - lo < 0.5) { hi += 0.5; lo -= 0.5; }
+  const pad = (hi - lo) * 0.12;
+  lo -= pad; hi += pad;
+  const tMin = Date.parse(sp[0].t) || Date.now();
+  const tMax = Date.parse(sp[sp.length - 1].t) || Date.now();
+  const tSpan = Math.max(tMax - tMin, 60_000);
+  const projMs = tSpan * 0.4;
+  const tEnd = tMax + projMs;
+  const x = (ms) => padL + innerW * ((ms - tMin) / (tEnd - tMin));
+  const y = (v) => padT + innerH * (1 - (v - lo) / (hi - lo));
+  const parts = [];
+  // Frame
+  parts.push(`<rect x="${padL}" y="${padT}" width="${innerW}" height="${innerH}" class="sim-hero-frame"/>`);
+  // Zero line
+  if (lo <= 0 && hi >= 0) {
+    const y0 = y(0);
+    parts.push(`<line x1="${padL}" y1="${y0}" x2="${padL + innerW}" y2="${y0}" class="sim-hero-zero"/>`);
+    parts.push(`<text x="${padL - 4}" y="${y0 + 3}" class="sim-hero-axlbl" text-anchor="end">0bp</text>`);
+  }
+  // Y bounds labels
+  parts.push(`<text x="${padL - 4}" y="${padT + 8}" class="sim-hero-axlbl" text-anchor="end">${hi.toFixed(1)}</text>`);
+  parts.push(`<text x="${padL - 4}" y="${padT + innerH}" class="sim-hero-axlbl" text-anchor="end">${lo.toFixed(1)}</text>`);
+  // Forecast cone
+  if (pred && pred.point != null && pred.p95_low != null) {
+    const t0 = Date.parse(pred.made_at) || tMax;
+    const t1 = Date.parse(pred.resolves_at) || tEnd;
+    const xc0 = x(t0), xc1 = x(t1);
+    const band = (lowV, highV, op) => `<rect x="${xc0}" y="${y(highV)}" width="${xc1 - xc0}" height="${y(lowV) - y(highV)}" fill="${brand.accent}" opacity="${op}"/>`;
+    parts.push(band(pred.p95_low, pred.p95_high, 0.08));
+    if (pred.p80_low != null) parts.push(band(pred.p80_low, pred.p80_high, 0.18));
+    if (pred.p50_low != null) parts.push(band(pred.p50_low, pred.p50_high, 0.3));
+    parts.push(`<line x1="${xc0}" y1="${y(pred.point)}" x2="${xc1}" y2="${y(pred.point)}" stroke="${brand.accent}" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.85"/>`);
+  }
+  // 'now' line
+  const xNow = x(tMax);
+  parts.push(`<line x1="${xNow}" y1="${padT}" x2="${xNow}" y2="${padT + innerH}" class="sim-hero-now"/>`);
+  parts.push(`<text x="${xNow + 4}" y="${padT + 12}" class="sim-hero-axlbl">now</text>`);
+  // History line — paper colour (amber) per research discipline
+  // (NOT the brand colour; brand stays a label only).
+  const pts = sp.map(p => x(Date.parse(p.t)) + ',' + y(p.v)).join(' ');
+  parts.push(`<polyline points="${pts}" fill="none" stroke="#D4A24A" stroke-width="1.5"/>`);
+  // Dot on the most recent value with pulse
+  const last = sp[sp.length - 1];
+  parts.push(`<circle cx="${x(Date.parse(last.t))}" cy="${y(last.v)}" r="3" fill="${brand.accent}" class="sim-hero-pulse"/>`);
+  const wrap = document.createElement('div');
+  wrap.className = 'sim-hero-chart';
+  wrap.innerHTML = `<svg class="sim-hero-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
+  return wrap;
+}
+
+function simHeroJudge(t) {
+  const p = t.latest_prediction;
+  if (!p || (!p.judge_synthesis && !p.judge_insight && !p.judge_pitch)) {
+    return el('div', { class: 'sim-hero-judge sim-hero-judge-empty' },
+      el('span', { class: 'sim-hero-judge-tag' }, 'AI JUDGE'),
+      ' Awaiting LLM synthesis on the next tick.');
+  }
+  return el('div', { class: 'sim-hero-judge' },
+    el('div', { class: 'sim-hero-judge-tag' }, 'AI JUDGE'),
+    p.judge_synthesis
+      ? el('div', { class: 'sim-hero-judge-syn' }, p.judge_synthesis)
+      : null,
+    el('div', { class: 'sim-hero-judge-row' },
+      p.judge_insight
+        ? el('div', { class: 'sim-hero-judge-insight' },
+            el('span', { class: 'sim-hero-judge-sub' }, 'INSIGHT'),
+            p.judge_insight)
+        : null,
+      p.judge_pitch
+        ? el('div', { class: 'sim-hero-judge-pitch' },
+            el('span', { class: 'sim-hero-judge-sub' }, 'CONSIDER'),
+            p.judge_pitch)
+        : null));
+}
+
+// RIGHT RAIL — THE WIRE: streaming event feed
+function simWire(feed) {
+  return el('aside', { class: 'sim-rail-right' },
+    el('div', { class: 'sim-wire-head' },
+      el('h3', { class: 'sim-wire-title' }, 'THE WIRE'),
+      el('span', { class: 'sim-wire-sub' },
+        'live · ticker + judge + resolutions')),
+    el('div', { class: 'sim-wire-rows' },
+      (SIM_VIEW.wireRows || []).map(renderWireRow)),
+    el('div', { class: 'sim-wire-foot' },
+      el('span', { class: 'sim-wire-foot-lbl' }, 'PIPELINE'),
+      el('div', { class: 'sim-pulley-vertical' },
+        el('div', { class: 'sim-pulley-vrail' }),
+        el('div', { class: 'sim-pulley-marker',
+          'data-seq': String(SIM_VIEW.pulseSeq) }),
+        ['PREDICT', 'ATTRIBUTE', 'SCORE', 'NARRATE'].map(s =>
+          el('div', { class: 'sim-pulley-vstation' },
+            el('div', { class: 'sim-pulley-dot' }),
+            el('span', { class: 'sim-pulley-label' }, s))))));
+}
+
+function renderWireRow(ev) {
+  const glyph = wireGlyphFor(ev.kind);
+  const time = ev.ts ? new Date(ev.ts).toISOString().slice(11, 19) : '--:--:--';
+  const levelCls = ev.level === 'warn' ? 'sim-wire-warn'
+    : ev.level === 'error' ? 'sim-wire-error' : '';
+  return el('div', { class: 'sim-wire-row ' + levelCls,
+      'data-ts': ev.ts || '' },
+    el('span', { class: 'sim-wire-time' }, time),
+    el('span', { class: 'sim-wire-glyph ' + glyph.cls }, glyph.label),
+    ev.symbol
+      ? el('span', { class: 'sim-wire-sym' }, ev.symbol)
+      : null,
+    el('span', { class: 'sim-wire-msg' }, ev.summary || ev.kind || ''));
+}
+
+function wireGlyphFor(kind) {
+  if (!kind) return { label: 'EVNT', cls: '' };
+  if (kind.includes('resolver')) return { label: 'RESV', cls: 'sim-wire-resv' };
+  if (kind.includes('ticker.cycle')) return { label: 'TICK', cls: 'sim-wire-tick' };
+  if (kind.includes('brave.fetched')) return { label: 'BRAV', cls: 'sim-wire-brav' };
+  if (kind.includes('brave.cache_hit')) return { label: 'CACH', cls: 'sim-wire-cach' };
+  if (kind.includes('brave.skip_calm')) return { label: 'SKIP', cls: 'sim-wire-skip' };
+  if (kind.includes('dispute')) return { label: 'DISP', cls: 'sim-wire-disp' };
+  if (kind.includes('judge')) return { label: 'JUDG', cls: 'sim-wire-judg' };
+  if (kind.includes('schema_missing')) return { label: 'SCHM', cls: 'sim-wire-warn' };
+  return { label: 'EVNT', cls: '' };
+}
+
+// Inline sparkline SVG. Returns a DOM element. Brand-colored,
+// drawn at low opacity behind sibling values where needed.
+function sparklineSvg(spark, color, w, h) {
+  if (!spark || spark.length < 2) {
+    return el('span', { class: 'sim-spark-empty',
+      style: 'width:' + w + 'px; height:' + h + 'px' });
+  }
+  const vs = spark.map(p => p.v);
+  let lo = Math.min(...vs);
+  let hi = Math.max(...vs);
+  if (hi - lo < 1e-6) { hi += 0.5; lo -= 0.5; }
+  const pad = (hi - lo) * 0.1;
+  lo -= pad; hi += pad;
+  const xs = (i) => (i / (spark.length - 1)) * w;
+  const ys = (v) => h - ((v - lo) / (hi - lo)) * h;
+  const pts = spark.map((p, i) => xs(i) + ',' + ys(p.v).toFixed(2)).join(' ');
+  const wrap = document.createElement('span');
+  wrap.className = 'sim-spark';
+  wrap.innerHTML =
+    '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h +
+    '" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">' +
+    '<polyline points="' + pts + '" fill="none" stroke="' + color +
+    '" stroke-width="1.4" opacity="0.85"/>' +
+    '<circle cx="' + xs(spark.length - 1) + '" cy="' +
+    ys(spark[spark.length - 1].v).toFixed(2) +
+    '" r="2" fill="' + color + '"/></svg>';
+  return wrap;
 }
 
 // ── pipeline pulley ─────────────────────────────────────────────────

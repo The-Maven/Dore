@@ -1997,6 +1997,356 @@ def _bin_to_candles(ticks: list[dict], bin_minutes: int) -> list[dict]:
     return candles
 
 
+@app.get("/api/simulator/stream")
+def simulator_stream(request: Request):
+    """Server-Sent Events stream — the heartbeat that makes the
+    YC-grade UI feel genuinely live.
+
+    Pushes a JSON event every 2s with a compact diff of the feed,
+    plus an immediate snapshot on connect. The client uses this as
+    the primary live channel and polls /api/simulator/feed every
+    20s as a reconciliation heartbeat.
+
+    Event types:
+      - 'snapshot' (on connect): full feed payload
+      - 'tick' (every 2s): {tokens: [{symbol, current_bps, delta}],
+                            events: [new event rows since last]}
+      - 'heartbeat' (every 10s if nothing changed): keep-alive
+
+    SSE is the right shape: one direction (server → client),
+    EventSource handles reconnection, no WebSocket complexity, and
+    devtools show a clean named event stream that demos well.
+    """
+    from fastapi.responses import StreamingResponse
+    import asyncio
+    import json as _json
+
+    async def event_generator():
+        # Snapshot on connect — the first paint should have full data.
+        try:
+            payload = simulator_feed()
+            yield "event: snapshot\n"
+            yield f"data: {_json.dumps(payload, default=str)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            yield f"event: error\ndata: {_json.dumps({'error': str(exc)[:200]})}\n\n"
+            return
+
+        # Track last seen state so each tick is a DIFF, not a snapshot.
+        last_event_ts = ""
+        last_current_bps: dict[str, float | None] = {
+            t["symbol"]: t.get("current_bps") for t in payload.get("tokens", [])
+        }
+        idle_ticks = 0
+
+        while True:
+            # Client closed connection?
+            if await request.is_disconnected():
+                break
+            try:
+                await asyncio.sleep(2.0)
+                fresh = simulator_feed()
+                # Compute the diff: tokens whose current_bps changed,
+                # plus new events since the last event ts.
+                changed_tokens = []
+                new_last_current: dict[str, float | None] = {}
+                for t in fresh.get("tokens", []):
+                    sym = t["symbol"]
+                    new_v = t.get("current_bps")
+                    old_v = last_current_bps.get(sym)
+                    new_last_current[sym] = new_v
+                    if new_v != old_v:
+                        changed_tokens.append({
+                            "symbol": sym,
+                            "current_bps": new_v,
+                            "deltas": t.get("deltas"),
+                            "consensus": t.get("consensus"),
+                            "brand": t.get("brand"),
+                        })
+                last_current_bps = new_last_current
+
+                new_events = []
+                for ev in fresh.get("events", []):
+                    if ev.get("ts", "") > last_event_ts:
+                        new_events.append(ev)
+                if fresh.get("events"):
+                    last_event_ts = max(
+                        (e.get("ts", "") for e in fresh["events"]),
+                        default=last_event_ts,
+                    )
+
+                if changed_tokens or new_events:
+                    idle_ticks = 0
+                    yield "event: tick\n"
+                    yield f"data: {_json.dumps({'tokens': changed_tokens, 'events': new_events, 'brave_quota': fresh.get('brave_quota'), 'ticker_last_tick_at': (fresh.get('ticker') or {}).get('last_tick_at')}, default=str)}\n\n"
+                else:
+                    idle_ticks += 1
+                    # Send a keep-alive every ~10s of idle so the
+                    # connection doesn't get reaped by intermediaries
+                    # and the client knows the stream is alive.
+                    if idle_ticks >= 5:
+                        idle_ticks = 0
+                        yield "event: heartbeat\n"
+                        yield f"data: {_json.dumps({'ts': fresh.get('computed_at')})}\n\n"
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001
+                # Best-effort: log + continue. Don't break the stream
+                # over one bad cycle.
+                log_event(
+                    "simulator.stream.cycle_failed", level="warn",
+                    error_class=type(exc).__name__,
+                    error_message=str(exc)[:200],
+                )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",  # disable nginx buffering
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/simulator/feed")
+def simulator_feed() -> dict[str, Any]:
+    """Single dense payload powering the YC-class live workspace.
+
+    One round-trip returns everything the v3 UI needs to render a
+    Bloomberg-class dashboard:
+      - tokens[]: every tracked stablecoin with brand colour, current
+        peg, 1m/5m/1h/24h deltas, 60-point sparkline, latest forecast
+        + judge synthesis, and source-consensus state.
+      - events[]: a rolling tail of observability events filtered to
+        the simulator-relevant kinds (ticks emitted, resolutions
+        graded, brave hits, source disputes).
+      - sources[]: per-peg-source liveness — last successful read
+        time, count of consensus_kind in the last hour.
+      - quota: brave + ticker + config rollup.
+
+    The endpoint is the heartbeat the client polls every ~5s. All
+    aggregation happens here in one pass so the client just renders.
+    """
+    from collections import Counter, defaultdict
+    from datetime import datetime, timedelta, timezone
+    from sca import config as _cfg
+    from sca.movement import config as sim_cfg
+    from sca.movement.brave_context import quota_state as brave_quota_state
+    from sca.movement.ticker import state as ticker_state
+    from sca.observability import recent_events
+    from sca.token_palette import brand_for
+
+    cfg = sim_cfg.load()
+    sym_list = cfg.get("symbols") or []
+    store = get_store()
+    now = datetime.now(timezone.utc)
+
+    tokens_out: list[dict[str, Any]] = []
+    for sym in sym_list:
+        sym_u = sym.upper()
+        brand = brand_for(sym_u)
+        # All peg ticks for this symbol, newest first. Cap generous
+        # so the 1h delta has data; UI truncates to 60 for sparkline.
+        try:
+            ticks = store.list_peg_ticks(sym_u, limit=400) or []
+        except Exception:  # noqa: BLE001
+            ticks = []
+        ticks_sorted = sorted(
+            [t for t in ticks if t.get("read_at")],
+            key=lambda t: t["read_at"],
+        )
+
+        current = None
+        spark = []
+        deltas = {"d1m": None, "d5m": None, "d1h": None, "d24h": None}
+        consensus_now = "single"
+        max_disagreement_now = 0.0
+        sources_now: list[dict[str, Any]] = []
+        if ticks_sorted:
+            latest = ticks_sorted[-1]
+            current = float(latest.get("deviation_bps") or 0.0)
+            consensus_now = latest.get("consensus_kind") or "single"
+            max_disagreement_now = float(
+                latest.get("max_disagreement_bps") or 0.0)
+            sources_now = latest.get("sources") or []
+            # Sparkline: last 60 readings (oldest-first).
+            spark = [
+                {
+                    "t": t.get("read_at"),
+                    "v": float(t.get("deviation_bps") or 0.0),
+                    "ck": t.get("consensus_kind") or "single",
+                }
+                for t in ticks_sorted[-60:]
+            ]
+            # Deltas — find the tick closest to (now - window).
+            for label, window in (
+                ("d1m", timedelta(minutes=1)),
+                ("d5m", timedelta(minutes=5)),
+                ("d1h", timedelta(hours=1)),
+                ("d24h", timedelta(hours=24)),
+            ):
+                target = now - window
+                best = None
+                best_gap = float("inf")
+                for t in ticks_sorted:
+                    try:
+                        rt = datetime.fromisoformat(
+                            str(t["read_at"]).replace("Z", "+00:00"))
+                        if rt.tzinfo is None:
+                            rt = rt.replace(tzinfo=timezone.utc)
+                    except (ValueError, TypeError):
+                        continue
+                    gap = abs((target - rt).total_seconds())
+                    # ±10% window match so a slightly-off tick still counts
+                    if gap < best_gap and gap < window.total_seconds() * 0.6:
+                        best_gap = gap
+                        best = t
+                if best is not None:
+                    base = float(best.get("deviation_bps") or 0.0)
+                    deltas[label] = round(current - base, 4)
+
+        # Latest prediction for the forecast cone + judge prose.
+        try:
+            preds = store.list_predictions(
+                symbol=sym_u, kind="peg_deviation", limit=1) or []
+        except Exception:  # noqa: BLE001
+            preds = []
+        latest_pred = preds[0] if preds else None
+
+        # Recent calibration rollup for this symbol — investors
+        # care about the track record. Cheap aggregation.
+        try:
+            cal = store.calibration_summary(symbol=sym_u) or {}
+        except Exception:  # noqa: BLE001
+            cal = {}
+
+        tokens_out.append({
+            "symbol": sym_u,
+            "brand": brand,
+            "current_bps": current,
+            "deltas": deltas,
+            "sparkline": spark,
+            "consensus": {
+                "kind": consensus_now,
+                "max_disagreement_bps": max_disagreement_now,
+                "sources": sources_now,
+            },
+            "tick_count": len(ticks_sorted),
+            "latest_prediction": (latest_pred and {
+                "made_at": latest_pred.get("made_at"),
+                "resolves_at": latest_pred.get("resolves_at"),
+                "point": _safe_float(latest_pred.get("point")),
+                "p50_low": _safe_float(latest_pred.get("p50_low")),
+                "p50_high": _safe_float(latest_pred.get("p50_high")),
+                "p80_low": _safe_float(latest_pred.get("p80_low")),
+                "p80_high": _safe_float(latest_pred.get("p80_high")),
+                "p95_low": _safe_float(latest_pred.get("p95_low")),
+                "p95_high": _safe_float(latest_pred.get("p95_high")),
+                "prob_positive": _safe_float(latest_pred.get("prob_positive")),
+                "confidence_word": latest_pred.get("confidence_word"),
+                "horizon_minutes": latest_pred.get("horizon_minutes"),
+                "drivers": latest_pred.get("drivers") or [],
+                "judge_synthesis": latest_pred.get("judge_synthesis"),
+                "judge_insight": latest_pred.get("judge_insight"),
+                "judge_pitch": latest_pred.get("judge_pitch"),
+            }) or None,
+            "calibration": {
+                "count": cal.get("count", 0),
+                "brier_mean": cal.get("brier_mean"),
+                "crps_mean": cal.get("crps_mean"),
+                "baseline_climatology_brier_mean":
+                    cal.get("baseline_climatology_brier_mean"),
+            },
+        })
+
+    # Recent event stream — narrow filter to the simulator-relevant
+    # kinds so the right-rail feed doesn't drown in unrelated noise.
+    SIM_EVENT_KINDS = {
+        "movement.ticker.cycle",
+        "movement.peg_tick.dispute_persisted",
+        "movement.brave.cache_hit", "movement.brave.fetched",
+        "movement.brave.skip_calm", "movement.brave.quota_hit",
+        "movement.resolver.graded",
+        "movement.judge.voice_rule_triggered",
+        "movement.judge.citation_forged",
+        "peg_price.dispute",
+        "store.schema_missing",
+    }
+    raw = recent_events(limit=300) or []
+    events_out = []
+    for ev in raw:
+        if ev.get("kind") in SIM_EVENT_KINDS or ev.get("level") in ("warn", "error"):
+            events_out.append({
+                "kind": ev.get("kind"),
+                "level": ev.get("level", "info"),
+                "ts": ev.get("ts"),
+                "symbol": ev.get("symbol", ""),
+                "summary": _event_summary(ev),
+            })
+        if len(events_out) >= 80:
+            break
+
+    # Per-source liveness — last successful peg read per source name.
+    source_seen: dict[str, dict[str, Any]] = {}
+    source_hist: dict[str, Counter] = defaultdict(Counter)
+    for tk in tokens_out:
+        ck = tk["consensus"]["kind"]
+        for s in tk["consensus"]["sources"]:
+            name = s.get("name", "unknown")
+            source_hist[name][ck] += 1
+            cur = source_seen.get(name)
+            cur_age = (cur and cur.get("fetched_at")) or 0
+            new_age = float(s.get("fetched_at") or 0)
+            if not cur or new_age > cur_age:
+                source_seen[name] = s
+    sources_out = []
+    for name, last in source_seen.items():
+        sources_out.append({
+            "name": name,
+            "fetched_at": last.get("fetched_at"),
+            "consensus_hist": dict(source_hist.get(name, {})),
+        })
+
+    return {
+        "tokens": tokens_out,
+        "events": events_out,
+        "sources": sources_out,
+        "ticker": ticker_state(),
+        "config": cfg,
+        "brave_quota": brave_quota_state(),
+        "computed_at": now.isoformat(timespec="seconds"),
+    }
+
+
+def _event_summary(ev: dict[str, Any]) -> str:
+    """One-line human label for an event in the live feed."""
+    kind = ev.get("kind", "")
+    sym = ev.get("symbol", "") or ""
+    if kind == "movement.ticker.cycle":
+        return f"tick cycle · {ev.get('symbols', '?')} symbols"
+    if kind == "movement.resolver.graded":
+        return (f"{sym} resolved · {ev.get('outcome', '?')} · "
+                f"brier {ev.get('brier', '—')}")
+    if kind == "movement.brave.fetched":
+        return (f"brave fetched {sym} · {ev.get('count', 0)} hits · "
+                f"{ev.get('calls_today', '?')}/{ev.get('cap', '?')}")
+    if kind == "movement.brave.cache_hit":
+        return f"brave cache hit · {sym} · {ev.get('age_s', '?')}s"
+    if kind == "movement.brave.skip_calm":
+        return f"brave skipped · {sym} calm"
+    if kind == "movement.peg_tick.dispute_persisted":
+        return (f"{sym} peg sources disputed · spread "
+                f"{ev.get('max_disagreement_bps', '?')}bp")
+    if kind == "peg_price.dispute":
+        return f"peg dispute · {sym}"
+    if kind == "movement.judge.citation_forged":
+        return f"judge forged citation stripped · {ev.get('forged_count', '?')} drops"
+    if kind == "store.schema_missing":
+        return f"schema missing · {ev.get('table', '?')}"
+    return kind
+
+
 @app.get("/api/simulator/config")
 def simulator_config_get() -> dict[str, Any]:
     """Current simulator config — read by the configuration panel."""

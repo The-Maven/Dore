@@ -125,135 +125,176 @@ test('renderMarket skips the freshness footer when freshness block is empty', ()
     'footer should be absent when no freshness data is available');
 });
 
-// Build a minimal timeline shape that matches what /api/simulator/
-// timeline returns. The candle chart needs ticks + candles; the
-// pistons need latest_prediction.
-function simulatorTimelineFixture(symbol = 'USDC') {
+// v3 feed fixture — matches the /api/simulator/feed payload that
+// powers the Bloomberg-class workspace. tokens carry brand + value
+// + deltas + sparkline + latest_prediction; events carry the
+// streaming wire rows; sources carry per-peg-source liveness.
+function simulatorFeedFixture(overrides = {}) {
   const now = Date.now();
-  const ticks = [];
-  const candles = [];
-  for (let i = 5; i >= 0; i--) {
-    const t = new Date(now - i * 5 * 60_000).toISOString();
-    const v = 2 + Math.sin(i) * 1.5;
-    ticks.push({ t, v, consensus_kind: 'agreed', max_disagreement_bps: 1 });
-    candles.push({
-      t_start: new Date(now - (i + 1) * 5 * 60_000).toISOString(),
-      t_end: t, open: v - 0.4, high: v + 0.6,
-      low: v - 0.6, close: v, count: 1,
+  const spark = [];
+  for (let i = 9; i >= 0; i--) {
+    spark.push({
+      t: new Date(now - i * 60_000).toISOString(),
+      v: 1 + Math.sin(i) * 1.5,
+      ck: 'agreed',
     });
   }
   return {
-    symbols: [symbol], bin_minutes: 5,
     tokens: [{
-      symbol, ticks, candles,
+      symbol: 'USDC',
+      brand: { accent: '#4F9DFF', glow: '#4F9DFF66', name: 'Circle', branded: true },
+      current_bps: 1.42,
+      deltas: { d1m: 0.32, d5m: -0.15, d1h: 1.20, d24h: null, d7d: null },
+      sparkline: spark,
+      consensus: { kind: 'agreed', max_disagreement_bps: 1.2,
+        sources: [{ name: 'coinbase', price: 1.0001 },
+                  { name: 'kraken', price: 1.0002 }] },
+      tick_count: 60,
       latest_prediction: {
         made_at: new Date(now).toISOString(),
-        resolves_at: new Date(now + 60 * 60_000).toISOString(),
-        point: 3.2,
-        p50_low: 1.5, p50_high: 4.9,
-        p80_low: -0.4, p80_high: 6.8,
-        p95_low: -2.6, p95_high: 9.0,
+        resolves_at: new Date(now + 60_000).toISOString(),
+        point: 1.5,
+        p50_low: 0.8, p50_high: 2.2,
+        p80_low: 0.1, p80_high: 2.9,
+        p95_low: -0.5, p95_high: 3.5,
         confidence_word: 'likely',
-        horizon_minutes: 60,
-        judge_synthesis: 'USDC sits inside the 50% band at +3.2bp.',
+        horizon_minutes: 2,
+        drivers: [],
+        judge_synthesis: 'USDC sits inside the 50% band at +1.50bp.',
         judge_insight: 'Peg holds within stated cone.',
         judge_pitch: 'no action',
       },
+      calibration: { count: 12, brier_mean: 0.18, crps_mean: 0.45,
+        baseline_climatology_brier_mean: 0.25 },
     }],
+    events: [
+      { kind: 'movement.ticker.cycle', ts: new Date(now).toISOString(),
+        symbol: '', summary: 'tick cycle · 1 symbols', level: 'info' },
+      { kind: 'movement.resolver.graded',
+        ts: new Date(now - 30_000).toISOString(),
+        symbol: 'USDC',
+        summary: 'USDC resolved · inside_p50 · brier None',
+        level: 'info' },
+    ],
+    sources: [
+      { name: 'coinbase', fetched_at: now / 1000,
+        consensus_hist: { agreed: 1 } },
+      { name: 'kraken', fetched_at: now / 1000,
+        consensus_hist: { agreed: 1 } },
+    ],
+    ticker: { running: true, last_tick_at: new Date(now).toISOString(),
+              last_summary: null },
+    config: { enabled: true, tick_interval_minutes: 1, horizon_minutes: 2,
+              symbols: ['USDC'], kinds: ['peg_deviation'] },
+    brave_quota: { day: '2026-05-25', calls: 4, cap: 200, remaining: 196 },
+    calibration: simulatorCalibrationFixture(),
+    computed_at: new Date(now).toISOString(),
+    ...overrides,
   };
 }
 
-function buildSimData(overrides = {}) {
-  return {
-    state: simulatorStateFixture(overrides.stateOverrides || {}),
-    preds: overrides.preds ||
-      { predictions: [simulatorPredictionFixture()], count: 1 },
-    calibration: overrides.calibration ||
-      simulatorCalibrationFixture(),
-    timeline: overrides.timeline || simulatorTimelineFixture(),
-  };
-}
-
-test('renderSimulator renders pulley + SOTU + canvas + carousel + calibration', () => {
+test('renderSimulator (v3) renders ribbon + status + workspace + wire + calibration', () => {
   const { window } = loadApp();
   const mount = window.document.createElement('div');
   window.document.body.appendChild(mount);
-  // Reset the persistent SIM_VIEW state so this test runs cold.
-  if (window.SIM_VIEW) window.SIM_VIEW.selected = null;
-  // Seed the selection so the canvas shows the test token.
-  if (window.SIM_VIEW) window.SIM_VIEW.selected = new Set(['USDC']);
+  if (window.SIM_VIEW) {
+    window.SIM_VIEW.focused = 'USDC';
+    window.SIM_VIEW.wireRows = [];
+  }
   assert.doesNotThrow(() =>
-    window.renderSimulator(mount, buildSimData(), '')
+    window.renderSimulator(mount, simulatorFeedFixture())
   );
-  // Pipeline pulley at the top.
-  assert.ok(mount.querySelector('.sim-pulley'),
-    'pipeline pulley should render');
-  // SOTU strip with Brave quota.
-  assert.ok(mount.querySelector('.sim-sotu'), 'SOTU strip should render');
-  const sotuText = mount.querySelector('.sim-sotu').textContent;
-  assert.match(sotuText, /BRAVE QUOTA/);
-  assert.match(sotuText, /PEG SOURCES/);
-  // Main canvas + chips + candle SVG.
-  assert.ok(mount.querySelector('.sim-canvas'),
-    'main canvas hero should render');
-  assert.ok(mount.querySelector('.sim-chips'),
-    'token chips ribbon should render');
-  assert.ok(mount.querySelector('.sim-candle-svg'),
-    'candle chart SVG should render');
-  // Pistons present.
-  assert.ok(mount.querySelector('.sim-pistons'),
-    'forecast pistons column should render');
-  // Judge carousel surfaces synthesis.
-  assert.ok(mount.querySelector('.sim-carousel'),
-    'judge carousel should render');
-  assert.match(mount.querySelector('.sim-carousel').textContent,
-    /3\.2bp/);
+  // Bloomberg ribbon (two rows: cells + peg tracks).
+  assert.ok(mount.querySelector('.sim-ribbon'),
+    'Bloomberg ribbon should render');
+  assert.ok(mount.querySelector('.sim-ribbon-cell'),
+    'ribbon should contain at least one token cell');
+  assert.ok(mount.querySelector('.sim-pegtrack'),
+    'peg-deviation track row should render');
+  // Status strip.
+  assert.ok(mount.querySelector('.sim-status'), 'status bar should render');
+  const statusText = mount.querySelector('.sim-status').textContent;
+  assert.match(statusText, /LIVE/);
+  assert.match(statusText, /BRAVE QUOTA/);
+  // Three-column workspace.
+  assert.ok(mount.querySelector('.sim-workspace'), 'workspace should render');
+  assert.ok(mount.querySelector('.sim-rail-left'),
+    'left rail should render');
+  assert.ok(mount.querySelector('.sim-hero'), 'hero pane should render');
+  assert.ok(mount.querySelector('.sim-rail-right'),
+    'right rail (the wire) should render');
+  // Delta grid + sparkline + judge.
+  assert.ok(mount.querySelector('.sim-delta-grid'),
+    'delta grid should render');
+  assert.ok(mount.querySelector('.sim-spark svg, .sim-rail-spark svg'),
+    'sparkline SVG should render somewhere');
+  // Judge synthesis surfaces.
+  const heroText = mount.querySelector('.sim-hero').textContent;
+  assert.match(heroText, /1\.50bp/);
+  // THE WIRE has events.
+  assert.ok(mount.querySelector('.sim-wire-rows'),
+    'wire rows container should render');
   // Calibration page present.
   assert.ok(mount.querySelector('.sim-calibration'),
     'calibration page should render');
 });
 
-test('renderSimulator handles empty archive gracefully', () => {
+test('renderSimulator (v3) handles empty archive gracefully', () => {
   const { window } = loadApp();
   const mount = window.document.createElement('div');
   window.document.body.appendChild(mount);
-  if (window.SIM_VIEW) window.SIM_VIEW.selected = new Set();
-  const emptyTimeline = { symbols: [], bin_minutes: 5, tokens: [] };
-  const emptyCal = { count: 0, brier_mean: null, crps_mean: null,
-    outcome_histogram: {}, reliability_bins: [],
-    baseline_persistence_brier_mean: null,
-    baseline_climatology_brier_mean: null };
+  if (window.SIM_VIEW) {
+    window.SIM_VIEW.focused = null;
+    window.SIM_VIEW.wireRows = [];
+  }
   assert.doesNotThrow(() =>
-    window.renderSimulator(mount, buildSimData({
-      preds: { predictions: [], count: 0 },
-      calibration: emptyCal,
-      timeline: emptyTimeline,
-    }), '')
+    window.renderSimulator(mount, simulatorFeedFixture({
+      tokens: [], events: [], sources: [],
+      calibration: { count: 0, brier_mean: null, crps_mean: null,
+        outcome_histogram: {}, reliability_bins: [],
+        baseline_persistence_brier_mean: null,
+        baseline_climatology_brier_mean: null },
+    }))
   );
-  assert.ok(mount.querySelector('.sim-empty'),
-    'empty-state panel should render when no predictions');
+  // Empty hero ("No data yet.")
+  assert.ok(mount.querySelector('.sim-hero-empty'),
+    'empty hero should render when no tokens');
+  // Calibration page renders its empty state.
   assert.ok(mount.querySelector('.sim-calibration-empty'),
     'empty calibration message should render');
 });
 
-test('renderSimulator carousel collapses when no judge output present', () => {
+test('renderSimulator (v3) flashes ribbon cells on tick diff', () => {
   const { window } = loadApp();
   const mount = window.document.createElement('div');
   window.document.body.appendChild(mount);
-  if (window.SIM_VIEW) window.SIM_VIEW.selected = new Set(['USDC']);
-  const tl = simulatorTimelineFixture();
-  tl.tokens[0].latest_prediction.judge_synthesis = null;
-  tl.tokens[0].latest_prediction.judge_insight = null;
-  tl.tokens[0].latest_prediction.judge_pitch = null;
-  assert.doesNotThrow(() =>
-    window.renderSimulator(mount, buildSimData({ timeline: tl }), '')
-  );
-  // Empty-judge carousel renders its honest fallback message.
-  assert.ok(mount.querySelector('.sim-carousel-empty'),
-    'empty carousel should render its fallback when no judge text');
-  const empty = mount.querySelector('.sim-carousel-empty');
-  assert.match(empty.textContent,
-    /has not synthesised|judge layer has not/);
+  if (window.SIM_VIEW) {
+    window.SIM_VIEW.focused = 'USDC';
+    window.SIM_VIEW.wireRows = [];
+  }
+  // Initial render with +1.42bp.
+  window.renderSimulator(mount, simulatorFeedFixture());
+  // Simulate an SSE tick with a larger value.
+  window.applySimTick(mount, {
+    tokens: [{
+      symbol: 'USDC',
+      current_bps: 2.5,
+      deltas: { d1m: 1.08, d5m: 1.0, d1h: 1.5, d24h: null, d7d: null },
+      consensus: { kind: 'agreed' },
+      brand: { accent: '#4F9DFF', name: 'Circle' },
+    }],
+    events: [],
+    brave_quota: { calls: 5, cap: 200 },
+    ticker_last_tick_at: new Date().toISOString(),
+  });
+  // The cell should have a flash class applied.
+  const cell = mount.querySelector(
+    '.sim-ribbon-cell[data-sim-sym="USDC"] [data-sim-val]');
+  assert.ok(cell, 'ribbon value cell should still exist after tick');
+  assert.ok(
+    cell.classList.contains('sim-flash-up'),
+    'value cell should flash up when value increased');
+  assert.match(cell.textContent, /\+2\.50bp/);
 });
 
 test('renderRedemption handles crypto-collateralized (no tiers)', () => {
