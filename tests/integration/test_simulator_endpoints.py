@@ -128,6 +128,20 @@ def test_feed_returns_tokens_with_brand_and_deltas(client, monkeypatch):
     assert "meta" in usdc
     assert "yield_bearing" in usdc["meta"]
     assert "venue_type" in usdc["meta"]
+    # USD price — surfaced alongside bp so professional traders see
+    # the headline figure they anchor on. Computed from the latest
+    # tick's price column, or derived from bp as 1.0 + bp/10_000.
+    assert "current_price" in usdc
+    if usdc["current_bps"] is not None:
+        # If we have a bp value, we must have a price.
+        assert usdc["current_price"] is not None
+        # Price ≈ 1.0 + bps/10000 (within 1e-6 tolerance for any
+        # roundtrip via the source price field).
+        expected_price = 1.0 + (usdc["current_bps"] / 10_000.0)
+        assert abs(usdc["current_price"] - expected_price) < 0.0001, (
+            f"price/bp mismatch: price={usdc['current_price']}, "
+            f"bp={usdc['current_bps']}, expected_price~{expected_price}"
+        )
     # Per-token calibration was a dead field (UI never consumed it).
     # Dropping it saved ~6.5s of HTTP/2 latency per /feed — pin the
     # contract so it cannot creep back in.

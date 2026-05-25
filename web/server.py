@@ -2098,13 +2098,15 @@ def simulator_stream(request: Request):
                     old_v = last_current_bps.get(sym)
                     new_last_current[sym] = new_v
                     if new_v != old_v:
-                        # Include the sparkline so the client can
-                        # refresh the line in place — without it the
+                        # Include the sparkline + current_price so the
+                        # client can refresh the line + the headline
+                        # USD price in place — without these the
                         # ticker numbers flash but the chart stays
                         # stale until the next 20s reconciliation.
                         changed_tokens.append({
                             "symbol": sym,
                             "current_bps": new_v,
+                            "current_price": t.get("current_price"),
                             "deltas": t.get("deltas"),
                             "consensus": t.get("consensus"),
                             "brand": t.get("brand"),
@@ -2190,6 +2192,7 @@ def _fetch_token_block(store, sym: str, brand_for, now):
     )
 
     current = None
+    current_price = None  # USD price (e.g. 0.999946) — surfaced alongside bp
     spark: list[dict] = []
     deltas = {"d1m": None, "d5m": None, "d1h": None, "d24h": None}
     consensus_now = "single"
@@ -2202,6 +2205,17 @@ def _fetch_token_block(store, sym: str, brand_for, now):
         max_disagreement_now = float(
             latest.get("max_disagreement_bps") or 0.0)
         sources_now = latest.get("sources") or []
+        # USD price — prefer the persisted `price` column on the tick
+        # row (the canonical consensus_price), else compute from bp.
+        # Stablecoin price = 1.0 + (bp / 10000); a 1bp move = $0.0001.
+        try:
+            raw_price = latest.get("price")
+            if isinstance(raw_price, (int, float)):
+                current_price = float(raw_price)
+            else:
+                current_price = 1.0 + (current / 10_000.0)
+        except (TypeError, ValueError):
+            current_price = 1.0 + (current / 10_000.0)
         spark = [
             {
                 "t": t.get("read_at"),
@@ -2292,6 +2306,7 @@ def _fetch_token_block(store, sym: str, brand_for, now):
         "symbol": sym_u,
         "brand": brand,
         "current_bps": current,
+        "current_price": current_price,  # USD price (e.g. 0.999946)
         "deltas": deltas,
         "sparkline": spark,
         "meta": meta,

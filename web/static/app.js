@@ -6975,6 +6975,22 @@ function flashTokenCell(t) {
   // reconciliation.
   const cells = document.querySelectorAll(
     '[data-sim-sym="' + t.symbol + '"]');
+  // Update the USD price slot if present (hero pane). Same skip-
+  // unchanged discipline as the bp slot.
+  if (t.current_price != null) {
+    for (const cell of cells) {
+      const priceSlot = cell.querySelector('[data-sim-price]');
+      if (!priceSlot) continue;
+      const prevP = parseFloat(priceSlot.getAttribute('data-prev-price'));
+      const newP = Number(t.current_price);
+      const samePrice = Number.isFinite(prevP) &&
+        Math.abs(prevP - newP) < 1e-7;
+      if (!samePrice) {
+        priceSlot.textContent = '$' + newP.toFixed(4);
+        priceSlot.setAttribute('data-prev-price', String(newP));
+      }
+    }
+  }
   // Refresh the sparkline(s) for this symbol. SSE used to flash the
   // numeric values but leave the sparkline stale until the next full
   // rebuild — the line never moved with the live value. Now the
@@ -7880,6 +7896,24 @@ function simHeroPane(focused, feed) {
               focused.latest_prediction.confidence_word.replace(/_/g, ' '))
           : null),
       el('div', { class: 'sim-hero-value' },
+        // USD PRICE — the headline figure a professional trader anchors
+        // on. Rendered to 4 decimal places for stablecoin precision
+        // (a 1bp move = $0.0001, so 4 dp captures every meaningful
+        // change). The bp value sits beside it as the derived metric.
+        el('span', {
+          class: 'sim-hero-val-price',
+          'data-tip': 'Consensus USD price across the responding peg ' +
+            'sources, rounded to 4 decimal places. 1bp deviation = ' +
+            '$0.0001. The basis-point figure below is derived from ' +
+            'this price.',
+          'data-tip-pos': 'below', 'data-tip-size': 'lg',
+        },
+          el('span', { 'data-sim-price': '',
+            'data-prev-price': focused.current_price == null ? ''
+              : String(focused.current_price) },
+            focused.current_price == null
+              ? '—'
+              : '$' + Number(focused.current_price).toFixed(4))),
         el('span', {
           class: 'sim-hero-val-big ' + (focused.current_bps == null ? ''
             : fYld ? 'sim-hero-val-yld'

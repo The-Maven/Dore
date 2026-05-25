@@ -7439,6 +7439,40 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 .sim-hero-val-yld { color: #FFD478 !important; }
 .sim-ribbon-val-yld { color: #FFD478 !important; }
 
+/* USD price — the headline figure on the hero pane. Sits above the
+   bp value with Bodoni weight so a trader's eye lands here first. */
+.sim-hero-val-price {
+  display: block;
+  font-family: 'Bodoni Moda', 'Iowan Old Style', serif;
+  font-size: 30px;
+  font-weight: 600;
+  color: var(--paper, #EFEAE0);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
+  cursor: help;
+  margin-bottom: 2px;
+  line-height: 1.05;
+}
+:root[data-theme="light"] .sim-hero-val-price {
+  color: var(--ink, #1A1B1F);
+}
+
+/* Compact USD price under each ribbon cell. Tabular-nums so the
+   marquee scroll doesn't visually jitter on digit-width changes. */
+.sim-ribbon-price {
+  display: inline-block;
+  margin-left: 6px;
+  color: var(--muted-2, #9A9590);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+}
+:root[data-theme="light"] .sim-ribbon-price {
+  color: var(--muted, #6E6B66);
+}
+
 /* Venue chip: small CEX / DEX / MIXED tag */
 .sim-hero-venue {
   display: inline-block;

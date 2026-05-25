@@ -164,6 +164,7 @@ function simulatorFeedFixture(overrides = {}) {
         judge_insight: 'Peg holds within stated cone.',
         judge_pitch: 'no action',
       },
+      current_price: 1.00015,  // headline USD price for the hero pane
       calibration: { count: 12, brier_mean: 0.18, crps_mean: 0.45,
         baseline_climatology_brier_mean: 0.25 },
       recent_resolutions: [
@@ -291,6 +292,13 @@ test('renderSimulator (v3) renders ribbon + status + workspace + wire + calibrat
   // Anchor label ($1.00 peg)
   assert.match(svgText, /\$1\.00/,
     'anchor line should be labelled with the $1.00 peg');
+  // Hero pane shows the USD price prominently — a professional
+  // trader anchors on this figure. The fixture sets current_price
+  // = 1.00015 → renders as "$1.0002" (4dp rounding).
+  const priceSlot = mount.querySelector('[data-sim-price]');
+  assert.ok(priceSlot, 'hero pane should render the USD price slot');
+  assert.match(priceSlot.textContent, /^\$1\.0/,
+    'price slot should render the USD price ($1.0002 from fixture)');
   // ── PER-TOKEN TRACK RECORD STRIP ────────────────────────────────
   // Lives between the cone and the AI Judge so the reader sees the
   // model's recent hit pattern alongside the current forecast.
