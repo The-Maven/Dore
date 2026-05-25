@@ -290,6 +290,131 @@ function dataLineageBanner(supply, metrics) {
 
 // ── Doré Brief hero panel ─────────────────────────────────────────────
 // Editorial top-of-view synthesis. Distinct visual identity (gold border,
+// ── TRUST LEADERBOARD — cross-token executive summary ────────────────
+// Bound to MARKET. The table a CFO opens the page for: every tracked
+// stable, sorted by Trust Score descending, with verdict + tier badges.
+function trustLeaderboardSkeleton() {
+  return el('section', { class: 'trust-board trust-board-loading fade-in' },
+    el('div', { class: 'trust-board-head' },
+      el('div', { class: 'trust-board-tag' },
+        el('span', { class: 'trust-board-tag-dot' }, '◆'),
+        ' TRUST LEADERBOARD'),
+      el('div', { class: 'trust-board-sub' },
+        'every tracked stable, ranked by Institutional Trust Score')),
+    el('div', { class: 'trust-board-loading-body' },
+      el('span', { class: 'sim-commentary-shimmer' },
+        'scoring all tracked tokens…')));
+}
+
+
+async function loadTrustLeaderboard() {
+  try {
+    const resp = await fetch('/api/trust');
+    if (!resp.ok) throw new Error('http ' + resp.status);
+    const data = await resp.json();
+    const wrap = document.querySelector('.trust-board');
+    if (!wrap) return;
+    wrap.classList.remove('trust-board-loading');
+    wrap.innerHTML = '';
+    wrap.append(renderTrustLeaderboard(data.rows || []));
+  } catch (e) {
+    const wrap = document.querySelector('.trust-board');
+    if (wrap) {
+      wrap.classList.remove('trust-board-loading');
+      wrap.textContent = 'Trust leaderboard load failed: '
+        + (e && e.message || e);
+    }
+  }
+}
+
+
+function renderTrustLeaderboard(rows) {
+  const wrap = el('div', { class: 'trust-board-body' });
+  wrap.append(el('div', { class: 'trust-board-head' },
+    el('div', { class: 'trust-board-tag' },
+      el('span', { class: 'trust-board-tag-dot' }, '◆'),
+      ' TRUST LEADERBOARD'),
+    el('div', { class: 'trust-board-sub' },
+      String(rows.length) + ' tokens scored · ranked by composite ' +
+      'Institutional Trust Score · click any row to open its full ' +
+      'breakdown')));
+  // Column header row
+  wrap.append(el('div', { class: 'trust-board-row trust-board-header' },
+    el('span', { class: 'trust-board-rank' }, '#'),
+    el('span', { class: 'trust-board-sym' }, 'TOKEN'),
+    el('span', { class: 'trust-board-score' }, 'SCORE'),
+    el('span', { class: 'trust-board-bar' }, ''),
+    el('span', { class: 'trust-board-verdict' }, 'POLICY VERDICT'),
+    el('span', { class: 'trust-board-tiers' }, 'COVERAGE')));
+  // Sort descending by score
+  const sorted = rows.slice().sort((a, b) => (b.score || 0) - (a.score || 0));
+  sorted.forEach((r, i) => {
+    const score = Number(r.score) || 0;
+    const color = r.headline_color || _trustBarColor(score);
+    const tierCounts = _trustBoardTierCounts(r.dimensions);
+    const row = el('a', {
+      class: 'trust-board-row',
+      href: '#analyze/' + (r.symbol || ''),
+      'data-trust-board-sym': r.symbol,
+    },
+      el('span', { class: 'trust-board-rank' }, '#' + (i + 1)),
+      el('span', { class: 'trust-board-sym',
+        'data-token': r.symbol }, r.symbol),
+      el('span', { class: 'trust-board-score',
+        style: 'color:' + color }, score.toFixed(0)),
+      el('span', { class: 'trust-board-bar' },
+        el('span', { class: 'trust-board-bar-fill',
+          style: 'width:' + Math.max(0, Math.min(100, score)).toFixed(0)
+            + '%; background:' + color })),
+      el('span', { class: 'trust-board-verdict' }, r.verdict || ''),
+      el('span', { class: 'trust-board-tiers' },
+        _trustBoardTierChips(tierCounts)));
+    wrap.append(row);
+  });
+  // Methodology footer
+  wrap.append(el('div', { class: 'trust-board-foot' },
+    'Composite score = weighted sum across 10 dimensions: Reserve Quality, ' +
+    'Peg Stability, Attestation Freshness, Redemption Capacity, Sanctions ' +
+    'Exposure, Auditor Credibility, Multi-source Consensus, Regulatory ' +
+    'Standing, Custodian Concentration, Implementation Risk. Coverage column ' +
+    'shows how many dimensions resolved at each trust tier.'));
+  return wrap;
+}
+
+
+function _trustBoardTierCounts(dimensions) {
+  const counts = { verified: 0, attested: 0, estimated: 0, unverified: 0 };
+  for (const d of (dimensions || [])) {
+    const t = d.tier || 'unverified';
+    if (counts[t] != null) counts[t]++;
+  }
+  return counts;
+}
+
+
+function _trustBoardTierChips(counts) {
+  const out = el('span', { class: 'trust-board-tier-chips' });
+  const order = [
+    ['verified',   'V', '#4AF6C3'],
+    ['attested',   'A', '#D4A24A'],
+    ['estimated',  'E', '#9A9590'],
+    ['unverified', 'U', '#FF433D'],
+  ];
+  for (const [k, label, c] of order) {
+    if (counts[k]) {
+      out.append(el('span', {
+        class: 'trust-board-tier-chip',
+        style: 'color:' + c,
+        'data-tip': counts[k] + ' dimension' +
+          (counts[k] === 1 ? '' : 's') + ' at "' + k + '" tier',
+        'data-tip-pos': 'left',
+      }, label, counts[k]));
+    }
+  }
+  return out;
+}
+
+
 // ── TRUST CARD — Doré's institutional differentiator ────────────────
 // Composite 0-100 score across ten dimensions, each with cited trust-
 // tier, plus a CFO-language verdict. Lives at the top of F2 ANALYZE
@@ -6228,6 +6353,15 @@ function renderMarket(data, mount) {
   } else {
     mount.append(marketHeroFallback(data.summary, data.computed_at));
   }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // TRUST LEADERBOARD — the CFO's executive summary
+  // ═══════════════════════════════════════════════════════════════════
+  // Cross-token Trust Scores, ranked. Sits just under the editorial
+  // hero because this is the table a treasury reader opens the page
+  // FOR: "what's eligible under our IPS, in order of standing."
+  mount.append(trustLeaderboardSkeleton());
+  loadTrustLeaderboard();
 
   // Per-panel LLM insights, when the brief returned them. Each insight
   // replaces the templated lede in its panel so a refresh genuinely

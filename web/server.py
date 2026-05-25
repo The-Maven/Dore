@@ -1197,6 +1197,27 @@ def _market_facts_block(p: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+@app.get("/api/trust")
+def trust_score_all() -> dict[str, Any]:
+    """Bulk Trust Scores for every tracked token. Powers the
+    MARKET Trust Leaderboard — the cross-token executive summary."""
+    from sca.config import stablecoins
+    from sca.trust_score import compute_trust_score, tier_color
+    rows: list[dict[str, Any]] = []
+    for sym, _coin in stablecoins().items():
+        try:
+            score = compute_trust_score(sym)
+            row = score.as_dict()
+            row["headline_color"] = tier_color(score.score)
+            rows.append(row)
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                "trust_score.row_failed", level="warn",
+                symbol=sym, error_class=type(exc).__name__,
+            )
+    return {"rows": rows, "count": len(rows)}
+
+
 @app.get("/api/trust/{symbol}")
 def trust_score_endpoint(symbol: str) -> dict[str, Any]:
     """Trust Score — Doré's institutional differentiator.
