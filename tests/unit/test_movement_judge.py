@@ -88,13 +88,24 @@ def test_parse_json_loose_returns_none_on_garbage():
 
 def test_compose_with_offline_llm_returns_empty():
     """No fake fallback: an unavailable LLM produces an honest empty
-    JudgeOutput. The UI's job is to fall back to engine prose."""
+    JudgeOutput. The UI's job is to fall back to engine prose.
+
+    Uses an explicit raising stub instead of relying on the
+    `llm_client=None` path that fans into get_llm() — that path's
+    behavior depends on whether LLM_API_KEY happens to be present
+    in the process env, which made this test flaky across full-suite
+    runs."""
+    class _RaisingLLM:
+        def complete(self, *, system, prompt, max_tokens=400):
+            raise RuntimeError("LLM unavailable in this test")
+        def extract_json(self, *, system, prompt, schema, max_tokens=2048):
+            raise NotImplementedError
     out = compose(
         _example_forecast(),
         "No driver cited.",
         attribution_candidates=[],
         calibration_record={"count": 0},
-        llm_client=None,  # forces real get_llm which raises in tests
+        llm_client=_RaisingLLM(),
     )
     assert isinstance(out, JudgeOutput)
     assert out.synthesis is None
