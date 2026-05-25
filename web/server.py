@@ -1197,6 +1197,51 @@ def _market_facts_block(p: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+@app.get("/api/instrument-trust/{symbol}")
+def instrument_trust_verdict(symbol: str) -> dict[str, Any]:
+    """Instrument-Trust Oracle — the wedge.
+
+    Returns the structured verdict an autonomous agent's policy
+    engine consults at the moment of a stablecoin payment:
+
+      state:      'sound' | 'degraded' | 'unknown'
+      confidence: 0.0 – 1.0
+      timestamp:  ISO of the reconciliation
+      fresh:      true when the underlying data is within TTL
+      reserve_delta_bps:    attested reserves vs on-chain supply
+      redemption_path_status: 'operational' | 'degraded' | 'unknown'
+      peg_deviation_bps:    live peg signal
+      provenance: list of {field, source, source_url, ...}
+
+    Designed to plug into an AP2 risk-check or x402 facilitator
+    pre-settle check. `unknown` is a first-class answer — a policy
+    engine MUST be able to gate on it.
+    """
+    from sca.instrument_trust import compute_verdict
+    sym = (symbol or "").strip()
+    if not sym:
+        raise HTTPException(400, "symbol required")
+    return compute_verdict(sym).as_dict()
+
+
+@app.get("/api/instrument-trust")
+def instrument_trust_all() -> dict[str, Any]:
+    """Bulk instrument-trust verdicts for every tracked token.
+    Internal admin view / leaderboard."""
+    from sca.config import stablecoins
+    from sca.instrument_trust import compute_verdict
+    rows: list[dict[str, Any]] = []
+    for sym in stablecoins().keys():
+        try:
+            rows.append(compute_verdict(sym).as_dict())
+        except Exception as exc:  # noqa: BLE001
+            log_event(
+                "instrument_trust.row_failed", level="warn",
+                symbol=sym, error_class=type(exc).__name__,
+            )
+    return {"rows": rows, "count": len(rows)}
+
+
 @app.get("/api/trust")
 def trust_score_all() -> dict[str, Any]:
     """Bulk Trust Scores for every tracked token. Powers the
