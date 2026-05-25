@@ -7528,14 +7528,21 @@ function _simHeroChartCallout(t) {
   const hMin = pred.horizon_minutes;
   const conf = (pred.confidence_word || '').replace(/_/g, ' ');
   // Resolution time as wall-clock — easier to map than a relative number.
-  let resolves = null;
+  // Use "By <HH:MM>" preposition for wall-clock and "Over <duration>"
+  // for relative spans so the sentence reads naturally either way.
+  // (Old template used "Over" in both cases — produced "Over 11:56 UTC"
+  // which reads as a time span starting at 11:56 rather than the
+  // forecast horizon ending there.)
+  let horizonPhrase;
   if (pred.resolves_at) {
     const d = new Date(pred.resolves_at);
     if (!isNaN(d.valueOf())) {
-      resolves = d.toISOString().slice(11, 16) + ' UTC';
+      horizonPhrase = 'By ' + d.toISOString().slice(11, 16) + ' UTC';
     }
   }
-  const horizonLbl = resolves || ('the next ' + hMin + ' min');
+  if (!horizonPhrase) {
+    horizonPhrase = 'Over the next ' + hMin + ' min';
+  }
 
   // ── Clause 1: anchor — where it is right now ─────────────────────
   let anchor = '';
@@ -7552,8 +7559,8 @@ function _simHeroChartCallout(t) {
 
   // ── Clause 2: forecast — what the model expects ─────────────────
   const forecast = (p80lo != null && p80hi != null)
-    ? `Over ${horizonLbl} the model expects the peg around ${point}bp, with 80% confidence the next reading falls between ${p80lo} and ${p80hi}bp.`
-    : `Over ${horizonLbl} the model expects the peg around ${point}bp.`;
+    ? `${horizonPhrase} the model expects the peg around ${point}bp, with 80% confidence the next reading falls between ${p80lo} and ${p80hi}bp.`
+    : `${horizonPhrase} the model expects the peg around ${point}bp.`;
 
   // ── Clause 3: regime — is the band width normal or wide? ────────
   let regime = '';
