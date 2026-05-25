@@ -382,7 +382,18 @@ def _attestation_freshness_score(symbol: str,
                                    backing_model: str,
                                    attestation_url: str
                                    ) -> tuple[int, str, str, str]:
-    """Attestation freshness. Returns (score, tier, reasoning, url)."""
+    """Attestation freshness. Returns (score, tier, reasoning, url).
+
+    Reads the most-recent verified attestation fact (claim_type =
+    'reserves') for this symbol and computes days_since the
+    attestation's as_of_date. Scoring band reflects what institutional
+    treasury policies actually want:
+      • <30 days  → 95 (monthly cadence — GENIUS Act minimum is met)
+      • 30-60d    → 78 (acceptable for most policies)
+      • 60-90d    → 55 (slipping; flag at risk committee)
+      • 90-180d   → 35 (stale; concentration limits should reduce)
+      • >180d     → 18 (treat as no current attestation at all)
+    """
     bm = (backing_model or "").lower()
     if bm == "crypto_collateral":
         return (95, "verified",
@@ -394,13 +405,62 @@ def _attestation_freshness_score(symbol: str,
                 "No attestation URL on record — freshness cannot be "
                 "measured.",
                 "")
-    # Without a programmatic last-attestation date check, score "attested"
-    # mid-band. A future enhancement reads the page and dates it.
-    return (70, "attested",
-            "Attestation URL is on file. Freshness check (last attestation "
-            "date scrape) is pending — currently scored at the policy "
-            "minimum.",
-            attestation_url)
+    # Try to read the most-recent extracted attestation date for this
+    # symbol from the verified-facts archive. Falls back to the
+    # mid-band "attested" score if the read fails or no row exists.
+    as_of = None
+    try:
+        from sca.store import get_store
+        fact = get_store().latest_verified_fact("reserves", symbol)
+        if fact:
+            value = fact.get("value") or {}
+            as_of = value.get("as_of_date") or fact.get("as_of")
+    except Exception:  # noqa: BLE001
+        as_of = None
+    if not as_of:
+        return (60, "attested",
+                "Attestation URL is on file but no extraction has run yet. "
+                "Score will lift to a live freshness reading once the "
+                "F2 ANALYZE pipeline has completed at least once for "
+                f"{symbol}.",
+                attestation_url)
+    # Parse the as_of_date (YYYY-MM-DD) and compute days_since
+    try:
+        att_dt = datetime.strptime(as_of[:10], "%Y-%m-%d").replace(
+            tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return (50, "estimated",
+                f"Attestation date on record ({as_of}) couldn't be parsed. "
+                f"Treating as mid-band until extraction is rerun.",
+                attestation_url)
+    days = max(0, (datetime.now(timezone.utc) - att_dt).days)
+    if days < 30:
+        s, blurb = 95, "fresh"
+    elif days < 60:
+        s, blurb = 78, "acceptable"
+    elif days < 90:
+        s, blurb = 55, "slipping"
+    elif days < 180:
+        s, blurb = 35, "stale"
+    else:
+        s, blurb = 18, "lapsed"
+    reasoning = (
+        f"Most recent attestation is dated {as_of[:10]} — {days} days old "
+        f"({blurb}). " + (
+            "Meets GENIUS-Act monthly-cadence minimum and standard "
+            "institutional treasury policies." if s >= 90 else
+            "Within typical treasury-policy tolerance, but flag at "
+            "risk-committee cadence." if s >= 75 else
+            "Older than most policies allow without concentration limits."
+            if s >= 50 else
+            "Stale — re-rate before any new allocation; existing positions "
+            "should reduce." if s >= 30 else
+            "Effectively no current attestation — treat as un-underwriteable "
+            "until fresh."
+        )
+    )
+    tier = "verified" if days < 90 else "attested"
+    return (s, tier, reasoning, attestation_url)
 
 
 def _implementation_score(symbol: str,

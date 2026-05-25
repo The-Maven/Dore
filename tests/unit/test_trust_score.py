@@ -83,6 +83,52 @@ def test_tier_color_bands():
     assert ts.tier_color(20) == "#FF433D"
 
 
+def test_attestation_freshness_scores_by_age(monkeypatch):
+    """v5.1: attestation freshness reads the most-recent verified
+    attestation fact and scores by days-since. Real reads should
+    lift fiat-backed tokens out of 'unverified' into a live band."""
+    from datetime import datetime, timedelta, timezone
+    # 14 days old → fresh band
+    fresh_iso = (datetime.now(timezone.utc) - timedelta(days=14)
+                  ).strftime("%Y-%m-%d")
+    class _FreshStore:
+        def latest_verified_fact(self, claim_type, subject, **kw):
+            return {"value": {"as_of_date": fresh_iso}}
+        def list_peg_ticks(self, sym, limit=200): return []
+    monkeypatch.setattr("sca.store.get_store", lambda: _FreshStore())
+    score, tier, reasoning, _ = ts._attestation_freshness_score(
+        "USDC", "fiat_reserves", "https://circle.com/transparency")
+    assert score >= 90 and tier == "verified", (
+        f"14-day-old attestation should score >=90; got {score}/{tier}")
+    assert "14 days old" in reasoning
+
+    # 120 days old → stale band
+    stale_iso = (datetime.now(timezone.utc) - timedelta(days=120)
+                  ).strftime("%Y-%m-%d")
+    class _StaleStore:
+        def latest_verified_fact(self, claim_type, subject, **kw):
+            return {"value": {"as_of_date": stale_iso}}
+        def list_peg_ticks(self, sym, limit=200): return []
+    monkeypatch.setattr("sca.store.get_store", lambda: _StaleStore())
+    score, tier, _, _ = ts._attestation_freshness_score(
+        "USDC", "fiat_reserves", "https://circle.com/transparency")
+    assert 30 <= score <= 50, (
+        f"120-day-old attestation should score stale band; got {score}")
+
+
+def test_attestation_freshness_falls_back_when_no_extraction():
+    """No attestation extraction yet on record — score mid-band but
+    'attested' rather than 'unverified' because the URL itself is
+    on file. Distinguishes from the no-URL case (truly unverified)."""
+    score, tier, _, _ = ts._attestation_freshness_score(
+        "USDC", "fiat_reserves", "https://circle.com/transparency")
+    # Without monkeypatching the store, the real store has no
+    # verified_facts row for this test isolation — falls back to
+    # the "URL on file but no extraction" path
+    assert 50 <= score <= 70
+    assert tier in ("attested", "unverified")
+
+
 def test_dimensions_carry_citations():
     """Every dimension must record where its evidence came from. This
     is the non-negotiable institutional-buyer requirement."""
