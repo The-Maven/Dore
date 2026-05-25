@@ -16,3 +16,6 @@ data/
 # tooling
 node_modules/
 .DS_Store
+
+# Claude Code per-project settings — user-specific
+.claude/
