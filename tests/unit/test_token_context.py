@@ -222,16 +222,25 @@ def test_deterministic_fallback_includes_pl_lens():
 
 def test_yield_bearing_fallback_names_the_drift():
     """For yield-bearing tokens, the deterministic fallback must
-    explicitly tell the reader that the bp figure is design drift,
-    not a depeg signal."""
+    explicitly tell the reader that the NAV climbs by design — and
+    when current_bps is negative, name the discount as a liquidity-
+    premium phenomenon (not a depeg). The wording is conditional on
+    the sign of current_bps."""
     ctx = token_context.get_context("USDY")
-    out = commentary._deterministic_fallback(
+    # Premium case (positive bp)
+    out_premium = commentary._deterministic_fallback(
         ctx, {"current_bps": 1300.0, "cone_p80_bps": 80.0})
-    low = out.body.lower()
-    assert "yield-bearing" in low
-    assert "drift" in low
-    assert "peg-deviation lens does not apply" in low \
-        or "design" in low
+    low_premium = out_premium.body.lower()
+    assert "yield-bearing" in low_premium
+    assert "nav climbs above $1.00" in low_premium \
+        or "premium to issuance" in low_premium
+
+    # Discount case (negative bp) — distinct framing
+    out_discount = commentary._deterministic_fallback(
+        ctx, {"current_bps": -20.0, "cone_p80_bps": 30.0})
+    low_discount = out_discount.body.lower()
+    assert "discount to issuance" in low_discount
+    assert "liquidity" in low_discount or "redemption" in low_discount
 
 
 def test_wait_for_llm_false_serves_cache_instantly(tmp_path, monkeypatch):

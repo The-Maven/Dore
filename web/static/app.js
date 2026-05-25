@@ -7945,8 +7945,16 @@ function simHeroPane(focused, feed) {
             : focused.current_bps < 0 ? 'sim-delta-down' : ''),
           'data-sim-sym': focused.symbol,
           'data-tip': fYld
-            ? 'NAV drift above $1.00. This token is yield-bearing — ' +
-              'the figure reflects accrued return, not a peg violation.'
+            ? (focused.current_bps != null && focused.current_bps >= 0
+                ? 'PREMIUM to $1.00 issuance peg. This token is ' +
+                  'yield-bearing — secondary market is paying above ' +
+                  'issuance for the accrued return.'
+                : 'DISCOUNT to $1.00 issuance peg. The token\'s NAV ' +
+                  'climbs above $1.00 as yield accrues, but the ' +
+                  'secondary market is trading the token at a ' +
+                  'liquidity / redemption-fee discount — holders ' +
+                  'who want INSTANT cash sell here rather than ' +
+                  'wait for the issuer\'s redemption queue.')
             : SIM_TIP.heroValBig,
           'data-tip-pos': 'below',
           'data-tip-size': 'lg',
@@ -8757,9 +8765,14 @@ function renderTraderBody(wrap, data, focusedSym) {
       el('span', { class: 'sim-trader-block-sub' },
         open.length + ' running · scroll for full list')));
     const scrollWrap = el('div', { class: 'sim-trader-open-scroll' });
-    for (const trade of open) {
-      scrollWrap.appendChild(_renderTradeCard(trade, true, focusedSym));
-    }
+    open.forEach((trade, i) => {
+      // Expand the FIRST card's receipt by default so the format is
+      // discoverable. Users were missing the receipt entirely because
+      // it was hidden behind a toggle.
+      const card = _renderTradeCard(trade, true, focusedSym,
+        /* expandReceipt */ i === 0);
+      scrollWrap.appendChild(card);
+    });
     openBlock.appendChild(scrollWrap);
     body.appendChild(openBlock);
   }
@@ -9074,7 +9087,7 @@ function _traderBestWorstRow(tr) {
 }
 
 
-function _renderTradeCard(trade, isOpen, focusedSym) {
+function _renderTradeCard(trade, isOpen, focusedSym, expandReceipt) {
   // P&L is computed on-the-fly for open trades by comparing entry
   // to the forecast point (estimate of where they'll close). For
   // resolved trades, we just read the persisted pnl_usd.
@@ -9159,6 +9172,43 @@ function _renderTradeCard(trade, isOpen, focusedSym) {
       el('span', { class: 'sim-trade-num' },
         new Date(trade.resolves_at).toISOString().slice(11, 16) + ' UTC')));
   }
+  // Receipt SUMMARY — surface the audit-trail highlights inline so
+  // the receipt isn't buried behind a click. Each trade card now
+  // carries a one-line summary of what the full receipt holds:
+  // entry sources count + consensus state + spread, news context
+  // count when present. Click expands for the full audit trail.
+  const entrySrcCount = (trade.entry_sources || []).length;
+  const entryCons = trade.entry_consensus_kind || '';
+  const entrySpread = trade.entry_max_disagreement_bps || 0;
+  const newsCount = (trade.entry_news_context || []).length;
+  const summary = el('div', { class: 'sim-trade-receipt-summary' });
+  if (entrySrcCount > 0) {
+    const ckCls = entryCons === 'agreed' ? 'sim-trade-cs-ok'
+      : entryCons === 'disputed' ? 'sim-trade-cs-bad'
+      : 'sim-trade-cs-warn';
+    summary.appendChild(el('span', { class: 'sim-trade-receipt-summary-pip ' + ckCls },
+      el('span', { class: 'sim-trade-receipt-summary-num' }, String(entrySrcCount)),
+      ' ', entrySrcCount === 1 ? 'src' : 'srcs',
+      ' · ', entryCons || '?',
+      entrySpread > 0 ? ' · ' + entrySpread.toFixed(1) + 'bp' : ''));
+  }
+  if (newsCount > 0) {
+    summary.appendChild(el('span', { class: 'sim-trade-receipt-summary-pip sim-trade-cs-info' },
+      el('span', { class: 'sim-trade-receipt-summary-num' }, String(newsCount)),
+      ' news ', newsCount === 1 ? 'item' : 'items'));
+  }
+  // Math explainer — show position × bp = $ so the user understands
+  // the relationship between notional and dollar P&L.
+  const notional = trade.notional_usd || 0;
+  const oneBpUsd = notional * 0.0001;
+  summary.appendChild(el('span', { class: 'sim-trade-receipt-summary-math',
+    'data-tip': 'Position size × 0.0001 = dollars per basis point of ' +
+      'price movement. A 5bp move on this position = $' +
+      (5 * oneBpUsd).toFixed(2) + ' P&L.',
+    'data-tip-size': 'lg' },
+    '1bp ≈ $' + oneBpUsd.toFixed(2)));
+  card.appendChild(summary);
+
   // Rationale footnote
   if (trade.rationale) {
     card.appendChild(el('div', { class: 'sim-trade-rationale' },
@@ -9170,17 +9220,24 @@ function _renderTradeCard(trade, isOpen, focusedSym) {
   const receiptToggle = el('button', {
     class: 'sim-trade-receipt-toggle',
     'data-tip': 'Show the full audit trail — entry/exit source ' +
-      'readings, consensus state, forecast bands, calibration outcome.',
-  }, '▾ RECEIPT');
+      'readings, consensus state, forecast bands, market context, ' +
+      'calibration outcome.',
+  }, '▾ FULL RECEIPT');
   card.appendChild(receiptToggle);
   const receipt = _renderTradeReceipt(trade);
   if (receipt) {
-    receipt.classList.add('sim-trade-receipt-hidden');
+    if (!expandReceipt) {
+      receipt.classList.add('sim-trade-receipt-hidden');
+      receiptToggle.textContent = '▾ FULL RECEIPT';
+    } else {
+      receiptToggle.textContent = '▴ HIDE RECEIPT';
+    }
     card.appendChild(receipt);
     receiptToggle.addEventListener('click', (ev) => {
       ev.stopPropagation();
       const hidden = receipt.classList.toggle('sim-trade-receipt-hidden');
-      receiptToggle.textContent = hidden ? '▾ RECEIPT' : '▴ HIDE';
+      receiptToggle.textContent = hidden
+        ? '▾ FULL RECEIPT' : '▴ HIDE RECEIPT';
     });
   }
   return card;

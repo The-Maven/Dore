@@ -307,13 +307,27 @@ def _deterministic_fallback(ctx, live: dict) -> Commentary:
     on what holders gain or lose, so the deterministic card is still
     useful for first-time readers."""
     cone_w = live.get("cone_p80_bps")
+    current_bps = live.get("current_bps")
     cone_part = (f"current 80% cone {cone_w:.1f}bp" if cone_w is not None
                  else "live cone unavailable")
     yld_tag = ""
     if getattr(ctx, "yield_bearing", False):
-        yld_tag = (" Note: this token is yield-bearing and drifts above "
-                   "$1.00 by design — the peg-deviation lens does not "
-                   "apply.")
+        # Honest framing — distinguish NAV (climbs above $1.00 by
+        # design) from the SECONDARY-MARKET price (can trade above
+        # OR below NAV). The sign of current_bps tells the truth.
+        if isinstance(current_bps, (int, float)) and current_bps < 0:
+            yld_tag = (" Note: this token is yield-bearing — its NAV "
+                       "climbs above $1.00 by design, but the secondary-"
+                       "market price shown here is trading at a DISCOUNT "
+                       "to issuance (the liquidity premium investors pay "
+                       "for instant exit vs the issuer's redemption queue).")
+        elif isinstance(current_bps, (int, float)) and current_bps > 0:
+            yld_tag = (" Note: this token is yield-bearing — its NAV "
+                       "climbs above $1.00 by design; the secondary-"
+                       "market price is currently PREMIUM to issuance.")
+        else:
+            yld_tag = (" Note: this token is yield-bearing — the NAV "
+                       "climbs above $1.00 by design as yield accrues.")
     pl = getattr(ctx, "pl_lens", "") or ""
     pl_part = f" P&L lens: {pl}" if pl else ""
     body = (

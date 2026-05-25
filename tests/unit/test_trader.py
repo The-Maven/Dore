@@ -765,11 +765,12 @@ def test_persona_constants_exposed():
     tr = trader.track_record()
     assert tr["persona"] == "The Discipline Trader"
     assert tr["tagline"]
-    assert tr["version"] == "discipline_v4"
+    assert tr["version"] == "discipline_v4.5"
     # v2 contract: daily budget tracking present even with no trades
     assert "daily_budget_usd" in tr
-    # v4 bumped daily budget to $25k for higher trading volume
-    assert tr["daily_budget_usd"] == 25_000.0
+    # v4.5 bumped daily budget to $100k so $ P&L figures match the
+    # data scale (a 5bp move on $10k = $5, not $1.25)
+    assert tr["daily_budget_usd"] == 100_000.0
     assert "budget_remaining_today_usd" in tr
     assert "current_streak" in tr
 

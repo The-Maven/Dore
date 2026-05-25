@@ -6634,6 +6634,61 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
 :root[data-theme="light"] .sim-trader-medal-worst .sim-trader-medal-lbl,
 :root[data-theme="light"] .sim-trader-medal-worst .sim-trader-medal-val { color: #B43E3E; }
 
+/* ── Inline receipt-summary pips (always visible on each card) ── */
+.sim-trade-receipt-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  margin-top: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+.sim-trade-receipt-summary-pip {
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-weight: 600;
+  border: 1px solid;
+}
+.sim-trade-receipt-summary-num {
+  font-weight: 700;
+}
+.sim-trade-cs-ok {
+  background: rgba(74, 246, 195, 0.08);
+  color: var(--sim-up, #4AF6C3);
+  border-color: rgba(74, 246, 195, 0.32);
+}
+.sim-trade-cs-warn {
+  background: rgba(255, 140, 30, 0.08);
+  color: #FF8C1E;
+  border-color: rgba(255, 140, 30, 0.32);
+}
+.sim-trade-cs-bad {
+  background: rgba(255, 67, 61, 0.08);
+  color: var(--sim-down, #FF433D);
+  border-color: rgba(255, 67, 61, 0.32);
+}
+.sim-trade-cs-info {
+  background: rgba(79, 157, 255, 0.08);
+  color: #6FAFFF;
+  border-color: rgba(79, 157, 255, 0.32);
+}
+.sim-trade-receipt-summary-math {
+  margin-left: auto;
+  color: var(--sim-amber, #D4A24A);
+  cursor: help;
+  font-weight: 600;
+  padding: 1px 6px;
+  background: rgba(212, 162, 74, 0.06);
+  border: 1px solid rgba(212, 162, 74, 0.24);
+  border-radius: 2px;
+}
+:root[data-theme="light"] .sim-trade-cs-ok { color: #287052; }
+:root[data-theme="light"] .sim-trade-cs-bad { color: #B43E3E; }
+:root[data-theme="light"] .sim-trade-cs-info { color: #1F5DA8; }
+:root[data-theme="light"] .sim-trade-receipt-summary-math { color: #8B6720; }
+
 /* ── TRADE RECEIPT (collapsible per-card audit trail) ────────── */
 .sim-trade-receipt-toggle {
   margin-top: 6px;

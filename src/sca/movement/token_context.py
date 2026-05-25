@@ -7,7 +7,9 @@ investor needs to interpret a peg deviation reading:
   - Attestation cadence + auditor + transparency URL
   - Regulatory regime + issuer jurisdiction
   - Peg target (most are 1.00 but USDY / sUSDe / syrupUSDC / OUSG
-    drift above by design — yield-bearing notes)
+    have NAVs that climb above $1.00 as yield accrues — though the
+    SECONDARY-MARKET price can trade above OR below NAV depending on
+    liquidity / redemption-fee dynamics)
   - What signal is worth watching (cone width thresholds, paired
     metrics like collateralization ratio or PSM utilisation)
 
@@ -37,11 +39,14 @@ class TokenContext:
     structural_one_liner: str  # 1 sentence the LLM card opens with
     cone_thresholds_bps: tuple[float, float]  # (normal max, alert threshold)
     # — v3.2 additions —
-    # When True, the token's market price drifts above $1.00 by design
-    # as yield accrues (tokenised T-bills, staked wrappers, NAV-rebased
-    # notes). The peg-deviation lens does NOT apply; the UI should
-    # render these with a YLD tag and the engine should not flag the
-    # drift as an alert.
+    # When True, the token's NAV climbs above $1.00 by design as yield
+    # accrues (tokenised T-bills, staked wrappers, NAV-rebased notes).
+    # The SECONDARY-MARKET price (what we poll) can trade above OR
+    # below NAV depending on liquidity / redemption-fee dynamics; a
+    # negative bp reading is NOT a peg violation, it's the discount
+    # investors pay for instant exit (vs the issuer's redemption queue).
+    # The UI tags these tokens with a YLD chip and the engine does
+    # not flag secondary-market drift as an alert.
     yield_bearing: bool = False
     # Primary venue type for traders moving real volume. CEX = listed
     # on a centralised exchange (Coinbase, Kraken, Binance). DEX =
@@ -186,14 +191,16 @@ _REGISTRY: dict[str, TokenContext] = {
     "sUSDe": TokenContext(
         symbol="sUSDe", issuer="Ethena Labs",
         backing_model="synthetic_delta_neutral",
-        backing_short="Staked USDe — drifts above $1 by design as yield accrues",
-        expected_peg=1.0,  # actually drifts up; commentary names this
+        backing_short="Staked USDe — NAV climbs above $1 as yield accrues; secondary market can trade above OR below NAV",
+        expected_peg=1.0,  # NAV climbs; secondary market trades around it
         cadence="on-chain real-time", auditor="Chaos Labs",
         transparency_url="https://app.ethena.fi/dashboards/transparency",
         watchlist_signal="sUSDe/USDe ratio (the yield curve)",
         structural_one_liner=(
-            "sUSDe is the staked wrapper over USDe — drifts above "
-            "$1 by design as yield accrues. NOT a 1:1 peg target."
+            "sUSDe is the staked wrapper over USDe — its NAV climbs "
+            "above $1 as yield accrues. The secondary-market price can "
+            "trade above OR below NAV depending on demand for instant "
+            "exit vs the 7-day unstake cooldown. NOT a 1:1 peg target."
         ),
         cone_thresholds_bps=(15.0, 50.0),
     ),
@@ -291,28 +298,36 @@ _REGISTRY: dict[str, TokenContext] = {
     "USDY": TokenContext(
         symbol="USDY", issuer="Ondo Finance",
         backing_model="tokenised_treasury",
-        backing_short="Tokenised note over short-dated Treasuries + bank deposits",
-        expected_peg=1.0,  # actually drifts above $1 as yield accrues
+        backing_short="Tokenised note; NAV climbs above $1 as yield accrues, secondary market can trade either side",
+        expected_peg=1.0,  # NAV climbs; secondary market trades around it
         cadence="NAV-rebased daily", auditor="Ankura",
         transparency_url="https://ondo.finance/usdy",
         watchlist_signal="NAV stale-feed (>24h)",
         structural_one_liner=(
-            "USDY is a yield-bearing tokenised note — drifts above "
-            "$1.00 by design as yield accrues. NOT a 1:1 peg target."
+            "USDY is a yield-bearing tokenised note — its NAV climbs "
+            "above $1.00 by design as Treasury yield accrues. The "
+            "secondary-market price can trade above OR below NAV; "
+            "with a 40-day initial lockup, holders who want short-"
+            "dated liquidity usually pay a discount in the secondary "
+            "market. NOT a 1:1 peg target."
         ),
-        cone_thresholds_bps=(50.0, 150.0),  # wide because it drifts up
+        cone_thresholds_bps=(50.0, 150.0),  # wide because the NAV anchor drifts
     ),
     "USDM": TokenContext(
         symbol="USDM", issuer="Mountain Protocol (Bermuda BMA)",
         backing_model="tokenised_treasury",
-        backing_short="UST-backed, yield-bearing, Bermuda-regulated",
-        expected_peg=1.0,  # yield-bearing; drifts
+        backing_short="UST-backed; NAV climbs above $1 as yield accrues, secondary market often trades at a small discount",
+        expected_peg=1.0,  # NAV climbs; secondary market trades around it
         cadence="daily NAV", auditor="Nephila Capital",
         transparency_url="https://mountainprotocol.com/",
         watchlist_signal="NAV-feed staleness",
         structural_one_liner=(
-            "USDM is Bermuda-regulated and yield-bearing — drifts "
-            "above $1 by design. Treat as a tokenised MMF, not a peg."
+            "USDM is Bermuda-regulated and yield-bearing — its NAV "
+            "climbs above $1 as Treasury yield accrues. The Curve "
+            "USDM/USDC pool typically trades at a small DISCOUNT to "
+            "NAV: investors who want instant cash exit accept a "
+            "liquidity premium rather than wait for the issuer's "
+            "redemption queue. Treat as a tokenised MMF, not a peg."
         ),
         cone_thresholds_bps=(40.0, 120.0),
     ),

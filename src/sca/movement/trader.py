@@ -74,13 +74,13 @@ PERSONA_TAGLINE = (
 # This unlocks the common case where the cone is narrow but offset
 # from current (the model says "I think peg moves slightly toward 0"),
 # without requiring the cone to fully bridge to peg.
-DAILY_BUDGET_USD = 25_000.0     # USD — resets at 00:00 UTC daily (v4: bumped 10k→25k)
-NOTIONAL_PER_TRADE = 2_500.0    # default per-trade size (v4: bumped 2k→2.5k)
-MAX_OPEN_NOTIONAL = 40_000.0    # 16 concurrent trades absolute cap (v4: 20k→40k)
+DAILY_BUDGET_USD = 100_000.0    # USD — resets at 00:00 UTC daily (v4.5: 25k→100k)
+NOTIONAL_PER_TRADE = 10_000.0   # default per-trade size (v4.5: 2.5k→10k)
+MAX_OPEN_NOTIONAL = 160_000.0   # 16 concurrent trades absolute cap (v4.5: 40k→160k)
 ENTRY_THRESHOLD_BPS = 3.0       # only trade meaningful deviations
 MIN_EDGE_BPS = 1.0              # minimum predicted movement to enter
 EDGE_FULL_SIZE_BPS = 5.0        # edge at which we deploy full notional
-TRADER_VERSION = "discipline_v4"
+TRADER_VERSION = "discipline_v4.5"
 
 
 @dataclass
@@ -784,8 +784,8 @@ def track_record() -> dict:
             "net_pnl_usd": 0.0,
             "win_rate": None, "mean_trade_usd": None,
             "current_streak": {"outcome": None, "length": 0},
-            "starting_capital_usd": 10_000.0,
-            "account_equity_usd": 10_000.0,
+            "starting_capital_usd": 100_000.0,
+            "account_equity_usd": 100_000.0,
             "account_return_pct": 0.0,
             "pnl_today_usd": 0.0,
             "pnl_24h_usd": 0.0,
@@ -916,7 +916,10 @@ def track_record() -> dict:
     # starts at $10,000, equity = starting + cumulative_pnl. Windows
     # let the reader see "today the trader is up $5" vs "all-time
     # +$23" — short-term vs durable performance.
-    STARTING_CAPITAL_USD = 10_000.0
+    # Editorial anchor — the account starts at $100k of simulated
+    # capital. Sized to match the v4.5 daily budget so a "spend all
+    # of today's allocation" looks like a meaningful 100% deployment.
+    STARTING_CAPITAL_USD = 100_000.0
     account_equity = round(STARTING_CAPITAL_USD + net, 2)
     account_return_pct = round((net / STARTING_CAPITAL_USD) * 100, 3)
     # Cutoff timestamps for windows.
