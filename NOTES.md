@@ -670,17 +670,242 @@ new-test commit)
 
 ---
 
+## Round 9 — F9 product hardening + agentic trader + chaos engineering
+
+Single autonomous arc covering 14 commits today. Driven by a long
+sequence of user prompts asking for: better cone annotation, faster
+AI loading, smoother updates, market notices, trader, audit, chaos.
+All addressed end-to-end.
+
+### Chronological summary
+
+**Commit `91b67aa` — Round 8 (carried over)** — yield-bearing display
+fix, instant commentary, WIRE collapse, P&L lens, tooltips, light
+theme, paid-services memo. Already documented in Round 8 above.
+
+**Commit `a88ae8c` — ChainSupply + /feed latency** — Two production
+bugs surfaced in the post-restart log audit. Fixed both. (1) The
+snapshot persist path failed JSON serialisation because per_chain
+arrived as `list[ChainSupply]` and the guard only converted
+non-list dataclasses. (2) The /feed endpoint was 12-15s warm because
+of 72 sequential Supabase HTTP/2 calls — 6.5s of which was a dead
+per-token `calibration_summary` the UI never read. Fixes: deep-
+convert dataclass→dict on every list element; drop dead calibration
+call; parallelise per-token reads via ThreadPoolExecutor; 3s
+process-level feed cache. Result: 12s → 1.4s cold, 1.5ms warm.
+
+**Commit `a7d1633` — SSE silent death** — caught during the same
+log audit. The SSE diff loop initialised `last_event_ts = ""` but
+events ship `ts` as a unix-seconds float. `float > ""` TypeError
+every 2s cycle, swallowed by an except-and-continue. Stream
+intended to push live updates was effectively dead. Fixes: init as
+`0.0`, coerce via tolerant `_ev_ts()` helper, JS-side new Date(ts)
+multiplies by 1000 when value looks like seconds.
+
+**Commit `bcbbbcd` — forecast cone v4 + redemptions <br> fix** —
+Research-driven cone redesign (NHC hurricane cones, BoE fan charts,
+Metaculus, 538). Added: direct endpoint labels (p50/p80/p95 values
+in bps at right edge), in-band labels at widest point ("50%"/"80%"/
+"95%"), $1.00 anchor line, NOW separator, HORIZON marker with
+absolute width, "MODEL SAYS" plain-English callout, outside-the-cone
+caveat strip. Separately: `<br>` tags from LLM-emitted narratives
+were rendering as `&lt;br&gt;` visible text in redemption pages.
+Server-side `_strip_html_tags` cleaner now runs on every
+synthesize_surface / synthesize return; client-side defensive
+pre-clean in markdown() for legacy data.
+
+**Commit `9750404` — commentary back-off** — found via autonomous-
+loop tick: 20+ `commentary.parse_failed` per minute. The fast-path
+served deterministic correctly but the scheduled refresh kept
+retrying an LLM that returned empty body. Added per-symbol
+exponential back-off (30s → 10min cap); success clears it.
+
+**Commit `9f76c23` — copy & clarity pass (8 fixes)** — user paste
+from the rendered page surfaced 8 distinct readability issues. All
+fixed:
+  - `USDYYLD` (no space) → `USDY YLD` (flex+gap on rail-sym)
+  - `CRVUSD —` and `USDE —` (missing issuer) → case-insensitive
+    brand-lookup; verified live (`CRVUSD → Curve`, `USDE → Ethena`)
+  - Orphan `—` on rail rows → `1M no recent move` or `1M ▲ 0.05bp`
+  - `17 / 18` → `17 live · 18 watched` with rich tooltip
+  - PEG DEVIATION → `vs $1.00 peg · last tick` / `drift above $1.00
+    issuance peg · last tick` for yield-bearing
+  - Y-axis `0.9 / -4.7` → `+0.9bp / -4.7bp`
+  - Confidence chip tooltip → explicit IPCC probability ranges
+  - Cone callout reworked from prophecy-style to three explicit
+    clauses (anchor + forecast + regime)
+
+**Commit `b6fe1f9` — Over → By** — tiny preposition fix surfaced by
+the user: "Over 11:56 UTC" parsed wrong; should be "By 11:56 UTC"
+for wall-clock horizon, "Over the next 5 min" for relative.
+
+**Commit `784a1bd` — TRACK RECORD strip** — user: "it isn't obvious
+how well the previous predictions have fared". Added a per-token
+strip directly under the cone showing last 10 resolved predictions
+as coloured squares (green inside p50, amber inside p95, red
+outside), a hit-rate summary line, and a ↑↓ trend chip comparing
+the recent half to the prior half.
+
+**Commit `ee6874c` — soft reconciliation** — user: "the experience
+of feeling the page refresh and losing scrolling context is jarring".
+The 20s reconciliation poll did `mount.innerHTML = ''`, nuking scroll
++ tooltips + hover + animations. Rewrote: `_simNeedsRebuild` decides
+structural rebuild vs. soft diff; soft path has six targeted
+reconcilers that update values in place; `_simSnapshotScroll`
+preserves scroll position even on rare full rebuilds.
+
+**Commit `50b3d5c` — market notice bar + smoothness round 2** —
+User: "create a really interesting visual cue when something in the
+market is worthy of noticing... flash animation... visible as long as
+news is relevant or true... way to dismiss". Five derived conditions
+(DEPEG / WIDE CONE / DISPUTED / MODEL MISS / SILENT), gold/orange/red
+severity, shimmer-on-entry, alert-glyph pulse, manual-dismiss
+persisted in localStorage with condition-keyed ids so a new instance
+of the same condition surfaces a fresh pill. Also: rAF batching,
+`requestIdleCallback` for calibration panel, signature-skip when feed
+is identical. Branded pegtrack symbol labels (per the user request).
+
+**Commit `3b34e88` — ticker sparklines update in place** — User
+asked for the same smoothness on the main ticker. Sparklines were
+static between full rebuilds. New `refreshSparklinesFor()` swaps
+the SVG inner content using a tagged `data-sim-spark` attribute,
+keyed by signature so unchanged sparklines skip the write. Plus
+honest empty-state messages: distinguish "no ticks ever" from
+"silent this cycle" from "only one tick on record."
+
+**Commit `a2d48fa` — The Discipline Trader + collapsible panels** —
+User: "let's add an Agentic trader who spots an opportunity... give
+it a profitability-focused but sensible persona with deterministic
+enhancements... allow us to beautifully collapse and expand certain
+panels."
+
+Created `sca/movement/trader.py`. Persona: "The Discipline Trader",
+patient mean-reversion arbitrageur. Deterministic rules:
+- Mean-reversion thesis: opens a position OPPOSITE current deviation
+  whenever the model's 80% cone REACHES toward peg (p80_high ≥ 0 for
+  below-peg, p80_low ≤ 0 for above-peg). The cone reaching toward
+  peg is the read a real market-maker uses — does NOT wait for the
+  sticky EWMA point to predict reversion.
+- Never trades yield-bearing tokens.
+- Refuses to size up when cone is past per-token alert threshold.
+- Position size scales DOWN with cone width.
+- Caps concurrent open notional at $50k.
+- Marks-to-market + resolves at horizon; P&L = direction-signed
+  bp move × notional × 0.0001.
+- Wired into ticker cycle's job #4 (after resolver).
+
+Trader UI panel below the cone showing OPEN POSITIONS (cards) +
+RECENT SETTLEMENTS (chips) + collapsible header. Plus general-
+purpose `_simMakeCollapsible()` applied to the calibration archive
+and config panel so power users can hide them.
+
+**Commit `d59dce3` — audit fixes + chaos engineering** — Standing
+goal: "review and audit the code, assumptions and experience, apply
+fixes, report findings, updated notes... minimal chaos engineering
+background thread."
+
+Audit produced 11 findings. 4 CRITICAL fixed:
+- Unbounded growth in commentary backoff dicts (now evicts entries
+  older than 2× max-backoff, hard-caps at 200 entries)
+- Trader could open with non-numeric current_bps (added isinstance
+  check before direction assignment)
+- _FEED_CACHE read outside the lock (read now lock-guarded)
+- Commentary cache_key crashed on malformed cone_thresholds_bps
+  (defensive length check, fail closed)
+
+3 IMPORTANT fixed:
+- Trader's per-token store reads were serial (parallelised via
+  ThreadPoolExecutor)
+- Focused-symbol-removal not detected in soft reconcile (now
+  triggers rebuild when SIM_VIEW.focused not in feed)
+- Trader malformed-context defensive (same shape as commentary fix)
+
+Chaos engineering daemon at `sca/movement/chaos.py`:
+- Five scenarios test the audit-fix invariants on every cycle:
+  `commentary_malformed_context`, `trader_none_current`,
+  `event_ts_string_coercion`, `peg_consensus_silent_token`,
+  `synthesis_strip_html`
+- Each finding is a (scenario, ran_at, passed, expected, observed,
+  severity) row persisted to data/chaos_findings.json
+- 15-min default cadence; SCA_CHAOS_INTERVAL_MINUTES override;
+  SCA_CHAOS_DISABLED=1 in tests
+- LLM judge integration: `fragility_prompt_block()` renders recent
+  5 findings as a markdown block appended to the judge prompt so
+  the narrative is grounded in tested resilience state
+- `test_all_scenarios_pass_against_current_codebase` is the
+  on-going self-test — fails if any audit-fix invariant regresses
+
+**Commit `b887b89` — Trader v2: richness + story over time** —
+User: "Make the trading mechanism and UX richer... see a story of
+how the trader is performing over time, with clear WINS and LOSES
+stated. Trader has a budget of $10,000 dollars each day. Track
+everything."
+
+Server (`trader.py` discipline_v2):
+- DAILY_BUDGET_USD = $10,000 fresh allocation per UTC day; trades
+  consume it on open; resolution doesn't replenish today's pool
+  (only frees the per-position slot). Shrinks position when budget
+  remainder is between 25%-100% of normal; refuses below 25%.
+- `day_utc` field on every Trade (YYYY-MM-DD, set on open)
+- `outcome` field on resolved trades: 'WIN' / 'LOSS' / 'FLAT'
+- `track_record()` returns the story-over-time payload:
+  daily_budget tracking, equity curve (last 50 cumulative-P&L
+  points), current_streak (consecutive same-outcome trades), daily
+  per-UTC-day aggregate (last 14 days, zero-fill), best_day /
+  worst_day across full history.
+
+UI:
+- TODAY badge with date + "$X used / $10k" + progress bar (amber
+  → orange as exhaustion approaches)
+- ALL-TIME summary line: N resolved · NW/NL · win-rate · ±$net
+- Streak chip ("▶ 3 WINS IN A ROW", pulses on wins)
+- Equity-curve sparkline (last 50 P&L points, endpoint coloured)
+- Each trade card: prominent WIN / LOSS / FLAT badge
+- DAILY LEDGER table (collapsible when >5 days)
+- BEST DAY / WORST DAY medals
+
+### Tests at end of Round 9
+
+- Python: **414 passing** (+26 today across trader v1/v2, chaos,
+  synthesis-strip, audit-fix regressions)
+- JS: **47 passing** (+8 today across notice-bar derivation, soft-
+  reconciliation DOM contract, track-record, cone annotations,
+  markdown HTML-stripping)
+- **461 hermetic tests** total.
+
+### Open items NOT addressed (deferred consciously)
+
+- F2 / F5 / F7 surfaces have not been light-themed (Round 8 deferred,
+  still deferred — F9 was the user's priority all session).
+- Yield-bearing engine fix (cone anchored at $1.00 for all tokens;
+  USDY render shows correctly but engine still measures wrong anchor).
+  v4.0 work — needs a NAV oracle pipeline.
+- Trader is JSON-file persisted. Audit flagged "use the DB" — for
+  a v3 we'd migrate to Supabase `trader_trades` table (migration
+  0009). Cap-200 JSON is fine for the current scale.
+- Confidence-chip rework (regime-aware vs IPCC-anchored) — user
+  asked, I recommended option 1, decision still pending. Both work;
+  current ladder is the IPCC-anchored version.
+- The `redrawSimulator` fall-back-to-rebuild path still does an
+  innerHTML wipe inside its rare-case branch. The scroll snapshot
+  preserves position, but a 100% in-place diff would be smoother
+  still. Defer until SSE-only operation is proven.
+
+---
+
 ## Where we stand right now
 
-Updated as of the end of Round 8. Always rewrite this block, never
+Updated as of the end of Round 9. Always rewrite this block, never
 append to it.
 
-(Round 8 was a polish pass — closed the yield-bearing display bug,
-added P&L commentary, eliminated the "loading…" UX, made WIRE
-readable, audited corpus, polished light theme, fixed the canary
-loop bug, and shipped the paid-services memo. Behavioural defaults
-unchanged; deterministic core untouched; calibration archive
-schema stable.)
+(Round 9 was the F9 product-hardening + agentic-trader + chaos arc.
+F9 is now the headline surface with: Bloomberg ribbon, status strip,
+3-column workspace, market notice bar, forecast cone v4, per-token
+track record strip, AI Judge, AI Commentary, The Discipline Trader,
+calibration archive, config — all collapsible-where-appropriate, all
+soft-reconciled, all light-themed. Chaos engineering thread runs
+five invariant tests every 15 minutes and feeds findings into the
+judge prompt.)
 
 **Live, healthy, no open work:**
 - Seven Supabase migrations applied (0001–0006 from prior rounds,
@@ -737,6 +962,36 @@ schema stable.)
   count badge + symbol list + activity legend strip.
 - Canary corpus auto-verification loop now persists last-sweep
   timestamp so dev cycles don't perpetually skip the first sweep.
+- Forecast cone v4 — direct endpoint labels (p50/p80/p95 values),
+  in-band labels, $1.00 anchor, NOW separator, HORIZON marker with
+  absolute width, "MODEL SAYS" plain-English callout, outside-the-
+  cone caveat. Each annotation researched (NHC / BoE / Metaculus).
+- Per-token TRACK RECORD strip under the cone shows last 10
+  resolved predictions as coloured markers + hit-rate trend chip
+  (↑ improving / ↓ degrading vs prior-half).
+- Soft reconciliation eliminates the jarring 20s redraw — DOM
+  nodes survive, scroll position survives, tooltips survive. Six
+  targeted in-place reconcilers + rAF batching + idle-callback
+  for heavy panels + signature-skip when feed is unchanged.
+- Market notice bar at top of F9 — five derived conditions (DEPEG,
+  WIDE CONE, DISPUTED, MODEL MISS, SILENT), shimmer-on-entry, alert
+  glyph pulse, auto-clear when condition resolves, manual dismiss
+  persisted in localStorage with condition-keyed ids.
+- Ticker sparklines update in place via tagged `data-sim-spark`
+  attributes — line moves with the value, no full rebuild needed.
+- THE DISCIPLINE TRADER — agentic simulated trader. Mean-reversion
+  arb persona, deterministic rules, $10k fresh daily budget per
+  UTC day, position-sized by cone width, marks-to-market + resolves
+  at horizon. UI shows TODAY budget bar, all-time summary, streak
+  chip, equity curve sparkline, prominent WIN/LOSS labels per
+  trade, daily ledger (collapsible), best/worst day medals.
+- Calibration archive + config panel are collapsible; state
+  persists per-panel in localStorage.
+- Chaos engineering background thread (`sca.movement.chaos`) runs
+  5 invariant scenarios every 15min; persists pass/fail findings;
+  failures fire warn-level observability events; findings feed
+  into the LLM judge prompt as "Known fragility patterns" so the
+  narrative is grounded in tested resilience state.
 - File-based state durably isolated in tests via conftest
   monkeypatches (every cache + config + quota file is tmp_path).
 
