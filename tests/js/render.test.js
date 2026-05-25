@@ -358,6 +358,140 @@ test('redrawSimulator preserves DOM nodes across reconciliation (no innerHTML wi
 });
 
 
+test('deriveMarketNotices: surfaces depeg when current value past alert threshold', () => {
+  const { window } = loadApp();
+  const feed = {
+    tokens: [{
+      symbol: 'USDC',
+      current_bps: -30,  // way past USDC's 15bp alert
+      meta: { cone_normal_bps: 5, cone_alert_bps: 15, yield_bearing: false },
+      consensus: { kind: 'agreed' },
+      tick_count: 50,
+    }],
+  };
+  const notices = window.deriveMarketNotices(feed);
+  const depeg = notices.find(n => n.tag === 'DEPEG');
+  assert.ok(depeg, 'deep depeg must surface as a DEPEG notice');
+  assert.equal(depeg.symbol, 'USDC');
+  assert.equal(depeg.severity, 'alert');
+  assert.match(depeg.message, /past USDC's 15bp alert/);
+});
+
+
+test('deriveMarketNotices: skips yield-bearing tokens for depeg (drift is by design)', () => {
+  const { window } = loadApp();
+  const feed = {
+    tokens: [{
+      symbol: 'USDY',
+      current_bps: 1300,  // would be a catastrophic "depeg" if it weren't yield-bearing
+      meta: { cone_normal_bps: 50, cone_alert_bps: 150, yield_bearing: true },
+      consensus: { kind: 'single' },
+      tick_count: 50,
+    }],
+  };
+  const notices = window.deriveMarketNotices(feed);
+  const depeg = notices.find(n => n.tag === 'DEPEG');
+  assert.equal(depeg, undefined,
+    'yield-bearing tokens must not trip the DEPEG notice — their drift is by design');
+});
+
+
+test('deriveMarketNotices: disputed peg sources surface as WARN', () => {
+  const { window } = loadApp();
+  const feed = {
+    tokens: [{
+      symbol: 'USDe',
+      current_bps: -3,
+      meta: { cone_normal_bps: 8, cone_alert_bps: 25 },
+      consensus: { kind: 'disputed', max_disagreement_bps: 7.2 },
+      tick_count: 50,
+    }],
+  };
+  const notices = window.deriveMarketNotices(feed);
+  const dispute = notices.find(n => n.tag === 'DISPUTED');
+  assert.ok(dispute);
+  assert.equal(dispute.severity, 'warn');
+  assert.match(dispute.message, /7\.2bp/);
+});
+
+
+test('deriveMarketNotices: model miss surfaces when latest resolution lands outside p95', () => {
+  const { window } = loadApp();
+  const feed = {
+    tokens: [{
+      symbol: 'USDT',
+      current_bps: -5,
+      meta: { cone_normal_bps: 8, cone_alert_bps: 20 },
+      consensus: { kind: 'agreed' },
+      tick_count: 50,
+      recent_resolutions: [
+        // Oldest → newest
+        { resolved_at: '2026-05-25T10:00:00Z', outcome_kind: 'inside_p50',
+          actual_value: -3.0 },
+        { resolved_at: '2026-05-25T10:05:00Z', outcome_kind: 'outside',
+          actual_value: -42.0 },
+      ],
+    }],
+  };
+  const notices = window.deriveMarketNotices(feed);
+  const miss = notices.find(n => n.tag === 'MODEL MISS');
+  assert.ok(miss, 'most recent outside-p95 outcome should surface');
+  assert.match(miss.message, /-42\.00bp/);
+});
+
+
+test('deriveMarketNotices: clears the notice when condition resolves', () => {
+  const { window } = loadApp();
+  // Before — alert-band cone
+  const feedAlert = {
+    tokens: [{
+      symbol: 'USDC',
+      current_bps: -2,
+      meta: { cone_normal_bps: 5, cone_alert_bps: 15 },
+      consensus: { kind: 'agreed' },
+      tick_count: 50,
+      latest_prediction: {
+        p80_low: -20, p80_high: 16,  // ±18 half-width, past 15 alert
+      },
+    }],
+  };
+  const before = window.deriveMarketNotices(feedAlert);
+  assert.ok(before.find(n => n.tag === 'WIDE CONE'),
+    'wide-cone notice should fire when band > alert threshold');
+
+  // After — cone narrows
+  const feedCalm = JSON.parse(JSON.stringify(feedAlert));
+  feedCalm.tokens[0].latest_prediction.p80_low = -4;
+  feedCalm.tokens[0].latest_prediction.p80_high = 2;  // ±3 half-width
+  const after = window.deriveMarketNotices(feedCalm);
+  assert.equal(after.find(n => n.tag === 'WIDE CONE'), undefined,
+    'notice must auto-clear when condition resolves');
+});
+
+
+test('simMarketNoticeBar renders pills with flash class + dismiss button', () => {
+  const { window } = loadApp();
+  const bar = window.simMarketNoticeBar([{
+    id: 'depeg:USDC', symbol: 'USDC', severity: 'alert', tag: 'DEPEG',
+    glyph: '!', message: 'Currently -30bp from $1.00, past USDC\'s 15bp alert.',
+    tip: 'Test tip.',
+    focusable: true,
+  }]);
+  window.document.body.appendChild(bar);
+  assert.ok(bar.classList.contains('sim-notices'));
+  const pill = bar.querySelector('.sim-notice');
+  assert.ok(pill, 'pill should render');
+  assert.ok(pill.classList.contains('sim-notice-alert'),
+    'severity class should apply');
+  assert.ok(pill.classList.contains('sim-notice-flash'),
+    'flash class should be applied so the shimmer animation fires');
+  assert.ok(pill.querySelector('.sim-notice-dismiss'),
+    'dismiss button should be present');
+  assert.match(pill.textContent, /DEPEG/);
+  assert.match(pill.textContent, /USDC/);
+});
+
+
 test('renderSimulator (v3) shows empty track record state when no resolutions', () => {
   const { window } = loadApp();
   const mount = window.document.createElement('div');

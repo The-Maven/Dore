@@ -6542,19 +6542,78 @@ function redrawSimulator(mount, feed) {
   // Soft diff path — no innerHTML wipe. Update each surface
   // surgically. Cells flash on change, scroll + tooltips + hover
   // state survive the reconciliation.
-  _simReconcileTokens(mount, feed.tokens || []);
-  _simReconcileStatusStrip(mount, feed);
-  _simReconcileHero(mount, feed);
-  _simReconcileTrackRecord(mount, feed);
-  _simReconcileCalibration(mount, feed.calibration);
-  _simReconcileWire(mount, fresh, priorBuffer);
-  // Update the cached buffer last so the wire reconciliation sees
-  // the prior state for dedup math.
-  SIM_VIEW.wireRows = fresh;
-  SIM_VIEW.lastEventTs = fresh.reduce((mx, e) => {
-    const v = Number(e.ts) || 0;
-    return v > mx ? v : mx;
-  }, 0);
+  //
+  // Smoothness discipline (May 2026):
+  //  • Wrap all DOM writes in ONE requestAnimationFrame so the browser
+  //    coalesces them into a single layout / paint pass. Without this
+  //    the rAF clock fires repeatedly across multiple frames and the
+  //    user sees a stutter ("the whole screen freezes").
+  //  • Skip surfaces whose data hasn't changed since the previous
+  //    reconciliation (signature-hash check). 18 tokens × 5 cells = a
+  //    lot of unnecessary repaint work when nothing actually moved.
+  //  • Defer the bulky calibration panel to requestIdleCallback so it
+  //    repaints during browser idle time instead of competing for the
+  //    same frame as the live token cells.
+  const sig = _simFeedSignature(feed);
+  if (SIM_VIEW.lastReconcileSig === sig) {
+    // Identical payload — skip everything except the always-cheap
+    // wire diff and SSE state housekeeping.
+    SIM_VIEW.wireRows = fresh;
+    return;
+  }
+  SIM_VIEW.lastReconcileSig = sig;
+
+  const apply = () => {
+    _simReconcileNotices(mount, feed);
+    _simReconcileTokens(mount, feed.tokens || []);
+    _simReconcileStatusStrip(mount, feed);
+    _simReconcileHero(mount, feed);
+    _simReconcileTrackRecord(mount, feed);
+    _simReconcileWire(mount, fresh, priorBuffer);
+    SIM_VIEW.wireRows = fresh;
+    SIM_VIEW.lastEventTs = fresh.reduce((mx, e) => {
+      const v = Number(e.ts) || 0;
+      return v > mx ? v : mx;
+    }, 0);
+    // Heavy panel — defer to idle so it doesn't compete with the
+    // live-token paint. Fallback to setTimeout when the browser
+    // lacks requestIdleCallback.
+    const deferCal = () => _simReconcileCalibration(mount, feed.calibration);
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(deferCal, { timeout: 250 });
+    } else {
+      setTimeout(deferCal, 0);
+    }
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(apply);
+  } else {
+    apply();
+  }
+}
+
+
+// Cheap structural signature used to skip the reconciliation when
+// nothing meaningful changed. Includes: per-token (symbol, current_bps,
+// consensus kind), event-buffer last_ts, brave quota calls, focused
+// symbol. Deliberately excludes wall-clock derivatives (last_tick_at
+// label "12s ago") so we don't repaint just because the clock moved.
+function _simFeedSignature(feed) {
+  const parts = [];
+  parts.push('f:' + (SIM_VIEW.focused || ''));
+  for (const t of (feed.tokens || [])) {
+    parts.push(
+      t.symbol + ':' +
+      (t.current_bps == null ? '' : t.current_bps.toFixed(4)) + ':' +
+      ((t.consensus || {}).kind || '') + ':' +
+      ((t.latest_prediction || {}).made_at || '') + ':' +
+      ((t.recent_resolutions || []).length));
+  }
+  const ev = feed.events || [];
+  const lastEv = ev.length ? (ev[0].ts || '') : '';
+  parts.push('e:' + lastEv);
+  parts.push('q:' + ((feed.brave_quota || {}).calls || 0));
+  return parts.join('|');
 }
 
 
@@ -6597,6 +6656,57 @@ function _simRestoreScroll(mount, snap) {
     if (rail && snap.rail != null) rail.scrollTop = snap.rail;
     const wire = mount.querySelector('.sim-wire-rows');
     if (wire && snap.wire != null) wire.scrollTop = snap.wire;
+  });
+}
+
+function _simReconcileNotices(mount, feed) {
+  // Diff the current notices against the rendered pills. Three
+  // actions per reconciliation:
+  //   • new notice id → append with flash animation
+  //   • existing id   → leave alone (preserves the pulse + hover)
+  //   • resolved id   → fade out + remove
+  // If the bar doesn't exist yet AND there are notices, create it.
+  // If the bar exists but has no notices left, remove it.
+  const desired = deriveMarketNotices(feed);
+  let bar = mount.querySelector('.sim-notices');
+  if (!desired.length) {
+    if (bar) {
+      bar.classList.add('sim-notices-emptying');
+      setTimeout(() => bar.remove(), 240);
+    }
+    return;
+  }
+  if (!bar) {
+    // First notice in this session — render the bar and let it
+    // appear via the existing fade-in class.
+    const fresh = simMarketNoticeBar(desired);
+    // Insert before the ribbon (or at the top if ribbon not present yet).
+    const ribbon = mount.querySelector('.sim-ribbon');
+    if (ribbon) ribbon.parentNode.insertBefore(fresh, ribbon);
+    else mount.prepend(fresh);
+    return;
+  }
+  // Bar exists — diff in place.
+  const desiredIds = new Set(desired.map(n => n.id));
+  const renderedById = new Map();
+  bar.querySelectorAll('.sim-notice[data-notice-id]').forEach((node) => {
+    renderedById.set(node.getAttribute('data-notice-id'), node);
+  });
+  // Remove resolved.
+  for (const [id, node] of renderedById.entries()) {
+    if (!desiredIds.has(id)) {
+      node.classList.add('sim-notice-dismissing');
+      setTimeout(() => node.remove(), 220);
+    }
+  }
+  // Add new pills with flash. Preserve order from desired[].
+  desired.forEach((n, idx) => {
+    if (renderedById.has(n.id)) return;
+    const pill = _simNoticePill(n);
+    // Insert at the right position to maintain severity order.
+    const siblings = bar.querySelectorAll('.sim-notice');
+    if (idx >= siblings.length) bar.appendChild(pill);
+    else bar.insertBefore(pill, siblings[idx]);
   });
 }
 
@@ -6706,16 +6816,32 @@ function _simReconcileHero(mount, feed) {
     }
   });
 
-  // Chart SVG + callout — these are wrapped in .sim-hero-chart and
-  // are large enough that an inner-swap is cheaper than diffing every
-  // band. Replace the whole chart in place; the surrounding hero
-  // pane (sym, name, value cell, delta grid) stays intact so scroll
-  // + hover are preserved.
+  // Chart SVG + callout — skip when the underlying prediction hasn't
+  // changed (the chart's a static read of latest_prediction +
+  // sparkline). When it HAS changed, cross-fade the new chart in
+  // instead of a hard swap so the eye sees a smooth transition
+  // rather than a flicker.
   const chartWrap = mount.querySelector('.sim-hero-chart');
   if (chartWrap) {
-    const next = simHeroChart(focused);
-    if (next && next !== chartWrap) {
-      chartWrap.replaceWith(next);
+    const newSig = _simChartSignature(focused);
+    if (chartWrap.getAttribute('data-chart-sig') !== newSig) {
+      const next = simHeroChart(focused);
+      if (next && next !== chartWrap) {
+        next.setAttribute('data-chart-sig', newSig);
+        // Cross-fade: start the new chart at opacity 0, slide it in,
+        // remove the old after the fade. ~180ms feels live without
+        // being noticeable.
+        next.style.opacity = '0';
+        next.style.transition = 'opacity 220ms ease-out';
+        chartWrap.parentNode.insertBefore(next, chartWrap);
+        requestAnimationFrame(() => {
+          next.style.opacity = '1';
+          // Fade the old chart out at the same time.
+          chartWrap.style.transition = 'opacity 220ms ease-out';
+          chartWrap.style.opacity = '0';
+          setTimeout(() => { try { chartWrap.remove(); } catch (_e) {} }, 240);
+        });
+      }
     }
   }
 
@@ -6731,14 +6857,44 @@ function _simReconcileHero(mount, feed) {
   }
 }
 
+// Signature for the focused-token chart. Identical signature = no
+// underlying change worth repainting for. Includes the spark length,
+// last spark value, and the prediction's made_at + p80 bounds.
+function _simChartSignature(t) {
+  if (!t) return '';
+  const sp = t.sparkline || [];
+  const last = sp[sp.length - 1] || {};
+  const p = t.latest_prediction || {};
+  return [
+    t.symbol,
+    sp.length,
+    last.t || '',
+    last.v != null ? last.v.toFixed(4) : '',
+    p.made_at || '',
+    p.p80_low != null ? p.p80_low.toFixed(2) : '',
+    p.p80_high != null ? p.p80_high.toFixed(2) : '',
+    p.point != null ? p.point.toFixed(2) : '',
+  ].join('|');
+}
+
 function _simReconcileTrackRecord(mount, feed) {
   const focused = (feed.tokens || []).find(
     t => t.symbol === SIM_VIEW.focused);
   if (!focused) return;
   const oldStrip = mount.querySelector('.sim-track, .sim-track-empty');
   if (!oldStrip) return;
+  // Skip the strip swap when the resolution list hasn't changed —
+  // it's the second-heaviest surface after the chart, and replacing
+  // it on every reconciliation was contributing to the freeze feel.
+  const sig = ((focused.recent_resolutions || []).length) + ':' +
+    ((focused.recent_resolutions || []).map(
+      r => r.resolved_at + ':' + r.outcome_kind).join(','));
+  if (oldStrip.getAttribute('data-track-sig') === sig) return;
   const next = simHeroTrackRecord(focused);
-  if (next && next !== oldStrip) oldStrip.replaceWith(next);
+  if (next && next !== oldStrip) {
+    next.setAttribute('data-track-sig', sig);
+    oldStrip.replaceWith(next);
+  }
 }
 
 function _simReconcileCalibration(mount, calibration) {
@@ -6803,40 +6959,51 @@ function applySimTick(mount, payload) {
 
 function flashTokenCell(t) {
   // Find every DOM node that holds this token's value and animate
-  // a brief flash + write the new value.
+  // a brief flash + write the new value. Skip writes to cells whose
+  // values are already correct — unchanged textContent assignments
+  // still trigger layout work, and with 18 tokens × N cells the
+  // total layout cost is what made the page feel "frozen" during
+  // reconciliation.
   const cells = document.querySelectorAll(
     '[data-sim-sym="' + t.symbol + '"]');
   if (!cells.length) return;
   const newV = t.current_bps;
-  const fmt = (v) => v == null ? '—'
-    : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'bp';
+  const newStr = newV == null ? '—'
+    : (newV >= 0 ? '+' : '') + Number(newV).toFixed(2) + 'bp';
   for (const cell of cells) {
     const slot = cell.querySelector('[data-sim-val]');
     if (slot) {
       const prev = parseFloat(slot.getAttribute('data-prev'));
-      const cls = (Number.isFinite(prev) && newV != null)
-        ? (newV > prev ? 'sim-flash-up' : (newV < prev ? 'sim-flash-down' : ''))
-        : '';
-      slot.textContent = fmt(newV);
-      slot.setAttribute('data-prev', String(newV));
-      if (cls) {
-        slot.classList.remove('sim-flash-up', 'sim-flash-down');
-        void slot.offsetWidth;
-        slot.classList.add(cls);
+      const same = (Number.isFinite(prev) && newV != null
+        && Math.abs(prev - newV) < 1e-6)
+        || (prev == null && newV == null);
+      if (!same) {
+        const cls = (Number.isFinite(prev) && newV != null)
+          ? (newV > prev ? 'sim-flash-up' : (newV < prev ? 'sim-flash-down' : ''))
+          : '';
+        slot.textContent = newStr;
+        slot.setAttribute('data-prev', String(newV));
+        if (cls) {
+          slot.classList.remove('sim-flash-up', 'sim-flash-down');
+          void slot.offsetWidth;
+          slot.classList.add(cls);
+        }
       }
     }
-    // Update inline delta digits with flash. Use the same
-    // chevron-prefix format the initial render uses so the cell
-    // stays visually consistent across SSE updates.
+    // Delta cell — same skip-unchanged discipline.
     const dslot = cell.querySelector('[data-sim-delta="d1m"]');
     if (dslot && t.deltas) {
       const v = t.deltas.d1m;
-      dslot.textContent = v == null ? '—'
+      const want = v == null ? '—'
         : (v >= 0 ? '▲ ' : '▼ ') + Math.abs(Number(v)).toFixed(2);
-      dslot.classList.remove('sim-delta-up', 'sim-delta-down', 'sim-delta-flat');
-      dslot.classList.add(
-        v == null ? 'sim-delta-flat'
-          : v > 0 ? 'sim-delta-up' : v < 0 ? 'sim-delta-down' : 'sim-delta-flat');
+      if (dslot.textContent !== want) {
+        dslot.textContent = want;
+        const cls = v == null ? 'sim-delta-flat'
+          : v > 0 ? 'sim-delta-up'
+          : v < 0 ? 'sim-delta-down' : 'sim-delta-flat';
+        dslot.classList.remove('sim-delta-up', 'sim-delta-down', 'sim-delta-flat');
+        dslot.classList.add(cls);
+      }
     }
   }
 }
@@ -6880,6 +7047,15 @@ function renderSimulator(mount, feed) {
   const focused = tokens.find(t => t.symbol === SIM_VIEW.focused)
     || tokens[0] || null;
   if (focused) SIM_VIEW.focused = focused.symbol;
+
+  // 0. MARKET NOTICES — flash-animated pills for conditions worth
+  //    seeing right now (wide cone, disputed peg, depeg, model miss).
+  //    Auto-clears when the condition resolves. Manual dismiss
+  //    persists per-user via localStorage.
+  const notices = deriveMarketNotices(feed);
+  if (notices.length) {
+    mount.append(simMarketNoticeBar(notices));
+  }
 
   // 1. Bloomberg ribbon
   mount.append(simBloombergRibbon(tokens));
@@ -7102,6 +7278,226 @@ const SIM_TIP = {
 // value + colored delta + inline sparkline. Row B: peg-deviation
 // track (the Doré-unique view). Auto-scrolls right-to-left at
 // ~50 px/s; pauses on hover so a viewer can read details.
+// ════════════════════════════════════════════════════════════════════
+//  MARKET NOTICE BAR — "something worth seeing"
+//
+//  Derives notices from the live feed and renders them as flash-
+//  animated pills above the ribbon. Each notice carries a stable id
+//  so user dismissals persist (until the condition recurs with a
+//  different signature, e.g. a re-dispute on a new tick).
+//
+//  Detection categories:
+//    • DEPEG       — non-yield-bearing token currently past its
+//                    per-token alert threshold (real price stress)
+//    • WIDE CONE   — forecast 80% half-width past the alert threshold
+//                    (model is hedging; volatility regime shifted)
+//    • DISPUTED    — peg sources disagree beyond 5bp (data integrity)
+//    • MODEL MISS  — most recent resolution landed outside p95
+//                    (the rare case the calibration archive flags)
+//    • SILENT      — no peg source responded for this token this cycle
+//
+//  An "auto-clears when condition resolves" promise: the notice's id
+//  depends on the CONDITION (e.g. `depeg:USDC`), not the moment in
+//  time. When the condition no longer holds, derive doesn't return it
+//  and the next reconciliation drops the pill. The user-facing
+//  "dismiss" button stores the id in localStorage so a manually
+//  dismissed notice stays gone until the condition signature changes.
+// ════════════════════════════════════════════════════════════════════
+
+const _DISMISSED_KEY = 'dore.simulator.notice.dismissed';
+
+function _getDismissedNotices() {
+  try {
+    const raw = localStorage.getItem(_DISMISSED_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch (_e) { return new Set(); }
+}
+
+function _dismissNotice(id) {
+  try {
+    const cur = _getDismissedNotices();
+    cur.add(id);
+    localStorage.setItem(_DISMISSED_KEY, JSON.stringify([...cur]));
+  } catch (_e) { /* ignore */ }
+}
+
+function deriveMarketNotices(feed) {
+  const out = [];
+  const dismissed = _getDismissedNotices();
+  for (const t of (feed.tokens || [])) {
+    const meta = t.meta || {};
+    const pred = t.latest_prediction;
+    const cons = t.consensus || {};
+    const yld = !!meta.yield_bearing;
+    const alertBps = meta.cone_alert_bps;
+    const symbol = t.symbol;
+
+    // 1. DEPEG — actual current value past the token's alert threshold.
+    //    Skip yield-bearing tokens; for them, drift is by design.
+    if (!yld && t.current_bps != null && alertBps != null) {
+      const mag = Math.abs(t.current_bps);
+      if (mag >= alertBps) {
+        const id = `depeg:${symbol}`;
+        if (!dismissed.has(id)) {
+          out.push({
+            id, symbol, severity: 'alert', tag: 'DEPEG', glyph: '!',
+            message: `Currently ${t.current_bps >= 0 ? '+' : ''}${t.current_bps.toFixed(2)}bp from $1.00, past ${symbol}'s ${alertBps.toFixed(0)}bp alert threshold.`,
+            tip: `${symbol} is trading meaningfully off peg. The alert threshold is set per-token from the structural cheat sheet — for ${symbol} that's ±${alertBps.toFixed(0)}bp. Sustained moves past this line warrant a closer look at the issuer, the venue, and recent corpus / news.`,
+            focusable: true,
+          });
+        }
+      }
+    }
+
+    // 2. WIDE CONE — forecast band wider than the alert threshold.
+    //    Even before the price has moved, the model widening tells
+    //    you uncertainty has spiked.
+    if (pred && pred.p80_low != null && pred.p80_high != null
+        && alertBps != null) {
+      const halfW = (pred.p80_high - pred.p80_low) / 2;
+      if (halfW >= alertBps) {
+        const id = `cone:${symbol}`;
+        if (!dismissed.has(id)) {
+          out.push({
+            id, symbol, severity: 'warn', tag: 'WIDE CONE', glyph: '◆',
+            message: `±${halfW.toFixed(1)}bp 80% band — wider than ${symbol}'s ${alertBps.toFixed(0)}bp alert threshold.`,
+            tip: `The model's 80% forecast band has stretched past ${symbol}'s structural alert width. This is an early signal: the cone widens BEFORE a price move when recent tick-to-tick volatility rises. Watch the deltas + the WIRE for the underlying driver.`,
+            focusable: true,
+          });
+        }
+      }
+    }
+
+    // 3. DISPUTED — peg sources disagreed by more than the 5bp
+    //    consensus tolerance. The tick still landed (we record both
+    //    readings honestly) but the audit trail is flagged.
+    if (cons.kind === 'disputed') {
+      const spread = cons.max_disagreement_bps || 0;
+      const id = `dispute:${symbol}`;
+      if (!dismissed.has(id)) {
+        out.push({
+          id, symbol, severity: 'warn', tag: 'DISPUTED', glyph: '⚠',
+          message: `Peg sources disagree by ${spread.toFixed(1)}bp — ground truth contested.`,
+          tip: `Coinbase, Kraken, and CoinGecko reported prices more than 5bp apart for ${symbol}. The consensus tick was still persisted with this disagreement flagged; the resolver narrative will reference it.`,
+          focusable: true,
+        });
+      }
+    }
+
+    // 4. MODEL MISS — most recent resolution fell outside the p95
+    //    band. A well-calibrated model should see ~5% of resolutions
+    //    land here; one miss is not alarming, but it deserves to
+    //    surface because the calibration page only shows aggregates.
+    const rr = t.recent_resolutions || [];
+    if (rr.length) {
+      // recent_resolutions is sorted oldest-first by the server.
+      const latest = rr[rr.length - 1];
+      if (latest.outcome_kind === 'outside' ||
+          latest.outcome_kind === 'miss') {
+        // ID encodes the resolved_at so a NEW miss surfaces even if
+        // an earlier one was dismissed.
+        const id = `miss:${symbol}:${latest.resolved_at || ''}`;
+        if (!dismissed.has(id)) {
+          const actual = latest.actual_value != null
+            ? `${latest.actual_value >= 0 ? '+' : ''}${latest.actual_value.toFixed(2)}bp`
+            : 'unrecorded';
+          out.push({
+            id, symbol, severity: 'warn', tag: 'MODEL MISS', glyph: '×',
+            message: `Latest prediction missed the cone — actual ${actual} landed outside p95.`,
+            tip: `A well-calibrated p95 band should still let ~5% of outcomes slip outside; this is one of those. Check the TRACK RECORD strip on ${symbol}'s hero pane for the broader pattern.`,
+            focusable: true,
+          });
+        }
+      }
+    }
+
+    // 5. SILENT — no source responded for this token this cycle.
+    //    Distinct from "no data ever" (which the rail-empty state
+    //    handles) — silent means a previously-live token went dark.
+    if (t.current_bps == null && t.tick_count > 0) {
+      const id = `silent:${symbol}`;
+      if (!dismissed.has(id)) {
+        out.push({
+          id, symbol, severity: 'info', tag: 'SILENT', glyph: '○',
+          message: `No peg source responded for ${symbol} this cycle.`,
+          tip: `${symbol} has historical data but no source returned a price on the most recent tick. Common causes: a CEX listing change, a CoinGecko rate-limit cooldown, or a temporary upstream outage.`,
+          focusable: true,
+        });
+      }
+    }
+  }
+  // Order: alert before warn before info; within severity, stable by id.
+  const sevRank = { alert: 0, warn: 1, info: 2 };
+  out.sort((a, b) => {
+    const r = (sevRank[a.severity] || 99) - (sevRank[b.severity] || 99);
+    return r !== 0 ? r : a.id.localeCompare(b.id);
+  });
+  return out;
+}
+
+function simMarketNoticeBar(notices) {
+  const bar = el('section', {
+    class: 'sim-notices fade-in',
+    'data-tip': 'Conditions worth seeing right now. Each pill auto-' +
+      'clears the moment its underlying condition resolves. Click × to ' +
+      'dismiss until the signature changes; click anywhere else on the ' +
+      'pill to focus that token.',
+    'data-tip-pos': 'below', 'data-tip-size': 'lg',
+  });
+  for (const n of notices) {
+    bar.appendChild(_simNoticePill(n));
+  }
+  return bar;
+}
+
+function _simNoticePill(n) {
+  const pill = el('div', {
+    class: 'sim-notice sim-notice-' + n.severity + ' sim-notice-flash',
+    'data-notice-id': n.id,
+  });
+  // Severity glyph
+  pill.appendChild(el('span', { class: 'sim-notice-glyph' }, n.glyph));
+  // TAG · SYMBOL chip
+  pill.appendChild(el('span', { class: 'sim-notice-tag' }, n.tag));
+  pill.appendChild(el('span', { class: 'sim-notice-sym' }, n.symbol));
+  // Plain-English message
+  const msg = el('span', { class: 'sim-notice-msg' }, n.message);
+  if (n.tip) {
+    msg.setAttribute('data-tip', n.tip);
+    msg.setAttribute('data-tip-pos', 'below');
+    msg.setAttribute('data-tip-size', 'lg');
+  }
+  pill.appendChild(msg);
+  // Click body → focus the token in the hero pane
+  if (n.focusable && n.symbol) {
+    pill.addEventListener('click', (ev) => {
+      if (ev.target.closest('.sim-notice-dismiss')) return;
+      location.hash = '#simulator/' + n.symbol;
+    });
+    pill.style.cursor = 'pointer';
+  }
+  // Dismiss button — persists in localStorage until the condition
+  // signature changes (e.g. a new miss with a different resolved_at).
+  const x = el('button', {
+    class: 'sim-notice-dismiss',
+    'data-tip': 'Dismiss this notice. It will stay gone until the ' +
+      'underlying condition changes — e.g. a NEW model miss on this ' +
+      'token will surface a fresh pill.',
+    'data-tip-pos': 'below',
+  }, '×');
+  x.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    _dismissNotice(n.id);
+    pill.classList.add('sim-notice-dismissing');
+    setTimeout(() => pill.remove(), 220);
+  });
+  pill.appendChild(x);
+  return pill;
+}
+
+
 function simBloombergRibbon(tokens) {
   return el('section', { class: 'sim-ribbon fade-in' },
     el('div', { class: 'sim-ribbon-row sim-ribbon-row-a' },
@@ -7192,13 +7588,23 @@ function simPegTrack(t) {
       ' Currently ' + (v >= 0 ? '+' : '') + v.toFixed(2) + 'bp from $1.00.';
   return el('div', { class: 'sim-pegtrack',
       'data-tip': tip, 'data-tip-pos': 'below', 'data-tip-size': 'lg' },
-    el('span', { class: 'sim-pegtrack-sym' }, t.symbol),
+    // Symbol label — brand-coloured so the whole row reads as "this
+    // is USDC's track" not "an anonymous strip of dots". Faded when
+    // there's no data so the eye lands on the live ones first.
+    el('span', {
+      class: 'sim-pegtrack-sym',
+      style: 'color:' + (v == null
+        ? 'rgba(154, 149, 144, 0.45)'
+        : brand.accent),
+    }, t.symbol),
     el('div', { class: 'sim-pegtrack-rail' },
       el('div', { class: 'sim-pegtrack-zero' }),
       v != null ? el('div', {
         class: 'sim-pegtrack-dot',
         style: 'left:' + leftPct.toFixed(1) + '%; background:' +
-               brand.accent + '; box-shadow: 0 0 10px ' + brand.glow,
+               brand.accent + '; box-shadow: 0 0 10px ' + brand.glow +
+               ', 0 0 2px ' + brand.accent + ';' +
+               ' border: 1px solid ' + brand.accent + ';',
       }) : null));
 }
 
@@ -7584,6 +7990,7 @@ function simHeroChart(t) {
   }
   const wrap = document.createElement('div');
   wrap.className = 'sim-hero-chart';
+  wrap.setAttribute('data-chart-sig', _simChartSignature(t));
   // Card-level tooltip explains the read; the SVG carries the visuals.
   wrap.setAttribute('data-tip',
     'Recent peg deviation (left of NOW) plus the model\'s forecast cone ' +
