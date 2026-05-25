@@ -7668,6 +7668,163 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   font-style: italic;
 }
 
+/* ── DIVE: deeper-read panel below the shallow commentary ──────── */
+.sim-commentary-dive {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--sim-rule, rgba(255,255,255,0.12));
+}
+.sim-commentary-dive-btn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid rgba(212, 162, 74, 0.32);
+  color: var(--sim-gold, #D4A24A);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  padding: 7px 14px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background-color 120ms, border-color 120ms;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.sim-commentary-dive-btn:hover {
+  background: rgba(212, 162, 74, 0.08);
+  border-color: rgba(212, 162, 74, 0.55);
+}
+.sim-commentary-dive-btn[data-state="loading"] {
+  opacity: 0.65;
+  cursor: progress;
+}
+.sim-commentary-dive-btn[data-state="open"] {
+  background: rgba(212, 162, 74, 0.10);
+  border-color: var(--sim-gold, #D4A24A);
+}
+.sim-commentary-dive-icon {
+  font-weight: 600;
+  font-size: 12px;
+}
+.sim-commentary-dive-slot {
+  margin-top: 14px;
+}
+.sim-commentary-dive-slot-collapsed { display: none; }
+.sim-commentary-dive-loading {
+  padding: 14px;
+  color: var(--muted-2, #9A9590);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+}
+.sim-commentary-dive-error {
+  padding: 10px 12px;
+  color: var(--sim-down, #ff433d);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+}
+
+.sim-commentary-dive-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+  background: rgba(212, 162, 74, 0.025);
+  border: 1px solid rgba(212, 162, 74, 0.20);
+  border-radius: 4px;
+}
+.sim-commentary-dive-fallback {
+  padding: 8px 10px;
+  background: rgba(255, 67, 61, 0.06);
+  border: 1px solid rgba(255, 67, 61, 0.22);
+  color: var(--sim-down, #ff433d);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  border-radius: 2px;
+}
+.sim-commentary-dive-intro {
+  font-family: 'Bodoni Moda', 'Bodoni 72', Georgia, serif;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--paper, #EFEAE0);
+  margin: 0;
+}
+.sim-commentary-dive-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sim-commentary-dive-heading {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--sim-gold, #D4A24A);
+  text-transform: uppercase;
+  margin: 0 0 2px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(212, 162, 74, 0.22);
+}
+.sim-commentary-dive-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 4px;
+}
+.sim-commentary-dive-quote {
+  margin: 0;
+  padding: 6px 12px;
+  border-left: 2px solid var(--sim-gold, #D4A24A);
+  background: rgba(212, 162, 74, 0.04);
+  font-family: 'Bodoni Moda', 'Bodoni 72', Georgia, serif;
+  font-size: 13.5px;
+  line-height: 1.5;
+  font-style: italic;
+  color: var(--paper, #EFEAE0);
+}
+.sim-commentary-dive-quote-q {
+  color: var(--sim-gold, #D4A24A);
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 3px;
+  opacity: 0.8;
+}
+.sim-commentary-dive-explain {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 0 0 14px;
+  border-left: 1px solid var(--rule, rgba(255,255,255,0.08));
+}
+.sim-commentary-dive-explain-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--paper, #EFEAE0);
+  font-weight: 600;
+}
+.sim-commentary-dive-explain-body {
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--paper, #EFEAE0);
+  opacity: 0.95;
+}
+.sim-commentary-dive-cites {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule, rgba(255,255,255,0.08));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sim-commentary-dive-cites-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--muted-2, #9A9590);
+  margin-bottom: 4px;
+}
+
 /* ── MOBILE REDESIGN (≤ 768px) ───────────────────────────────────
    Per SF research: stack columns, kill ticker tape, sticky symbol
    header, larger tap targets, hide the WIRE behind a "more" link.

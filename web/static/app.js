@@ -8182,10 +8182,160 @@ async function loadCommentary(wrap, symbol) {
     }
     body.append(el('div', { class: 'sim-commentary-disclaimer' },
       'AI-generated summary. Not investment advice — verify before acting.'));
+    // v5: DIVE button — opens a structured deeper-read panel below
+    // the commentary card. Lazy-loaded; the LLM call only fires when
+    // the operator asks for it.
+    body.append(_commentaryDiveControl(wrap, symbol));
   } catch (e) {
     const body = wrap.querySelector('.sim-hero-commentary-body');
     if (body) body.textContent = 'commentary unavailable.';
   }
+}
+
+
+function _commentaryDiveControl(wrap, symbol) {
+  // The DIVE button + the slot the dive renders into when the user
+  // clicks. State machine: idle → loading → open. Re-clicking the
+  // button after open collapses the panel; the data stays cached
+  // for instant re-open.
+  const slot = el('div', { class: 'sim-commentary-dive-slot' });
+  const btn = el('button', {
+    class: 'sim-commentary-dive-btn',
+    'data-state': 'idle',
+    'data-tip': 'Open the analyst\'s deeper read: every technical ' +
+      'phrase in the summary above gets unpacked into plain-English ' +
+      'explanations, with a richer P&L lens and the loss tail named ' +
+      'out. Generated once and cached.',
+    'data-tip-size': 'lg',
+    onclick: 'simCommentaryToggleDive(this, "' + symbol + '")',
+  },
+    el('span', { class: 'sim-commentary-dive-icon' }, '↓'),
+    ' ',
+    el('span', { class: 'sim-commentary-dive-label' },
+      'DIVE INTO THE ANALYSIS'));
+  return el('div', { class: 'sim-commentary-dive' }, btn, slot);
+}
+
+
+// Globally-named so the inline onclick can reach it.
+window.simCommentaryToggleDive = async function(btn, symbol) {
+  const state = btn.getAttribute('data-state');
+  const slot = btn.parentElement.querySelector('.sim-commentary-dive-slot');
+  if (!slot) return;
+  if (state === 'open') {
+    slot.classList.add('sim-commentary-dive-slot-collapsed');
+    btn.setAttribute('data-state', 'collapsed');
+    btn.querySelector('.sim-commentary-dive-icon').textContent = '↓';
+    btn.querySelector('.sim-commentary-dive-label').textContent =
+      'DIVE INTO THE ANALYSIS';
+    return;
+  }
+  if (state === 'collapsed') {
+    slot.classList.remove('sim-commentary-dive-slot-collapsed');
+    btn.setAttribute('data-state', 'open');
+    btn.querySelector('.sim-commentary-dive-icon').textContent = '↑';
+    btn.querySelector('.sim-commentary-dive-label').textContent =
+      'CLOSE THE DIVE';
+    return;
+  }
+  // First open — fetch + render
+  btn.setAttribute('data-state', 'loading');
+  btn.querySelector('.sim-commentary-dive-label').textContent =
+    'GENERATING DEEPER READ…';
+  slot.innerHTML = '';
+  slot.append(el('div', { class: 'sim-commentary-dive-loading' },
+    el('span', { class: 'sim-commentary-shimmer' },
+      'unpacking concepts, P&L lens, loss tail…')));
+  try {
+    const resp = await fetch(
+      '/api/simulator/commentary/' + encodeURIComponent(symbol) + '/dive');
+    if (!resp.ok) throw new Error('http ' + resp.status);
+    const data = await resp.json();
+    slot.innerHTML = '';
+    slot.append(_renderCommentaryDive(data));
+    btn.setAttribute('data-state', 'open');
+    btn.querySelector('.sim-commentary-dive-icon').textContent = '↑';
+    btn.querySelector('.sim-commentary-dive-label').textContent =
+      'CLOSE THE DIVE';
+  } catch (e) {
+    slot.innerHTML = '';
+    slot.append(el('div', { class: 'sim-commentary-dive-error' },
+      'Deeper read unavailable: ', String(e && e.message || e)));
+    btn.setAttribute('data-state', 'idle');
+    btn.querySelector('.sim-commentary-dive-label').textContent =
+      'RETRY DIVE';
+  }
+};
+
+
+function _renderCommentaryDive(data) {
+  // Render the structured dive: intro paragraph, then a card per
+  // section. Each section has items; each item has a quoted clause
+  // and labelled bullet explanations.
+  const wrap = el('div', { class: 'sim-commentary-dive-content' });
+  if (data.fallback) {
+    wrap.append(el('div', { class: 'sim-commentary-dive-fallback' },
+      '⚠ Deterministic fallback — the analyst model is offline. ' +
+      'Retry once it\'s back to get the full unpacking.'));
+  }
+  if (data.intro) {
+    wrap.append(el('p', { class: 'sim-commentary-dive-intro' },
+      data.intro));
+  }
+  (data.sections || []).forEach(section => {
+    const card = el('div', { class: 'sim-commentary-dive-section' });
+    card.append(el('h4', { class: 'sim-commentary-dive-heading' },
+      section.heading || ''));
+    (section.items || []).forEach(item => {
+      const itemEl = el('div', { class: 'sim-commentary-dive-item' });
+      if (item.quote) {
+        itemEl.append(el('blockquote',
+          { class: 'sim-commentary-dive-quote' },
+          el('span', { class: 'sim-commentary-dive-quote-q' }, '"'),
+          item.quote,
+          el('span', { class: 'sim-commentary-dive-quote-q' }, '"')));
+      }
+      (item.explanations || []).forEach(ex => {
+        const row = el('div', { class: 'sim-commentary-dive-explain' });
+        if (ex.label) {
+          row.append(el('span',
+            { class: 'sim-commentary-dive-explain-label' },
+            ex.label + ':'));
+        }
+        // Replace [n] citation markers with linked references using
+        // the dive's citation list — same UX as the shallow card.
+        let body = ex.body || '';
+        (data.citations || []).forEach(c => {
+          const re = new RegExp('\\[' + c.n + '\\]', 'g');
+          body = body.replace(re,
+            '<a class="sim-commentary-cite" href="' + (c.url || '#') +
+            '" target="_blank" rel="noopener" title="' +
+            (c.label || '').replace(/"/g, '&quot;') +
+            '">[' + c.n + ']</a>');
+        });
+        const bodyEl = el('span',
+          { class: 'sim-commentary-dive-explain-body' });
+        bodyEl.innerHTML = body;
+        row.append(bodyEl);
+        itemEl.append(row);
+      });
+      card.append(itemEl);
+    });
+    wrap.append(card);
+  });
+  if (data.citations && data.citations.length) {
+    const cites = el('div', { class: 'sim-commentary-dive-cites' });
+    cites.append(el('span',
+      { class: 'sim-commentary-dive-cites-lbl' }, 'SOURCES'));
+    data.citations.forEach(c => {
+      cites.append(el('a', {
+        class: 'sim-commentary-cite-link',
+        href: c.url || '#', target: '_blank', rel: 'noopener',
+      }, '[' + c.n + '] ' + (c.label || '')));
+    });
+    wrap.append(cites);
+  }
+  return wrap;
 }
 
 // 5-cell delta grid for the focused token. 1m / 5m / 1h / 24h / 7d
