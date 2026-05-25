@@ -5589,3 +5589,38 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   0%   { background: var(--flash-color); color: var(--ink); }
   100% { background: transparent; color: var(--sim-amber); }
 }
+
+/* Rail rows with no data yet: fade so the eye lands on live tokens. */
+.sim-rail-row-empty {
+  opacity: 0.45;
+}
+.sim-rail-row-empty:hover { opacity: 0.7; }
+
+/* Hero number sign-tint — overrides the default amber for the big
+   peg-deviation value so the eye reads "off" instantly. */
+.sim-hero-val-big.sim-delta-up   { color: var(--sim-up); }
+.sim-hero-val-big.sim-delta-down { color: var(--sim-down); }
+
+/* Inline sparkline behind ribbon values — sit on top of the value
+   not under it, keep them readable. */
+.sim-ribbon-cell .sim-spark {
+  margin-left: 2px;
+}
+
+/* Pulley dot on the vertical rail — small accent so the right rail
+   has more depth. */
+.sim-pulley-vstation .sim-pulley-dot {
+  width: 7px; height: 7px;
+}
+
+/* When the wire is empty, give the operator a calm hint. */
+.sim-wire-rows:empty::before {
+  content: 'no events yet · TICK NOW or BURST ×6 to populate';
+  display: block;
+  padding: 16px 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted-2);
+  font-style: italic;
+  letter-spacing: 0.06em;
+}

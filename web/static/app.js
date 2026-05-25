@@ -6747,25 +6747,41 @@ function simWorkspace(tokens, focused, feed) {
     simWire(feed));
 }
 
-// LEFT RAIL — token list with sparklines + values
+// LEFT RAIL — token list with sparklines + values.
+// Tokens WITH data ranked first; empty rows pushed to the bottom
+// and rendered at low opacity so the eye lands on live instruments.
 function simTokenRail(tokens, focused) {
+  const sorted = tokens.slice().sort((a, b) => {
+    const aHas = a.current_bps != null ? 1 : 0;
+    const bHas = b.current_bps != null ? 1 : 0;
+    if (aHas !== bHas) return bHas - aHas;
+    // Within "has data", sort by |1m delta| descending so the
+    // movers float to the top.
+    const aD = Math.abs((a.deltas || {}).d1m || 0);
+    const bD = Math.abs((b.deltas || {}).d1m || 0);
+    return bD - aD;
+  });
+  const liveCount = sorted.filter(t => t.current_bps != null).length;
   return el('aside', { class: 'sim-rail-left' },
     el('div', { class: 'sim-rail-head' },
       el('span', { class: 'sim-rail-title' }, 'INSTRUMENTS'),
-      el('span', { class: 'sim-rail-count' }, String(tokens.length))),
+      el('span', { class: 'sim-rail-count' },
+        String(liveCount) + ' / ' + String(tokens.length))),
     el('div', { class: 'sim-rail-list' },
-      tokens.map(t => simRailRow(t, focused && t.symbol === focused.symbol))));
+      sorted.map(t => simRailRow(t, focused && t.symbol === focused.symbol))));
 }
 
 function simRailRow(t, isFocused) {
   const brand = t.brand || { accent: '#D4A24A', name: '' };
   const v = t.current_bps;
   const d1m = (t.deltas || {}).d1m;
+  const noData = v == null;
   const dColor = (d1m == null) ? 'sim-delta-flat'
     : d1m > 0 ? 'sim-delta-up'
     : d1m < 0 ? 'sim-delta-down' : 'sim-delta-flat';
   const row = el('div', {
-    class: 'sim-rail-row ' + (isFocused ? 'sim-rail-row-focused' : ''),
+    class: 'sim-rail-row ' + (isFocused ? 'sim-rail-row-focused' : '') +
+      (noData ? ' sim-rail-row-empty' : ''),
     'data-sim-sym': t.symbol,
     onclick: 'location.hash="#simulator/' + t.symbol + '"',
   },
@@ -6809,8 +6825,12 @@ function simHeroPane(focused, feed) {
               focused.latest_prediction.confidence_word.replace(/_/g, ' '))
           : null),
       el('div', { class: 'sim-hero-value' },
-        el('span', { class: 'sim-hero-val-big',
-          'data-sim-sym': focused.symbol },
+        el('span', {
+          class: 'sim-hero-val-big ' + (focused.current_bps == null ? ''
+            : focused.current_bps > 0 ? 'sim-delta-up'
+            : focused.current_bps < 0 ? 'sim-delta-down' : ''),
+          'data-sim-sym': focused.symbol,
+        },
           el('span', { 'data-sim-val': '',
             'data-prev': focused.current_bps == null ? ''
               : String(focused.current_bps) },
@@ -6985,14 +7005,44 @@ function renderWireRow(ev) {
 
 function wireGlyphFor(kind) {
   if (!kind) return { label: 'EVNT', cls: '' };
+  // Specific kinds first; substring matchers below.
+  const map = {
+    'movement.ticker.cycle':       { label: 'TICK', cls: 'sim-wire-tick' },
+    'movement.tick.manual':        { label: 'KICK', cls: 'sim-wire-tick' },
+    'movement.resolver.graded':    { label: 'RESV', cls: 'sim-wire-resv' },
+    'movement.resolver.list_failed': { label: 'RFAL', cls: 'sim-wire-warn' },
+    'movement.brave.fetched':      { label: 'BRAV', cls: 'sim-wire-brav' },
+    'movement.brave.cache_hit':    { label: 'CACH', cls: 'sim-wire-cach' },
+    'movement.brave.skip_calm':    { label: 'SKIP', cls: 'sim-wire-skip' },
+    'movement.brave.quota_hit':    { label: 'QHIT', cls: 'sim-wire-warn' },
+    'movement.brave.fetch_failed_served_stale':
+                                   { label: 'STAL', cls: 'sim-wire-warn' },
+    'movement.peg_tick.dispute_persisted':
+                                   { label: 'DISP', cls: 'sim-wire-disp' },
+    'movement.peg_tick.persist_failed':
+                                   { label: 'PFAL', cls: 'sim-wire-warn' },
+    'movement.judge.citation_forged':
+                                   { label: 'FORG', cls: 'sim-wire-warn' },
+    'movement.judge.voice_rule_triggered':
+                                   { label: 'VOIC', cls: 'sim-wire-judg' },
+    'movement.judge.length_cap_triggered':
+                                   { label: 'CAPS', cls: 'sim-wire-judg' },
+    'movement.judge.llm_unavailable':
+                                   { label: 'NOLL', cls: 'sim-wire-warn' },
+    'movement.config.updated':     { label: 'CONF', cls: 'sim-wire-judg' },
+    'peg_price.dispute':           { label: 'PEGD', cls: 'sim-wire-disp' },
+    'peg_price.no_source_responded':
+                                   { label: 'SLNT', cls: 'sim-wire-warn' },
+    'store.schema_missing':        { label: 'SCHM', cls: 'sim-wire-warn' },
+    'snapshot.validated':          { label: 'SVAL', cls: 'sim-wire-cach' },
+    'snapshot.saved':              { label: 'SAVD', cls: 'sim-wire-tick' },
+  };
+  if (map[kind]) return map[kind];
+  // Fallback heuristics.
   if (kind.includes('resolver')) return { label: 'RESV', cls: 'sim-wire-resv' };
-  if (kind.includes('ticker.cycle')) return { label: 'TICK', cls: 'sim-wire-tick' };
-  if (kind.includes('brave.fetched')) return { label: 'BRAV', cls: 'sim-wire-brav' };
-  if (kind.includes('brave.cache_hit')) return { label: 'CACH', cls: 'sim-wire-cach' };
-  if (kind.includes('brave.skip_calm')) return { label: 'SKIP', cls: 'sim-wire-skip' };
-  if (kind.includes('dispute')) return { label: 'DISP', cls: 'sim-wire-disp' };
-  if (kind.includes('judge')) return { label: 'JUDG', cls: 'sim-wire-judg' };
-  if (kind.includes('schema_missing')) return { label: 'SCHM', cls: 'sim-wire-warn' };
+  if (kind.includes('brave'))    return { label: 'BRAV', cls: 'sim-wire-brav' };
+  if (kind.includes('judge'))    return { label: 'JUDG', cls: 'sim-wire-judg' };
+  if (kind.includes('peg'))      return { label: 'PEG ', cls: 'sim-wire-disp' };
   return { label: 'EVNT', cls: '' };
 }
 

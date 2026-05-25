@@ -2260,30 +2260,43 @@ def simulator_feed() -> dict[str, Any]:
             },
         })
 
-    # Recent event stream — narrow filter to the simulator-relevant
-    # kinds so the right-rail feed doesn't drown in unrelated noise.
+    # Recent event stream — narrow filter to simulator-relevant
+    # kinds. The earlier (kind OR level=warn) filter caught too
+    # many unrelated rpc/snapshot warnings; explicit allow-list is
+    # cleaner for THE WIRE.
     SIM_EVENT_KINDS = {
         "movement.ticker.cycle",
+        "movement.tick.manual",
         "movement.peg_tick.dispute_persisted",
+        "movement.peg_tick.persist_failed",
         "movement.brave.cache_hit", "movement.brave.fetched",
         "movement.brave.skip_calm", "movement.brave.quota_hit",
+        "movement.brave.fetch_failed_served_stale",
         "movement.resolver.graded",
+        "movement.resolver.list_failed",
         "movement.judge.voice_rule_triggered",
         "movement.judge.citation_forged",
+        "movement.judge.length_cap_triggered",
+        "movement.judge.llm_unavailable",
+        "movement.config.updated",
         "peg_price.dispute",
+        "peg_price.no_source_responded",
         "store.schema_missing",
+        "snapshot.validated",
+        "snapshot.saved",
     }
     raw = recent_events(limit=300) or []
     events_out = []
     for ev in raw:
-        if ev.get("kind") in SIM_EVENT_KINDS or ev.get("level") in ("warn", "error"):
-            events_out.append({
-                "kind": ev.get("kind"),
-                "level": ev.get("level", "info"),
-                "ts": ev.get("ts"),
-                "symbol": ev.get("symbol", ""),
-                "summary": _event_summary(ev),
-            })
+        if ev.get("kind") not in SIM_EVENT_KINDS:
+            continue
+        events_out.append({
+            "kind": ev.get("kind"),
+            "level": ev.get("level", "info"),
+            "ts": ev.get("ts"),
+            "symbol": ev.get("symbol", ""),
+            "summary": _event_summary(ev),
+        })
         if len(events_out) >= 80:
             break
 
@@ -2320,30 +2333,65 @@ def simulator_feed() -> dict[str, Any]:
 
 
 def _event_summary(ev: dict[str, Any]) -> str:
-    """One-line human label for an event in the live feed."""
+    """One-line human label for an event in the live feed.
+    Editorial, lower-case, ≤ 64 chars so the wire reads as a
+    cohesive stream rather than raw event names."""
     kind = ev.get("kind", "")
     sym = ev.get("symbol", "") or ""
     if kind == "movement.ticker.cycle":
-        return f"tick cycle · {ev.get('symbols', '?')} symbols"
+        n = ev.get("symbols", "?")
+        return f"cycle complete · {n} symbol{'s' if n != 1 else ''}"
+    if kind == "movement.tick.manual":
+        return f"manual tick · burst {ev.get('burst', 1)}"
     if kind == "movement.resolver.graded":
-        return (f"{sym} resolved · {ev.get('outcome', '?')} · "
-                f"brier {ev.get('brier', '—')}")
+        out = ev.get("outcome", "?")
+        brier = ev.get("brier")
+        crps = ev.get("crps")
+        score = (f"brier {brier:.3f}" if isinstance(brier, (int, float))
+                 else (f"crps {crps:.2f}" if isinstance(crps, (int, float))
+                       else ""))
+        return f"resolved {out}" + (f" · {score}" if score else "")
     if kind == "movement.brave.fetched":
-        return (f"brave fetched {sym} · {ev.get('count', 0)} hits · "
-                f"{ev.get('calls_today', '?')}/{ev.get('cap', '?')}")
+        return (f"brave fetched · {ev.get('count', 0)} hits · "
+                f"{ev.get('calls_today', '?')}/{ev.get('cap', '?')} today")
     if kind == "movement.brave.cache_hit":
-        return f"brave cache hit · {sym} · {ev.get('age_s', '?')}s"
+        age = ev.get("age_s")
+        return f"brave cache hit · age {age}s" if age is not None else "brave cache hit"
     if kind == "movement.brave.skip_calm":
-        return f"brave skipped · {sym} calm"
+        return "brave skipped — forecast calm"
+    if kind == "movement.brave.quota_hit":
+        return f"brave quota hit · {ev.get('calls_today', '?')} / {ev.get('cap', '?')}"
+    if kind == "movement.brave.fetch_failed_served_stale":
+        return "brave fetch failed · served stale cache"
     if kind == "movement.peg_tick.dispute_persisted":
-        return (f"{sym} peg sources disputed · spread "
-                f"{ev.get('max_disagreement_bps', '?')}bp")
-    if kind == "peg_price.dispute":
-        return f"peg dispute · {sym}"
+        sp = ev.get("max_disagreement_bps")
+        return f"peg sources disputed · spread {sp:.2f}bp" \
+            if isinstance(sp, (int, float)) else "peg sources disputed"
+    if kind == "movement.peg_tick.persist_failed":
+        return "peg tick persist failed"
     if kind == "movement.judge.citation_forged":
-        return f"judge forged citation stripped · {ev.get('forged_count', '?')} drops"
+        return f"judge forged citation stripped · {ev.get('forged_count', '?')} dropped"
+    if kind == "movement.judge.voice_rule_triggered":
+        return f"judge voice rule fired · {ev.get('stripped_count', '?')} stripped"
+    if kind == "movement.judge.length_cap_triggered":
+        f = ev.get("field", "field")
+        return f"judge {f} length cap · trimmed to {ev.get('kept_words', '?')}w"
+    if kind == "movement.judge.llm_unavailable":
+        return "judge unavailable · falling back to engine prose"
+    if kind == "movement.config.updated":
+        return (f"config updated · tick "
+                f"{ev.get('tick_interval_minutes', '?')}m, horizon "
+                f"{ev.get('horizon_minutes', '?')}m")
+    if kind == "peg_price.dispute":
+        return "peg-price dispute logged"
+    if kind == "peg_price.no_source_responded":
+        return "peg source silence · all upstreams failed"
     if kind == "store.schema_missing":
-        return f"schema missing · {ev.get('table', '?')}"
+        return f"schema missing · {ev.get('table', '?')} table"
+    if kind == "snapshot.validated":
+        return f"snapshot validated · {ev.get('id', '?')[:32]}"
+    if kind == "snapshot.saved":
+        return f"snapshot saved · {ev.get('bytes', '?')}b"
     return kind
 
 
