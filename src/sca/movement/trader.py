@@ -53,10 +53,19 @@ PERSONA_NAME = "The Discipline Trader"
 PERSONA_TAGLINE = (
     "patient mean-reversion arbitrageur — profit-focused, risk-managed"
 )
-NOTIONAL_PER_TRADE = 10_000.0   # USD — fixed-size for first iteration
-MAX_OPEN_NOTIONAL = 50_000.0    # 5 concurrent trades
+# Capital sizing (v2):
+#   • The trader operates against a $10,000 DAILY allocation — any
+#     new trade opened today must fit inside the remaining day budget.
+#     The daily clock is UTC-keyed and resets at 00:00 UTC.
+#   • A single trade is sized at notional × cone-shrink (0.25–1.0).
+#   • The notional cap (MAX_OPEN_NOTIONAL) is the cross-day cap on
+#     concurrent open positions — even if today is fresh, we won't
+#     stack more than 5 open trades at once.
+DAILY_BUDGET_USD = 10_000.0     # USD — resets at 00:00 UTC daily
+NOTIONAL_PER_TRADE = 10_000.0   # full position when cone is normal
+MAX_OPEN_NOTIONAL = 50_000.0    # 5 concurrent trades absolute cap
 ENTRY_THRESHOLD_BPS = 4.0       # don't trade peg deviations smaller than 4bp
-TRADER_VERSION = "discipline_v1"
+TRADER_VERSION = "discipline_v2"
 
 
 @dataclass
@@ -77,12 +86,15 @@ class Trade:
     cone_width_bps: float
     confidence_word: str
     rationale: str            # plain-English why we took the trade
+    # v2 fields — used for daily budget tracking + the story-over-time UX.
+    day_utc: str = ""         # YYYY-MM-DD, set on open; never mutated
     # Filled when the trade resolves:
     status: str = "open"      # 'open' | 'resolved'
     exit_bps: Optional[float] = None
     resolved_at_real: Optional[str] = None
     pnl_usd: Optional[float] = None  # signed USD P&L
     pnl_bps: Optional[float] = None  # signed bp move in our favour
+    outcome: str = ""         # 'WIN' | 'LOSS' | 'FLAT' (resolved trades only)
     outcome_note: str = ""
 
 
@@ -321,8 +333,11 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
         trades = _load_trades()
         opened_now: list[Trade] = []
 
-        # 1. Try to open new trades for each token. Cap total open
-        # notional across all symbols.
+        # 1. Try to open new trades for each token. Two capital limits:
+        #    (a) MAX_OPEN_NOTIONAL — cross-day cap on concurrent open positions
+        #    (b) DAILY_BUDGET_USD  — fresh allocation at 00:00 UTC each day
+        # A new trade must fit BOTH.
+        today_utc = (now_iso or _now_iso())[:10]  # YYYY-MM-DD
         open_set = {
             (t.symbol, t.prediction_made_at)
             for t in trades if t.status == "open"
@@ -330,6 +345,14 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
         current_open_notional = sum(
             t.notional_usd for t in trades if t.status == "open"
         )
+        # Capital deployed TODAY = sum of notional for every trade
+        # opened today (resolved or still open). Once spent, it's
+        # spent; resolution doesn't replenish today's allocation,
+        # only frees the per-position concurrent slot.
+        deployed_today = sum(
+            t.notional_usd for t in trades if t.day_utc == today_utc
+        )
+        day_budget_remaining = DAILY_BUDGET_USD - deployed_today
         for tok in feed_tokens or []:
             sym = (tok.get("symbol") or "").upper()
             if not sym:
@@ -368,6 +391,22 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
             direction = "long" if current < 0 else "short"
             cone_half = (pred["p80_high"] - pred["p80_low"]) / 2
             notional = _size_position(cone_half, meta.get("cone_normal_bps"))
+            # Day-budget gate. If we can't fit the FULL sized position,
+            # shrink it to whatever's left today. Refuse the trade
+            # entirely if the budget remainder is less than 25% of the
+            # default position (we'd be opening a token-position too
+            # small to matter).
+            if notional > day_budget_remaining:
+                if day_budget_remaining < NOTIONAL_PER_TRADE * 0.25:
+                    log_event(
+                        "trader.skipped.daily_budget",
+                        level="info", symbol=sym,
+                        remaining=round(day_budget_remaining, 2),
+                        floor=NOTIONAL_PER_TRADE * 0.25,
+                        day_utc=today_utc,
+                    )
+                    break
+                notional = round(day_budget_remaining, 2)
             trade = Trade(
                 id=f"t{int(time.time() * 1000)}-{sym}",
                 symbol=sym,
@@ -383,10 +422,12 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
                 cone_width_bps=round(2 * cone_half, 2),
                 confidence_word=pred.get("confidence_word", ""),
                 rationale=reason,
+                day_utc=today_utc,
             )
             trades.append(trade)
             opened_now.append(trade)
             current_open_notional += notional
+            day_budget_remaining -= notional
             log_event(
                 "trader.trade.opened", level="info",
                 symbol=sym, direction=direction,
@@ -433,10 +474,19 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
             trade.pnl_bps = round(pnl_bps, 4)
             trade.pnl_usd = pnl_usd
             trade.status = "resolved"
+            # Outcome label — used by the UI to surface clear WIN /
+            # LOSS markers. FLAT is the rare exactly-zero P&L case
+            # (we still distinguish it so it's not mis-counted).
+            if pnl_usd > 0:
+                trade.outcome = "WIN"
+            elif pnl_usd < 0:
+                trade.outcome = "LOSS"
+            else:
+                trade.outcome = "FLAT"
             trade.outcome_note = (
                 f"{trade.direction.upper()} {trade.symbol} settled at "
-                f"{current:+.2f}bp ({'profit' if pnl_usd >= 0 else 'loss'} "
-                f"of ${abs(pnl_usd):.2f})"
+                f"{current:+.2f}bp ({trade.outcome} "
+                f"${'+' if pnl_usd >= 0 else '-'}{abs(pnl_usd):.2f})"
             )
             log_event(
                 "trader.trade.resolved", level="info",
@@ -450,33 +500,144 @@ def evaluate_cycle(feed_tokens: list[dict], *, now_iso: str) -> list[Trade]:
 
 
 def track_record() -> dict:
-    """Aggregate stats over all resolved trades for the UI summary
-    line. Wins / losses / net P&L / win-rate / mean trade."""
+    """Aggregate stats — the story-over-time payload the UI reads.
+
+    Includes everything the v2 trader UX needs:
+      • wins / losses / net P&L / win-rate
+      • today: notional deployed + remaining budget
+      • equity_curve: cumulative P&L points (newest last) for the
+        sparkline
+      • current_streak: consecutive same-outcome resolved trades
+      • daily: per-day P&L breakdown (last 14 UTC days)
+      • best_day / worst_day: peak / trough by P&L
+    """
+    from datetime import datetime, timezone, timedelta
     with _TRADER_LOCK:
         trades = _load_trades()
     resolved = [t for t in trades if t.status == "resolved"
                  and t.pnl_usd is not None]
+    open_trades = [t for t in trades if t.status == "open"]
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    deployed_today = sum(
+        t.notional_usd for t in trades if t.day_utc == today_utc)
+    budget_remaining_today = round(
+        DAILY_BUDGET_USD - deployed_today, 2)
+
+    base = {
+        "persona": PERSONA_NAME,
+        "tagline": PERSONA_TAGLINE,
+        "version": TRADER_VERSION,
+        "today_utc": today_utc,
+        "daily_budget_usd": DAILY_BUDGET_USD,
+        "deployed_today_usd": round(deployed_today, 2),
+        "budget_remaining_today_usd": budget_remaining_today,
+        "count_open": len(open_trades),
+        "open_notional_usd": round(
+            sum(t.notional_usd for t in open_trades), 2),
+    }
+
     if not resolved:
         return {
-            "count_resolved": 0, "count_open": sum(
-                1 for t in trades if t.status == "open"),
-            "wins": 0, "losses": 0, "net_pnl_usd": 0.0,
+            **base,
+            "count_resolved": 0, "wins": 0, "losses": 0,
+            "net_pnl_usd": 0.0,
             "win_rate": None, "mean_trade_usd": None,
-            "persona": PERSONA_NAME, "tagline": PERSONA_TAGLINE,
-            "version": TRADER_VERSION,
+            "current_streak": {"outcome": None, "length": 0},
+            "equity_curve": [],
+            "daily": [],
+            "best_day": None,
+            "worst_day": None,
         }
+
+    # Order resolved trades chronologically for streaks + equity curve.
+    by_time = sorted(
+        resolved, key=lambda t: t.resolved_at_real or t.opened_at or "")
     wins = [t for t in resolved if (t.pnl_usd or 0) > 0]
     losses = [t for t in resolved if (t.pnl_usd or 0) < 0]
     net = round(sum(t.pnl_usd or 0 for t in resolved), 2)
+
+    # Current streak — walk backward through resolved trades while
+    # the outcome stays consistent.
+    streak_outcome: Optional[str] = None
+    streak_length = 0
+    for t in reversed(by_time):
+        o = t.outcome
+        if not o:
+            o = "WIN" if (t.pnl_usd or 0) > 0 else (
+                "LOSS" if (t.pnl_usd or 0) < 0 else "FLAT")
+        if streak_outcome is None:
+            streak_outcome = o
+            streak_length = 1
+        elif o == streak_outcome:
+            streak_length += 1
+        else:
+            break
+
+    # Equity curve — cumulative P&L after each resolved trade.
+    # The UI renders this as a small sparkline.
+    cumulative = 0.0
+    equity_curve = []
+    for t in by_time:
+        cumulative += t.pnl_usd or 0
+        equity_curve.append({
+            "at": t.resolved_at_real or t.opened_at,
+            "pnl_usd_running": round(cumulative, 2),
+            "outcome": t.outcome or ("WIN" if (t.pnl_usd or 0) > 0
+                                      else "LOSS"),
+        })
+
+    # Per-day aggregates — last 14 UTC days. A day appears even if
+    # no trades resolved (P&L = 0) so the timeline shows the gap.
+    daily_map: dict[str, dict] = {}
+    for t in resolved:
+        day = t.day_utc or (t.resolved_at_real or "")[:10]
+        if not day:
+            continue
+        agg = daily_map.setdefault(day, {
+            "day_utc": day, "trades": 0, "wins": 0, "losses": 0,
+            "pnl_usd": 0.0, "notional_usd": 0.0,
+        })
+        agg["trades"] += 1
+        if (t.pnl_usd or 0) > 0:
+            agg["wins"] += 1
+        elif (t.pnl_usd or 0) < 0:
+            agg["losses"] += 1
+        agg["pnl_usd"] = round(agg["pnl_usd"] + (t.pnl_usd or 0), 2)
+        agg["notional_usd"] = round(
+            agg["notional_usd"] + t.notional_usd, 2)
+    # Fill in zero-trade days so the timeline reads contiguously.
+    now_dt = datetime.now(timezone.utc)
+    for back in range(14):
+        d = (now_dt - timedelta(days=back)).strftime("%Y-%m-%d")
+        if d not in daily_map:
+            daily_map[d] = {
+                "day_utc": d, "trades": 0, "wins": 0, "losses": 0,
+                "pnl_usd": 0.0, "notional_usd": 0.0,
+            }
+    daily = sorted(daily_map.values(), key=lambda d: d["day_utc"],
+                    reverse=True)[:14]
+
+    # Best / worst day by P&L (over the full history, not just last 14).
+    by_pnl = sorted(
+        [d for d in daily_map.values() if d["trades"] > 0],
+        key=lambda d: d["pnl_usd"], reverse=True)
+    best_day = by_pnl[0] if by_pnl else None
+    worst_day = by_pnl[-1] if by_pnl else None
+
     return {
+        **base,
         "count_resolved": len(resolved),
-        "count_open": sum(1 for t in trades if t.status == "open"),
         "wins": len(wins),
         "losses": len(losses),
         "net_pnl_usd": net,
         "win_rate": round(len(wins) / len(resolved), 3),
         "mean_trade_usd": round(net / len(resolved), 2),
-        "persona": PERSONA_NAME,
-        "tagline": PERSONA_TAGLINE,
-        "version": TRADER_VERSION,
+        "current_streak": {
+            "outcome": streak_outcome,
+            "length": streak_length,
+        },
+        "equity_curve": equity_curve[-50:],  # last 50 points for the sparkline
+        "daily": daily,
+        "best_day": best_day,
+        "worst_day": worst_day,
     }

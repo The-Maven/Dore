@@ -154,12 +154,12 @@ def test_does_not_duplicate_open_trade_for_same_prediction():
     assert len(op2) == 0  # same prediction id, idempotent
 
 
-def test_caps_total_open_notional():
+def test_caps_total_open_notional(monkeypatch):
     """Trader refuses to open more than MAX_OPEN_NOTIONAL across all
-    symbols. Set the cap low + the per-trade notional high so we hit
-    it in two trades."""
-    # Default MAX_OPEN_NOTIONAL = 50,000, per-trade = 10,000 → 5 max.
-    # Open 5, then attempt a 6th.
+    symbols. Raise the daily budget for this test so the concurrent
+    cap (not the daily one) is what bites — that's what we're testing."""
+    # Lift daily budget so we hit the concurrent cap first.
+    monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 200_000.0)
     feeds = []
     for i, sym in enumerate(["USDC", "USDT", "DAI", "PYUSD", "USDP", "TUSD"]):
         feeds.append({
@@ -173,10 +173,31 @@ def test_caps_total_open_notional():
             },
         })
     opened = trader.evaluate_cycle(feeds, now_iso="2026-05-25T11:00:00+00:00")
-    # First 5 should open (5 × 10k = 50k = cap); the 6th refused.
+    # First 5 should open (5 × 10k = 50k concurrent cap); the 6th refused.
     assert len(opened) == 5
-    syms_opened = {t.symbol for t in opened}
-    assert "TUSD" not in syms_opened or "USDC" not in syms_opened  # the 6th got refused
+
+
+def test_caps_daily_budget(monkeypatch):
+    """New v2 contract: even with concurrent slots free, the trader
+    refuses to open if today's $10,000 allocation is exhausted."""
+    # Use the default $10k daily — only one full position fits.
+    feeds = []
+    for i, sym in enumerate(["USDC", "USDT", "DAI"]):
+        feeds.append({
+            "symbol": sym, "current_bps": -10.0 - i,
+            "meta": {"cone_normal_bps": 5, "cone_alert_bps": 20},
+            "latest_prediction": {
+                "made_at": f"t-{sym}",
+                "resolves_at": "2030-01-01T00:00:00+00:00",
+                "point": -2.0, "p80_low": -8.0, "p80_high": 4.0,
+                "confidence_word": "likely",
+            },
+        })
+    opened = trader.evaluate_cycle(feeds, now_iso="2026-05-25T11:00:00+00:00")
+    # Only one trade fits the $10k daily budget at full notional.
+    assert len(opened) == 1
+    # Trade carries the day_utc tag for budget tracking
+    assert opened[0].day_utc == "2026-05-25"
 
 
 def test_position_size_scales_down_with_cone_width():
@@ -272,9 +293,11 @@ def test_resolves_short_trade_with_correct_pnl():
     assert resolved[0]["pnl_usd"] > 0  # profitable
 
 
-def test_track_record_aggregates_wins_losses_correctly():
+def test_track_record_aggregates_wins_losses_correctly(monkeypatch):
     """Open + resolve two trades, one winning + one losing, verify
-    the aggregate stats."""
+    the aggregate stats. Lifts the daily budget so both fit; the
+    cap test is separate."""
+    monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 100_000.0)
     # Trade 1 — win
     feed_a = [{
         "symbol": "USDC", "current_bps": -10.0,
@@ -313,6 +336,13 @@ def test_track_record_aggregates_wins_losses_correctly():
     # Net P&L is signed sum — could be positive or negative depending
     # on magnitudes; we just verify both trades are reflected.
     assert tr["mean_trade_usd"] is not None
+    # New v2 fields: equity curve has both trades as cumulative points,
+    # daily breakdown has the day they occurred on, current streak
+    # reflects most-recent outcome.
+    assert len(tr["equity_curve"]) == 2
+    assert tr["current_streak"]["length"] >= 1
+    assert tr["best_day"] is not None
+    assert tr["best_day"]["pnl_usd"] >= tr["worst_day"]["pnl_usd"]
 
 
 def test_skips_when_current_bps_is_none(tmp_path, monkeypatch):
@@ -415,4 +445,62 @@ def test_persona_constants_exposed():
     tr = trader.track_record()
     assert tr["persona"] == "The Discipline Trader"
     assert tr["tagline"]
-    assert tr["version"] == "discipline_v1"
+    assert tr["version"] == "discipline_v2"
+    # v2 contract: daily budget tracking present even with no trades
+    assert "daily_budget_usd" in tr
+    assert tr["daily_budget_usd"] == 10_000.0
+    assert "budget_remaining_today_usd" in tr
+    assert "current_streak" in tr
+
+
+def test_daily_budget_resets_at_new_utc_day(monkeypatch, tmp_path):
+    """New v2 contract: opening a position on day N consumes day N's
+    budget. The next UTC day, the budget is fresh."""
+    # Day 1 — full budget exhausted by one $10k trade
+    feed = [{
+        "symbol": "USDC", "current_bps": -10.0,
+        "meta": {"cone_normal_bps": 5, "cone_alert_bps": 25},
+        "latest_prediction": {
+            "made_at": "p1", "resolves_at": "2026-05-25T11:05:00+00:00",
+            "point": 0.0, "p80_low": -5.0, "p80_high": 5.0,
+            "confidence_word": "likely",
+        },
+    }]
+    op1 = trader.evaluate_cycle(feed, now_iso="2026-05-25T11:00:00+00:00")
+    assert len(op1) == 1
+    # Same day, attempt a second trade on a different prediction —
+    # should be REFUSED (budget exhausted).
+    feed2 = [dict(feed[0], latest_prediction={
+        **feed[0]["latest_prediction"], "made_at": "p2"})]
+    op2 = trader.evaluate_cycle(feed2, now_iso="2026-05-25T11:01:00+00:00")
+    assert op2 == [], "second trade same day should be refused (budget exhausted)"
+    # Next UTC day — fresh allocation, trade fits again.
+    feed3 = [dict(feed[0], latest_prediction={
+        **feed[0]["latest_prediction"], "made_at": "p3"})]
+    op3 = trader.evaluate_cycle(feed3, now_iso="2026-05-26T11:00:00+00:00")
+    assert len(op3) == 1, "new day must reset the daily budget"
+    assert op3[0].day_utc == "2026-05-26"
+
+
+def test_outcome_label_set_on_resolve(monkeypatch):
+    """v2 contract: each resolved trade carries outcome ∈
+    {WIN, LOSS, FLAT} for the UI to render WIN/LOSS labels."""
+    monkeypatch.setattr(trader, "DAILY_BUDGET_USD", 100_000.0)
+    feed = [{
+        "symbol": "USDC", "current_bps": -10.0,
+        "meta": {"cone_normal_bps": 5, "cone_alert_bps": 25},
+        "latest_prediction": {
+            "made_at": "p1", "resolves_at": "2026-05-25T11:05:00+00:00",
+            "point": 0.0, "p80_low": -5.0, "p80_high": 5.0,
+            "confidence_word": "likely",
+        },
+    }]
+    trader.evaluate_cycle(feed, now_iso="2026-05-25T11:00:00+00:00")
+    # Resolve as a win
+    trader.evaluate_cycle(
+        [{**feed[0], "current_bps": -1.0}],
+        now_iso="2026-05-25T11:06:00+00:00")
+    resolved = [t for t in trader.all_trades() if t["status"] == "resolved"]
+    assert resolved
+    assert resolved[0]["outcome"] == "WIN"
+    assert resolved[0]["pnl_usd"] > 0

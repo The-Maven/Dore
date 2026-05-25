@@ -8628,28 +8628,55 @@ function renderTraderBody(wrap, data, focusedSym) {
   const open = data.open || [];
   const resolved = data.resolved || [];
 
-  // ── Track record summary line ────────────────────────────────────
+  // ── Day badge: today's allocation usage ──────────────────────────
+  const dayBadge = _traderDayBadge(tr);
+  if (dayBadge) body.appendChild(dayBadge);
+
+  // ── All-time summary + streak chip ───────────────────────────────
   const summary = el('div', { class: 'sim-trader-summary' });
   if (tr.count_resolved === 0) {
     summary.append(el('span', { class: 'sim-trader-empty' },
-      'No trades yet — waiting for a clean mean-reversion signal.'));
+      'No trades resolved yet — waiting for a clean mean-reversion signal.'));
   } else {
     const netCls = (tr.net_pnl_usd || 0) >= 0
       ? 'sim-trader-pnl-up' : 'sim-trader-pnl-down';
     summary.append(el('span', { class: 'sim-trader-summary-line' },
+      el('span', { class: 'sim-trader-summary-tag' }, 'ALL-TIME'),
       el('b', {}, String(tr.count_resolved)), ' resolved · ',
-      el('b', {}, String(tr.wins)), 'W ',
-      el('b', {}, String(tr.losses)), 'L · win-rate ',
+      el('b', { class: 'sim-trader-wl-win' }, String(tr.wins) + 'W'), ' / ',
+      el('b', { class: 'sim-trader-wl-loss' }, String(tr.losses) + 'L'),
+      ' · win-rate ',
       el('b', {}, (tr.win_rate != null
         ? Math.round(tr.win_rate * 100) + '%' : '—')), ' · net ',
       el('b', { class: netCls },
         ((tr.net_pnl_usd || 0) >= 0 ? '+' : '') +
         '$' + Math.abs(tr.net_pnl_usd || 0).toFixed(2))));
-    if (tr.count_open > 0) {
-      summary.append(el('span', { class: 'sim-trader-summary-open' },
-        ' · ', String(tr.count_open), ' open position' +
-        (tr.count_open === 1 ? '' : 's')));
+    // Streak indicator + equity curve mini sparkline
+    const extras = el('div', { class: 'sim-trader-summary-extras' });
+    const streak = tr.current_streak || {};
+    if (streak.outcome && streak.length > 0) {
+      const cls = streak.outcome === 'WIN'
+        ? 'sim-trader-streak-win'
+        : streak.outcome === 'LOSS'
+        ? 'sim-trader-streak-loss'
+        : 'sim-trader-streak-flat';
+      extras.appendChild(el('span', {
+        class: 'sim-trader-streak ' + cls,
+        'data-tip': 'Most-recent run of same-outcome trades. Resets ' +
+          'the moment an opposite outcome lands.',
+        'data-tip-size': 'lg',
+      },
+        streak.outcome === 'WIN' ? '▶ ' :
+        streak.outcome === 'LOSS' ? '◀ ' : '· ',
+        String(streak.length), ' ',
+        streak.outcome + (streak.length > 1 ? 'S' : '') + ' IN A ROW'));
     }
+    // Equity curve sparkline
+    const eq = tr.equity_curve || [];
+    if (eq.length >= 2) {
+      extras.appendChild(_traderEquitySparkline(eq));
+    }
+    if (extras.children.length) summary.appendChild(extras);
   }
   body.appendChild(summary);
 
@@ -8680,6 +8707,181 @@ function renderTraderBody(wrap, data, focusedSym) {
     recentBlock.appendChild(stripWrap);
     body.appendChild(recentBlock);
   }
+
+  // ── Daily ledger: per-day P&L breakdown (collapsible) ────────────
+  if ((tr.daily || []).length) {
+    body.appendChild(_traderDailyLedger(tr));
+  }
+
+  // ── Best / worst day badges ──────────────────────────────────────
+  if (tr.best_day || tr.worst_day) {
+    body.appendChild(_traderBestWorstRow(tr));
+  }
+}
+
+
+function _traderDayBadge(tr) {
+  // Renders the "TODAY · $X used / $10k budget" strip + how many
+  // trades fired today. Always visible (even before first trade) so
+  // the user sees the rules of the game.
+  const day = tr.today_utc || '';
+  const used = tr.deployed_today_usd || 0;
+  const budget = tr.daily_budget_usd || 10_000;
+  const remaining = tr.budget_remaining_today_usd != null
+    ? tr.budget_remaining_today_usd : (budget - used);
+  const usedPct = Math.min(100, Math.max(0, (used / budget) * 100));
+  const exhausted = remaining < (budget * 0.25);
+  const wrap = el('div', { class: 'sim-trader-day' });
+  wrap.append(el('div', { class: 'sim-trader-day-head' },
+    el('span', { class: 'sim-trader-day-tag tip',
+      'data-tip': 'The trader works against a fresh $' +
+        budget.toLocaleString() + ' allocation each UTC day. Once ' +
+        'today\'s budget is exhausted, new positions wait for ' +
+        'tomorrow. Resolution does not replenish today — it only ' +
+        'frees the per-position slot.',
+      'data-tip-size': 'lg' }, 'TODAY'),
+    el('span', { class: 'sim-trader-day-date' }, day),
+    el('span', { class: 'sim-trader-day-budget' +
+        (exhausted ? ' sim-trader-day-budget-low' : '') },
+      '$' + used.toLocaleString(undefined, {maximumFractionDigits: 0}),
+      el('span', { class: 'sim-trader-day-budget-sep' }, ' / '),
+      el('span', { class: 'sim-trader-day-budget-cap' },
+        '$' + budget.toLocaleString(undefined, {maximumFractionDigits: 0}),
+        ' deployed'))));
+  const bar = el('div', { class: 'sim-trader-day-bar' },
+    el('div', { class: 'sim-trader-day-bar-fill' +
+        (exhausted ? ' sim-trader-day-bar-fill-low' : ''),
+      style: 'width:' + usedPct.toFixed(1) + '%' }));
+  wrap.append(bar);
+  return wrap;
+}
+
+
+function _traderEquitySparkline(curve) {
+  // Tiny inline SVG of cumulative_pnl over the last N resolved trades.
+  // No axes — the shape IS the story. Green endpoint if net positive,
+  // red if net negative.
+  if (!curve || curve.length < 2) return null;
+  const W = 110, H = 24;
+  const vs = curve.map(p => p.pnl_usd_running);
+  let lo = Math.min(...vs, 0);
+  let hi = Math.max(...vs, 0);
+  if (hi - lo < 0.01) { hi += 0.5; lo -= 0.5; }
+  const pad = (hi - lo) * 0.10;
+  lo -= pad; hi += pad;
+  const xs = (i) => (i / (curve.length - 1)) * W;
+  const ys = (v) => H - ((v - lo) / (hi - lo)) * H;
+  const pts = curve.map((p, i) =>
+    xs(i) + ',' + ys(p.pnl_usd_running).toFixed(2)).join(' ');
+  const lastV = curve[curve.length - 1].pnl_usd_running;
+  const endColor = lastV >= 0 ? 'var(--sim-up, #4AF6C3)' : 'var(--sim-down, #FF433D)';
+  // Zero line if it falls inside the y range
+  let zeroLine = '';
+  if (lo <= 0 && hi >= 0) {
+    const y0 = ys(0);
+    zeroLine = `<line x1="0" y1="${y0}" x2="${W}" y2="${y0}" stroke="rgba(212,162,74,0.3)" stroke-width="0.5" stroke-dasharray="2 2"/>`;
+  }
+  const wrap = el('span', {
+    class: 'sim-trader-equity',
+    'data-tip': 'Cumulative P&L over the last ' + curve.length +
+      ' resolved trades. Endpoint colour = current net position ' +
+      '(green ' + (lastV >= 0 ? 'profitable' : 'underwater') +
+      '). Each step is one trade closing.',
+    'data-tip-size': 'lg',
+  });
+  wrap.innerHTML =
+    '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H +
+    '" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">' +
+    zeroLine +
+    '<polyline points="' + pts + '" fill="none" stroke="' + endColor +
+    '" stroke-width="1.4" opacity="0.9"/>' +
+    '<circle cx="' + xs(curve.length - 1) + '" cy="' +
+    ys(lastV).toFixed(2) + '" r="2" fill="' + endColor + '"/></svg>' +
+    '<span class="sim-trader-equity-lbl">EQUITY</span>';
+  return wrap;
+}
+
+
+function _traderDailyLedger(tr) {
+  // Per-UTC-day P&L breakdown — collapsible because it's long for a
+  // mature track record. Each row: date · trades · wins/losses · ±P&L.
+  const days = tr.daily || [];
+  if (!days.length) return el('div');
+  const wrap = el('div', { class: 'sim-trader-block sim-trader-ledger' });
+  const head = el('div', { class: 'sim-trader-block-head sim-trader-ledger-head' },
+    el('span', { class: 'sim-trader-block-tag' }, 'DAILY LEDGER'),
+    el('span', { class: 'sim-trader-block-sub' },
+      'last ' + days.length + ' days'),
+    el('button', { class: 'sim-trader-ledger-toggle' }, '▾'));
+  wrap.appendChild(head);
+  const list = el('div', { class: 'sim-trader-ledger-list' });
+  for (const d of days) {
+    const pnl = d.pnl_usd || 0;
+    const cls = pnl > 0 ? 'sim-trader-pnl-up'
+      : pnl < 0 ? 'sim-trader-pnl-down' : '';
+    const row = el('div', { class: 'sim-trader-ledger-row' },
+      el('span', { class: 'sim-trader-ledger-date' }, d.day_utc),
+      el('span', { class: 'sim-trader-ledger-trades' },
+        d.trades + ' trade' + (d.trades === 1 ? '' : 's')),
+      el('span', { class: 'sim-trader-ledger-wl' },
+        d.wins > 0 ? el('span', { class: 'sim-trader-wl-win' },
+          d.wins + 'W') : null,
+        d.wins > 0 && d.losses > 0 ? ' / ' : '',
+        d.losses > 0 ? el('span', { class: 'sim-trader-wl-loss' },
+          d.losses + 'L') : null,
+        d.trades === 0 ? el('span', { class: 'sim-trader-empty' },
+          'no trades') : null),
+      el('span', { class: 'sim-trader-ledger-pnl ' + cls },
+        d.trades === 0 ? '—'
+          : (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2)));
+    list.appendChild(row);
+  }
+  wrap.appendChild(list);
+  // Default-collapsed when there are >5 days of history.
+  const initiallyCollapsed = days.length > 5;
+  if (initiallyCollapsed) {
+    list.classList.add('sim-trader-ledger-collapsed');
+    head.querySelector('.sim-trader-ledger-toggle').textContent = '▸';
+  }
+  head.querySelector('.sim-trader-ledger-toggle').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const collapsed = list.classList.toggle('sim-trader-ledger-collapsed');
+    ev.target.textContent = collapsed ? '▸' : '▾';
+  });
+  return wrap;
+}
+
+
+function _traderBestWorstRow(tr) {
+  const wrap = el('div', { class: 'sim-trader-bestworst' });
+  if (tr.best_day) {
+    const d = tr.best_day;
+    wrap.appendChild(el('div', {
+      class: 'sim-trader-medal sim-trader-medal-best',
+      'data-tip': 'The single best UTC day by net P&L since the ' +
+        'trader started running. ' + d.trades + ' trade' +
+        (d.trades === 1 ? '' : 's') + ', ' + d.wins + ' won, ' +
+        d.losses + ' lost.',
+      'data-tip-size': 'lg' },
+      el('span', { class: 'sim-trader-medal-lbl' }, 'BEST DAY'),
+      el('span', { class: 'sim-trader-medal-val' },
+        '+$' + Math.abs(d.pnl_usd).toFixed(2)),
+      el('span', { class: 'sim-trader-medal-date' }, d.day_utc)));
+  }
+  if (tr.worst_day && tr.worst_day !== tr.best_day) {
+    const d = tr.worst_day;
+    wrap.appendChild(el('div', {
+      class: 'sim-trader-medal sim-trader-medal-worst',
+      'data-tip': 'The single worst UTC day by net P&L. ' + d.trades +
+        ' trade' + (d.trades === 1 ? '' : 's') + ', ' + d.wins +
+        ' won, ' + d.losses + ' lost.',
+      'data-tip-size': 'lg' },
+      el('span', { class: 'sim-trader-medal-lbl' }, 'WORST DAY'),
+      el('span', { class: 'sim-trader-medal-val' },
+        (d.pnl_usd >= 0 ? '+' : '-') + '$' + Math.abs(d.pnl_usd).toFixed(2)),
+      el('span', { class: 'sim-trader-medal-date' }, d.day_utc)));
+  }
+  return wrap.children.length ? wrap : el('div');
 }
 
 
@@ -8721,7 +8923,14 @@ function _renderTradeCard(trade, isOpen, focusedSym) {
       (trade.confidence_word || '').replace(/_/g, ' '))));
   // P&L row (only meaningful for resolved trades; open shows "live")
   if (!isOpen && pnl != null) {
+    const outcome = trade.outcome || (pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'FLAT');
+    const outcomeCls = outcome === 'WIN'
+      ? 'sim-trade-outcome-win'
+      : outcome === 'LOSS'
+      ? 'sim-trade-outcome-loss'
+      : 'sim-trade-outcome-flat';
     card.appendChild(el('div', { class: 'sim-trade-card-row sim-trade-pnl-row' },
+      el('span', { class: 'sim-trade-outcome ' + outcomeCls }, outcome),
       el('span', { class: 'sim-trade-label' }, 'EXIT'),
       el('span', { class: 'sim-trade-num' },
         (trade.exit_bps >= 0 ? '+' : '') +
