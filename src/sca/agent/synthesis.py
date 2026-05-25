@@ -79,7 +79,36 @@ def synthesize_surface(
             surface=skill,
         )
         narrative = _deterministic_surface_narrative(skill, facts, passages)
-    return narrative
+    return _strip_html_tags(narrative)
+
+
+def _strip_html_tags(text: str) -> str:
+    """Strip raw HTML tags that LLMs occasionally emit when they fall
+    out of pure-markdown mode. The narrative is rendered by a markdown
+    pipeline that html-escapes its input — a literal `<br>` in the
+    payload renders as visible `&lt;br&gt;` text rather than a line
+    break. Convert structural tags to whitespace + drop the rest so
+    the markdown pipeline sees plain text.
+
+    Pinned by tests; if you change this, update the test fixtures
+    in `tests/unit/test_synthesis_strip.py`.
+    """
+    if not text:
+        return text
+    import re as _re
+    # <br>, <br/>, <br /> → newline (so markdown renders a paragraph
+    # break or a list item boundary, whichever fits the surrounding text)
+    out = _re.sub(r"<br\s*/?\s*>", "\n", text, flags=_re.IGNORECASE)
+    # <p>, </p>, <div>, </div> → newline
+    out = _re.sub(r"</?(p|div)\s*>", "\n", out, flags=_re.IGNORECASE)
+    # <strong>/<em>/<b>/<i> → strip the tag, keep the inner text. The
+    # markdown pipeline will pick up the surrounding ** or * if they
+    # were emitted alongside; if not, the prose still reads cleanly.
+    out = _re.sub(r"</?(strong|em|b|i|span)\s*[^>]*>", "", out,
+                   flags=_re.IGNORECASE)
+    # Collapse runs of >2 newlines (LLM sometimes emits triple breaks).
+    out = _re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
 
 
 def _deterministic_surface_narrative(
@@ -237,7 +266,7 @@ def synthesize(
         narrative = _deterministic_attestation_narrative(
             symbol, supply, attestation, metrics, passages,
         )
-    return narrative
+    return _strip_html_tags(narrative)
 
 
 # ── deterministic fallback narratives ────────────────────────────────────

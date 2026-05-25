@@ -237,6 +237,32 @@ test('renderSimulator (v3) renders ribbon + status + workspace + wire + calibrat
   // Calibration page present.
   assert.ok(mount.querySelector('.sim-calibration'),
     'calibration page should render');
+  // ── FORECAST CONE v4 — annotated. Pin every annotation. ─────────
+  // "MODEL SAYS" plain-English callout (the single biggest readability
+  // win per the research).
+  const callout = mount.querySelector('.sim-cone-callout');
+  assert.ok(callout, 'cone callout block should render');
+  assert.match(callout.textContent, /MODEL SAYS/,
+    'callout should carry the MODEL SAYS tag');
+  assert.match(callout.textContent, /80%/,
+    'callout should name the 80% band in prose');
+  // Outside-the-cone caveat (NHC lesson — 5% land outside p95).
+  assert.ok(mount.querySelector('.sim-cone-caveat'),
+    'outside-the-cone caveat strip should render');
+  // SVG endpoint labels — direct p50/p80/p95 reads at the right edge.
+  const svgText = mount.querySelector('.sim-hero-svg').textContent;
+  assert.match(svgText, /p50/,
+    'cone should label the p50 endpoint directly');
+  assert.match(svgText, /p80/,
+    'cone should label the p80 endpoint directly');
+  assert.match(svgText, /p95/,
+    'cone should label the p95 endpoint directly');
+  // NOW marker label
+  assert.match(svgText, /NOW/,
+    'NOW vertical line label should render');
+  // Anchor label ($1.00 peg)
+  assert.match(svgText, /\$1\.00/,
+    'anchor line should be labelled with the $1.00 peg');
 });
 
 test('renderSimulator (v3) handles empty archive gracefully', () => {

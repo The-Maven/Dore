@@ -5381,6 +5381,170 @@ a.cite:hover { color: var(--gold); border-color: rgba(212,162,74,.4); }
   0%, 100% { r: 3; opacity: 1; }
   50%      { r: 6; opacity: 0.6; }
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   FORECAST CONE v4 — annotated, teachable, polished
+   ════════════════════════════════════════════════════════════════════ */
+
+.sim-hero-svg { height: 240px; }  /* taller for callout sub-axis labels */
+
+/* NOW vertical line label */
+.sim-cone-now-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  fill: var(--sim-amber);
+  letter-spacing: 0.18em;
+}
+
+/* Anchor line label ($1.00 peg) */
+.sim-cone-anchor-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  fill: var(--muted-2);
+  letter-spacing: 0.04em;
+}
+
+/* Endpoint labels at the right of the cone — direct read of p50/p80/p95 */
+.sim-cone-lbl-p50 {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  fill: var(--sim-amber);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.sim-cone-lbl-p80 {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  fill: rgba(212, 162, 74, 0.78);
+  letter-spacing: 0.02em;
+}
+.sim-cone-lbl-p95 {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  fill: rgba(212, 162, 74, 0.5);
+  letter-spacing: 0.02em;
+}
+
+/* In-band labels at the widest point of each band */
+.sim-cone-band-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8.5px;
+  fill: rgba(239, 234, 224, 0.42);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.sim-cone-band-lbl-strong {
+  fill: rgba(239, 234, 224, 0.75);
+}
+
+/* Horizon vertical marker + label */
+.sim-cone-horizon {
+  stroke: rgba(212, 162, 74, 0.32);
+  stroke-width: 1;
+  stroke-dasharray: 1 3;
+}
+.sim-cone-horizon-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  fill: var(--muted-2);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.sim-cone-horizon-lbl-sub {
+  font-size: 8.5px;
+  fill: var(--muted, #6E6B66);
+  font-weight: 500;
+}
+
+/* "MODEL SAYS" plain-English callout — the single most important
+   annotation per the research. Sits directly under the SVG. */
+.sim-cone-callout {
+  margin: 10px 6px 8px;
+  padding: 9px 12px;
+  background: rgba(212, 162, 74, 0.05);
+  border-left: 2px solid var(--sim-amber);
+  border-radius: 0 4px 4px 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.sim-cone-callout-tag {
+  flex: 0 0 auto;
+  color: var(--sim-amber);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+.sim-cone-callout-body {
+  flex: 1 1 60%;
+  color: var(--paper);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.sim-cone-callout-conf {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  background: rgba(212, 162, 74, 0.12);
+  border: 1px solid rgba(212, 162, 74, 0.32);
+  border-radius: 2px;
+  color: var(--sim-amber);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: help;
+}
+
+/* Outside-the-cone caveat strip — the NHC lesson */
+.sim-cone-caveat {
+  margin: 0 6px 12px;
+  padding: 6px 12px;
+  color: var(--muted, #6E6B66);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  letter-spacing: 0.02em;
+  border-top: 1px dashed rgba(212, 162, 74, 0.18);
+  cursor: help;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.sim-cone-caveat-glyph {
+  color: var(--sim-amber);
+  font-size: 11px;
+  opacity: 0.6;
+  flex: 0 0 auto;
+}
+
+/* Light theme variants */
+:root[data-theme="light"] .sim-cone-callout {
+  background: rgba(212, 162, 74, 0.08);
+  border-left-color: #8B6720;
+}
+:root[data-theme="light"] .sim-cone-callout-body {
+  color: var(--paper);
+}
+:root[data-theme="light"] .sim-cone-callout-tag,
+:root[data-theme="light"] .sim-cone-callout-conf {
+  color: #6A4A0F;
+}
+:root[data-theme="light"] .sim-cone-band-lbl {
+  fill: rgba(28, 26, 20, 0.32);
+}
+:root[data-theme="light"] .sim-cone-band-lbl-strong {
+  fill: rgba(28, 26, 20, 0.62);
+}
+:root[data-theme="light"] .sim-cone-lbl-p50 { fill: #8B6720; }
+:root[data-theme="light"] .sim-cone-lbl-p80 { fill: rgba(139, 103, 32, 0.78); }
+:root[data-theme="light"] .sim-cone-lbl-p95 { fill: rgba(139, 103, 32, 0.5); }
+:root[data-theme="light"] .sim-cone-now-lbl { fill: #8B6720; }
 .sim-hero-chart-empty {
   padding: 60px 24px;
   text-align: center;

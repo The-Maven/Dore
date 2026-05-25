@@ -229,3 +229,38 @@ test('augmentationCard: full ctx renders text + citations as links', () => {
   const cites = card.querySelectorAll('.aug-cite');
   assert.equal(cites.length, 2, 'both citations should render as links');
 });
+
+test('markdown: strips literal <br> tags from LLM-emitted narratives', () => {
+  const { window } = loadApp();
+  // The bug: redemption page showed visible "&lt;br&gt;" in narratives
+  // because the LLM emitted literal HTML tags that the markdown pipeline
+  // html-escaped. Client-side defence converts them to newlines before
+  // the esc() pass.
+  const src = 'First sentence.<br>Second sentence.<br/>Third<br />Fourth';
+  const html = window.markdown(src);
+  assert.ok(!html.includes('&lt;br'), 'no escaped <br> in output');
+  assert.ok(!html.includes('<br'), 'no raw <br> either');
+  assert.ok(html.includes('First sentence.'), 'first sentence kept');
+  assert.ok(html.includes('Fourth'), 'last sentence kept');
+});
+
+test('markdown: strips <p> and <div> tags from LLM-emitted narratives', () => {
+  const { window } = loadApp();
+  const src = '<p>Para one.</p><p>Para two.</p><div>Div block.</div>';
+  const html = window.markdown(src);
+  assert.ok(!html.includes('&lt;p'), 'no escaped <p>');
+  assert.ok(!html.includes('&lt;div'), 'no escaped <div>');
+  assert.ok(html.includes('Para one.'));
+  assert.ok(html.includes('Para two.'));
+  assert.ok(html.includes('Div block.'));
+});
+
+test('markdown: clean markdown passes through untouched', () => {
+  const { window } = loadApp();
+  const src = '**Bold** and *italic* and [link](https://example.com)';
+  const html = window.markdown(src);
+  assert.ok(html.includes('<strong>Bold</strong>'),
+    'bold markdown still renders as <strong>');
+  assert.ok(html.includes('<em>italic</em>'));
+  assert.ok(html.includes('href="https://example.com"'));
+});

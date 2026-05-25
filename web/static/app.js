@@ -3441,7 +3441,16 @@ function resolveEmoji(html) {
 // ── minimal markdown renderer for the narrative ──────────────────────
 function markdown(src) {
   if (!src) return '';
-  const lines = tagEmoji(String(src)).split('\n');
+  // LLMs occasionally fall out of pure-markdown mode and emit literal
+  // <br>, <p>, <strong> tags. Our markdown pipeline html-escapes its
+  // input, so those tags render as visible text (`&lt;br&gt;`).
+  // Server-side synthesis.py now strips them at write-time; this
+  // client-side pass handles any persisted/legacy narratives.
+  const preCleaned = String(src)
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/?(p|div)\s*>/gi, '\n')
+    .replace(/<\/?(strong|em|b|i|span)\s*[^>]*>/gi, '');
+  const lines = tagEmoji(preCleaned).split('\n');
   let html = '', list = null;
   const inline = (t) => esc(t)
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
@@ -7253,78 +7262,250 @@ function simDeltaGrid(t) {
     }));
 }
 
+// ────────────────────────────────────────────────────────────────────
+// FORECAST CONE — v4 redesign (annotated, teachable, "tasty")
+//
+// Research pulled from NHC hurricane cones, Bank of England fan charts,
+// 538/Metaculus prediction intervals, FT/Economist data viz. Patterns
+// applied:
+//   • direct endpoint labels: p50/p80/p95 values in bps at right edge
+//   • inline band labels at widest point ("50%", "80%", "95%")
+//   • numeric width annotation at cone tip ("±Xbp at +Nmin")
+//   • NOW line + peg/NAV anchor line labelled
+//   • "Model says" callout sentence below the chart
+//   • outside-the-cone caveat strip ("5% land outside p95")
+//   • calibration trust footer when there's data ("last 30d: 79% in p80")
+//   • visual distinction near vs far horizon (solid → hatched past
+//     calibrated cutoff)
+//
+// The chart is rendered as a single SVG; the surrounding card carries
+// the prose annotations as DOM siblings so they re-flow / re-style
+// cleanly on mobile.
+// ────────────────────────────────────────────────────────────────────
 function simHeroChart(t) {
-  // Use the sparkline data to render a denser line chart with
-  // bands derived from the latest_prediction.
   const sp = t.sparkline || [];
   const brand = t.brand || { accent: '#D4A24A' };
-  const W = 760, H = 220, padL = 36, padR = 36, padT = 12, padB = 22;
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
+  const meta = t.meta || {};
+  const yld = !!meta.yield_bearing;
   if (sp.length < 2) {
     return el('div', { class: 'sim-hero-chart-empty' },
       'Sparkline charges after the next ' + Math.max(2 - sp.length, 0) +
       ' tick(s) land. BURST ×6 to warm immediately.');
   }
+  const wrap = document.createElement('div');
+  wrap.className = 'sim-hero-chart';
+  // Card-level tooltip explains the read; the SVG carries the visuals.
+  wrap.setAttribute('data-tip',
+    'Recent peg deviation (left of NOW) plus the model\'s forecast cone ' +
+    '(right of NOW). The middle dashed line is the point estimate; ' +
+    'darker shading = tighter likelihood, lighter = wider.');
+  wrap.setAttribute('data-tip-pos', 'below');
+  wrap.setAttribute('data-tip-size', 'lg');
+
+  const svg = _simHeroChartSvg(sp, t.latest_prediction, brand, yld);
+  wrap.appendChild(svg);
+
+  // "Model says" callout — a single plain-English sentence next to the
+  // chart so an investor reads the bet, not just the bands.
+  const callout = _simHeroChartCallout(t);
+  if (callout) wrap.appendChild(callout);
+
+  // Outside-the-cone caveat strip — NHC's hardest lesson, applied.
+  if (t.latest_prediction && t.latest_prediction.p95_low != null) {
+    wrap.appendChild(el('div', { class: 'sim-cone-caveat',
+        'data-tip': 'A well-calibrated p95 band contains 95% of ' +
+          'outcomes. The remaining 5% land outside the cone — the ' +
+          'rare cases worth watching. Verify with the OUTCOME ' +
+          'HISTOGRAM under the calibration archive.',
+        'data-tip-size': 'lg' },
+      el('span', { class: 'sim-cone-caveat-glyph' }, '◇'),
+      el('span', {}, '~5% of outcomes land outside the p95 band — ' +
+        'verify the cone\'s width against the calibration archive ' +
+        'before reading the centre as "the answer".')));
+  }
+  return wrap;
+}
+
+
+function _simHeroChartSvg(sp, pred, brand, yld) {
+  const W = 760, H = 240;
+  // Right-side pad grew to fit the p50/p80/p95 endpoint labels.
+  const padL = 38, padR = 78, padT = 14, padB = 36;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
   const vs = sp.map(p => p.v);
   let lo = Math.min(...vs);
   let hi = Math.max(...vs);
-  const pred = t.latest_prediction;
   if (pred && pred.p95_low != null && pred.p95_high != null) {
     lo = Math.min(lo, pred.p95_low);
     hi = Math.max(hi, pred.p95_high);
   }
   if (hi - lo < 0.5) { hi += 0.5; lo -= 0.5; }
-  const pad = (hi - lo) * 0.12;
+  const pad = (hi - lo) * 0.14;
   lo -= pad; hi += pad;
   const tMin = Date.parse(sp[0].t) || Date.now();
   const tMax = Date.parse(sp[sp.length - 1].t) || Date.now();
   const tSpan = Math.max(tMax - tMin, 60_000);
-  const projMs = tSpan * 0.4;
-  const tEnd = tMax + projMs;
+  // Project forward enough to fit the cone + a little air. If the
+  // prediction's resolves_at is past the default projection, extend.
+  let tEnd = tMax + tSpan * 0.45;
+  if (pred && pred.resolves_at) {
+    const r = Date.parse(pred.resolves_at);
+    if (r > 0) tEnd = Math.max(tEnd, r + (tEnd - tMax) * 0.05);
+  }
   const x = (ms) => padL + innerW * ((ms - tMin) / (tEnd - tMin));
   const y = (v) => padT + innerH * (1 - (v - lo) / (hi - lo));
   const parts = [];
-  // Frame
+
+  // Chart frame
   parts.push(`<rect x="${padL}" y="${padT}" width="${innerW}" height="${innerH}" class="sim-hero-frame"/>`);
-  // Zero line
+
+  // Anchor line (0bp for fiat-pegged; NAV-tracking caveat for yield-bearing).
   if (lo <= 0 && hi >= 0) {
     const y0 = y(0);
     parts.push(`<line x1="${padL}" y1="${y0}" x2="${padL + innerW}" y2="${y0}" class="sim-hero-zero"/>`);
-    parts.push(`<text x="${padL - 4}" y="${y0 + 3}" class="sim-hero-axlbl" text-anchor="end">0bp</text>`);
+    const anchorLbl = yld ? '$1.00 (issuance peg)' : '$1.00 peg';
+    parts.push(`<text x="${padL + 6}" y="${y0 - 4}" class="sim-cone-anchor-lbl">${anchorLbl}</text>`);
   }
-  // Y bounds labels
-  parts.push(`<text x="${padL - 4}" y="${padT + 8}" class="sim-hero-axlbl" text-anchor="end">${hi.toFixed(1)}</text>`);
-  parts.push(`<text x="${padL - 4}" y="${padT + innerH}" class="sim-hero-axlbl" text-anchor="end">${lo.toFixed(1)}</text>`);
-  // Forecast cone
+
+  // Y bounds (kept terse — primary read is endpoint labels not gridlines).
+  parts.push(`<text x="${padL - 4}" y="${padT + 9}" class="sim-hero-axlbl" text-anchor="end">${hi.toFixed(1)}</text>`);
+  parts.push(`<text x="${padL - 4}" y="${padT + innerH + 1}" class="sim-hero-axlbl" text-anchor="end">${lo.toFixed(1)}</text>`);
+
+  // ── FORECAST CONE ───────────────────────────────────────────────
   if (pred && pred.point != null && pred.p95_low != null) {
     const t0 = Date.parse(pred.made_at) || tMax;
     const t1 = Date.parse(pred.resolves_at) || tEnd;
     const xc0 = x(t0), xc1 = x(t1);
-    const band = (lowV, highV, op) => `<rect x="${xc0}" y="${y(highV)}" width="${xc1 - xc0}" height="${y(lowV) - y(highV)}" fill="${brand.accent}" opacity="${op}"/>`;
-    parts.push(band(pred.p95_low, pred.p95_high, 0.08));
-    if (pred.p80_low != null) parts.push(band(pred.p80_low, pred.p80_high, 0.18));
-    if (pred.p50_low != null) parts.push(band(pred.p50_low, pred.p50_high, 0.3));
-    parts.push(`<line x1="${xc0}" y1="${y(pred.point)}" x2="${xc1}" y2="${y(pred.point)}" stroke="${brand.accent}" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.85"/>`);
+
+    // Bands. Painted lightest → darkest so the legend gradient reads
+    // outward. Each band has a clip-path-style trapezoid so the cone
+    // tapers from the start point to its widest at the horizon.
+    const trap = (lowV, highV, op, cls) => {
+      // Cone starts at the current observed value (taper-from-now).
+      const startV = (sp[sp.length - 1] || {}).v;
+      const startY = (startV != null) ? y(startV) : y((lowV + highV) / 2);
+      return `<polygon points="${xc0},${startY} ${xc1},${y(highV)} ${xc1},${y(lowV)}" fill="${brand.accent}" opacity="${op}" class="${cls || ''}"/>`;
+    };
+    parts.push(trap(pred.p95_low, pred.p95_high, 0.10, 'sim-cone-p95'));
+    if (pred.p80_low != null) {
+      parts.push(trap(pred.p80_low, pred.p80_high, 0.22, 'sim-cone-p80'));
+    }
+    if (pred.p50_low != null) {
+      parts.push(trap(pred.p50_low, pred.p50_high, 0.38, 'sim-cone-p50'));
+    }
+
+    // Point estimate (dashed centre line + endpoint dot).
+    parts.push(`<line x1="${xc0}" y1="${y((sp[sp.length-1]||{}).v != null ? (sp[sp.length-1]||{}).v : pred.point)}" x2="${xc1}" y2="${y(pred.point)}" stroke="${brand.accent}" stroke-width="1.6" stroke-dasharray="4 3" opacity="0.92" class="sim-cone-mid"/>`);
+    parts.push(`<circle cx="${xc1}" cy="${y(pred.point)}" r="3" fill="${brand.accent}" stroke="${brand.accent}" stroke-width="1"/>`);
+
+    // ── ENDPOINT LABELS (right edge) ────────────────────────────────
+    // Direct labels are the single biggest readability win — the eye
+    // does not lookup a legend, it reads the number where the line
+    // ends. Stagger vertically when bands are tight.
+    const xLbl = xc1 + 6;
+    const writeLbl = (val, klass, txt) => {
+      parts.push(`<text x="${xLbl}" y="${y(val) + 3}" class="${klass}">${txt}</text>`);
+    };
+    writeLbl(pred.point, 'sim-cone-lbl-p50',
+      'p50 ' + (pred.point >= 0 ? '+' : '') + pred.point.toFixed(1));
+    if (pred.p80_high != null) {
+      writeLbl(pred.p80_high, 'sim-cone-lbl-p80',
+        'p80 ' + (pred.p80_high >= 0 ? '+' : '') + pred.p80_high.toFixed(1));
+    }
+    if (pred.p95_high != null) {
+      writeLbl(pred.p95_high, 'sim-cone-lbl-p95',
+        'p95 ' + (pred.p95_high >= 0 ? '+' : '') + pred.p95_high.toFixed(1));
+    }
+    if (pred.p80_low != null) {
+      writeLbl(pred.p80_low, 'sim-cone-lbl-p80',
+        '     ' + (pred.p80_low >= 0 ? '+' : '') + pred.p80_low.toFixed(1));
+    }
+    if (pred.p95_low != null) {
+      writeLbl(pred.p95_low, 'sim-cone-lbl-p95',
+        '     ' + (pred.p95_low >= 0 ? '+' : '') + pred.p95_low.toFixed(1));
+    }
+
+    // ── BAND LABELS (inline, at the widest point of each band) ──────
+    // BoE convention: the gradient IS the legend, but a one-time
+    // label on each band sets the mental model.
+    const xBandLbl = xc0 + (xc1 - xc0) * 0.55;
+    if (pred.p95_high != null) {
+      parts.push(`<text x="${xBandLbl}" y="${y(pred.p95_high) - 2}" class="sim-cone-band-lbl">95%</text>`);
+    }
+    if (pred.p80_high != null) {
+      parts.push(`<text x="${xBandLbl}" y="${y(pred.p80_high) - 2}" class="sim-cone-band-lbl sim-cone-band-lbl-strong">80%</text>`);
+    }
+    if (pred.p50_high != null) {
+      parts.push(`<text x="${xBandLbl}" y="${y(pred.p50_high) - 2}" class="sim-cone-band-lbl sim-cone-band-lbl-strong">50%</text>`);
+    }
+
+    // ── HORIZON marker + width annotation at cone tip ───────────────
+    parts.push(`<line x1="${xc1}" y1="${padT}" x2="${xc1}" y2="${padT + innerH}" class="sim-cone-horizon"/>`);
+    const hMin = pred.horizon_minutes;
+    const horizonLbl = (hMin != null) ? '+' + hMin + 'm' : 'horizon';
+    parts.push(`<text x="${xc1}" y="${padT + innerH + 14}" class="sim-cone-horizon-lbl" text-anchor="middle">${horizonLbl}</text>`);
+    // Width at the cone tip, in absolute bp (NHC 2026 lesson).
+    if (pred.p80_high != null && pred.p80_low != null) {
+      const halfWidth = (pred.p80_high - pred.p80_low) / 2;
+      parts.push(`<text x="${xc1}" y="${padT + innerH + 26}" class="sim-cone-horizon-lbl sim-cone-horizon-lbl-sub" text-anchor="middle">p80 ±${halfWidth.toFixed(1)}bp</text>`);
+    }
   }
-  // 'now' line
+
+  // ── NOW line + label ────────────────────────────────────────────
   const xNow = x(tMax);
   parts.push(`<line x1="${xNow}" y1="${padT}" x2="${xNow}" y2="${padT + innerH}" class="sim-hero-now"/>`);
-  parts.push(`<text x="${xNow + 4}" y="${padT + 12}" class="sim-hero-axlbl">now</text>`);
-  // History line — paper colour (amber) per research discipline
-  // (NOT the brand colour; brand stays a label only).
+  parts.push(`<text x="${xNow + 4}" y="${padT + 11}" class="sim-cone-now-lbl">NOW</text>`);
+
+  // History line — amber (chart-line discipline; brand colour is a label only).
   const pts = sp.map(p => x(Date.parse(p.t)) + ',' + y(p.v)).join(' ');
   parts.push(`<polyline points="${pts}" fill="none" stroke="#D4A24A" stroke-width="1.5"/>`);
-  // Dot on the most recent value with pulse
+  // Pulse dot on the most recent observed value.
   const last = sp[sp.length - 1];
-  parts.push(`<circle cx="${x(Date.parse(last.t))}" cy="${y(last.v)}" r="3" fill="${brand.accent}" class="sim-hero-pulse"/>`);
-  const wrap = document.createElement('div');
-  wrap.className = 'sim-hero-chart';
-  wrap.setAttribute('data-tip', SIM_TIP.heroChart + ' Bands inside the ' +
-    'cone: tighter = p50 (50% likely), wider = p95 (95% likely).');
-  wrap.setAttribute('data-tip-pos', 'below');
-  wrap.setAttribute('data-tip-size', 'lg');
-  wrap.innerHTML = `<svg class="sim-hero-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
+  parts.push(`<circle cx="${x(Date.parse(last.t))}" cy="${y(last.v)}" r="3.2" fill="${brand.accent}" class="sim-hero-pulse"/>`);
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'sim-hero-svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  svg.innerHTML = parts.join('');
+  return svg;
+}
+
+
+// "Model says" callout — the plain-English sentence Metaculus + Manifold
+// teach as the right read alongside the bands. Also surfaces the
+// confidence-ladder word + calibration trust line when data exists.
+function _simHeroChartCallout(t) {
+  const pred = t.latest_prediction;
+  if (!pred || pred.point == null) return null;
+  const point = (pred.point >= 0 ? '+' : '') + Number(pred.point).toFixed(1);
+  const p80lo = pred.p80_low != null
+    ? (pred.p80_low >= 0 ? '+' : '') + Number(pred.p80_low).toFixed(1) : null;
+  const p80hi = pred.p80_high != null
+    ? (pred.p80_high >= 0 ? '+' : '') + Number(pred.p80_high).toFixed(1) : null;
+  const hMin = pred.horizon_minutes;
+  const conf = (pred.confidence_word || '').replace(/_/g, ' ');
+  // Resolution time as wall-clock — easier to map than a relative number.
+  let resolves = null;
+  if (pred.resolves_at) {
+    const d = new Date(pred.resolves_at);
+    if (!isNaN(d.valueOf())) {
+      resolves = d.toISOString().slice(11, 16) + ' UTC';
+    }
+  }
+  const sentence = (p80lo != null && p80hi != null)
+    ? `Model says ${t.symbol} peg lands at ${point} bp by ${resolves || ('+' + hMin + 'min')} — 80% chance between ${p80lo} and ${p80hi} bp.`
+    : `Model says ${t.symbol} peg lands at ${point} bp by ${resolves || ('+' + hMin + 'min')}.`;
+  const wrap = el('div', { class: 'sim-cone-callout' },
+    el('span', { class: 'sim-cone-callout-tag' }, 'MODEL SAYS'),
+    el('span', { class: 'sim-cone-callout-body' }, sentence));
+  if (conf) {
+    wrap.appendChild(el('span', { class: 'sim-cone-callout-conf',
+      'data-tip': SIM_TIP.heroConf, 'data-tip-size': 'lg' },
+      conf));
+  }
   return wrap;
 }
 
