@@ -6554,12 +6554,14 @@ function flashTokenCell(t) {
         slot.classList.add(cls);
       }
     }
-    // Update inline delta digits with flash.
+    // Update inline delta digits with flash. Use the same
+    // chevron-prefix format the initial render uses so the cell
+    // stays visually consistent across SSE updates.
     const dslot = cell.querySelector('[data-sim-delta="d1m"]');
     if (dslot && t.deltas) {
       const v = t.deltas.d1m;
       dslot.textContent = v == null ? '—'
-        : (v >= 0 ? '+' : '') + Number(v).toFixed(2);
+        : (v >= 0 ? '▲ ' : '▼ ') + Math.abs(Number(v)).toFixed(2);
       dslot.classList.remove('sim-delta-up', 'sim-delta-down', 'sim-delta-flat');
       dslot.classList.add(
         v == null ? 'sim-delta-flat'
